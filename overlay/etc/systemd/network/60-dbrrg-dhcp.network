@@ -1,0 +1,11 @@
+# /etc/systemd/network/60-dhcp-all-hardware.network
+# Alle Hardware-Schnittstellen per DHCP konfigurieren.
+# Voreinstellung. Wird benutzt, wenn "noDHCP" nicht angegeben wird.
+
+[Match]
+KernelCommandLine =! noDHCP
+Path = pci*
+Type = ether
+
+[Network]
+DHCP = ipv4

@@ -1,0 +1,19 @@
+[Unit]
+Description=Undockerize this Image
+Before=systemd-hwdb-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f /.dockerenv
+ExecStart=/bin/rm -f /etc/resolv.conf
+ExecStart=/bin/ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+ExecStart=/bin/mv /etc/hosts.in /etc/hosts
+ExecStart=/bin/sed -i s/HOSTNAME/%H/g /etc/hosts
+# ExecStart=/sbin/depmod -a
+# ExecStart=/sbin/modprobe snd-hda-intel
+ExecStartPost=/bin/systemctl disable un-dockerize.service
+
+
+[Install]
+WantedBy=multi-user.target
+# last line

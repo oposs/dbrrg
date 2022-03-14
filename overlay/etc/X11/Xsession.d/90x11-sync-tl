@@ -1,0 +1,11 @@
+sleep 3
+BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+MAC_ADDR=$(cat /sys/class/net/$(ip route show default | awk '/default/ {print $5}')/address)
+BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
+# wait for dns to come up
+while true; do
+  ping -nc 1 $BOOT_SRV && break
+  sleep 1
+done
+(cd $HOME;/usr/bin/curl ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} | /bin/tar -zxf -)
+(/opt/thinlinc/bin/tlclient & wait $!; /bin/tar zcf /tmp/$$.tar.gz .??* * && /usr/bin/curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
