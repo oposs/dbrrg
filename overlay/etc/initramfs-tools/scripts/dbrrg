@@ -1,4 +1,4 @@
-# Ramdisk filesystem mounting			-*- shell-script -*-
+# dbrrg filesystem mounting			-*- shell-script -*-
 
 ramroot_is_remote()
 {
@@ -48,8 +48,8 @@ ramroot_mount()
 
 mountroot()
 {
-	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/ramdisk-top"
-	run_scripts /scripts/ramdisk-top
+	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/dbrrg-top"
+	run_scripts /scripts/dbrrg-top
 	[ "$quiet" != "y" ] && log_end_msg
 
 	# Parse command line options to get ramroot
@@ -78,8 +78,8 @@ mountroot()
 		[ "$quiet" != "y" ] && log_end_msg
 	fi
 
-	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/ramdisk-premount"
-	run_scripts /scripts/ramdisk-premount
+	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/dbrrg-premount"
+	run_scripts /scripts/dbrrg-premount
 	[ "$quiet" != "y" ] && log_end_msg
 
 	[ "$quiet" != "y" ] && log_begin_msg "Installing root filesystem"
@@ -91,7 +91,7 @@ mountroot()
 
 	[ "$quiet" != "y" ] && log_end_msg
 
-	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/ramdisk-bottom"
-	run_scripts /scripts/ramdisk-bottom
+	[ "$quiet" != "y" ] && log_begin_msg "Running /scripts/dbrrg-bottom"
+	run_scripts /scripts/dbrrg-bottom
 	[ "$quiet" != "y" ] && log_end_msg
 }

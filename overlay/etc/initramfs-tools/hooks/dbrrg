@@ -52,11 +52,13 @@ lib_module /lib 'libc.so.*' 'libnss_files.so.*'
 #lib_module /lib 'libc.so.*' 'libresolv.so.*'
 
 # some helper tools for fetching and extracting the ramroot
-copy_exec $(which pixz) /bin
-copy_exec $(which tar) /bin
-copy_exec $(which curl) /bin
+copy_exec /bin/pixz
+copy_exec /bin/tar
+copy_exec /bin/curl
 
 # get the sound drivers
 for kmod in $(find "${MODULESDIR}/kernel/sound" -name "*.ko" -print); do
     manual_add_modules $(basename ${kmod} .ko)
 done
+
+# end

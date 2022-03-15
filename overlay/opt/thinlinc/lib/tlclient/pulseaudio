@@ -1,4 +1,5 @@
 #!/bin/sh
 unset LD_LIBRARY_PATH
 /usr/bin/pulseaudio --kill
-exec /usr/bin/pulseaudio -n --use-pid-file=false -L module-udev-detect -L "$2" --log-level=info --fail=false
+/usr/bin/pulseaudio --cleanup-shm
+exec /usr/bin/pulseaudio -n -L module-udev-detect -L "$2" --log-level=info --fail=false --disallow-exit --exit-idle-time=-1 

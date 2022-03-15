@@ -44,7 +44,7 @@ RUN wget https://www.cendio.com/downloads/clients/tl-4.14.0-clients.zip && \
     rm -rf tl-4.14.0-clients.zip tl-4.14.0-clients
 ADD overlay/ /__overlay
 RUN cp -r /__overlay/* / && rm -rf /__overlay
-RUN update-initramfs -c -k all
+RUN update-initramfs -c -v -k all
 RUN locale-gen
 RUN /bin/rm -f -v /etc/ssh/ssh_host_*_key* && \
     systemctl enable regenerate_ssh_host_keys && \
@@ -59,3 +59,7 @@ RUN adduser --disabled-password --gecos "ThinUser" tluser
 RUN adduser tluser sudo && \
     echo "tluser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 RUN adduser tluser audio
+# do not autostart pulseaudio ... 
+RUN sudo -u tluser systemctl --user disable pulseaudio.service
+RUN sudo -u tluser systemctl --user disable pulseaudio.socket
+# end
