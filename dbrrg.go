@@ -3,6 +3,9 @@ package main
 import (
 	"net/http"
 	"time"
+//	"github.com/pin/tftp"
+//      "github.com/insomniacslk/dhcp/dhcpv4"
+//      "github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
 
 type timeHandler struct {

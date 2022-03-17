@@ -9,4 +9,4 @@ ipxe:
 	docker run --rm -v $$PWD/scripts:/scripts -v $$PWD/image-export:/image-export dbrrg-ipxe /scripts/make-ipxe.sh
 
 server:
-	docker run --rm -v "$PWD":/app -w /app golang:1.17 go build -v
+	docker run --rm -v $$PWD:/app -w /app golang:1.17 go build -v
