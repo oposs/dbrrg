@@ -11,4 +11,4 @@ while true; do
   sleep 1
 done
 (cd $HOME;curl ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} | /bin/tar -zxf -)
-(/opt/thinlinc/bin/tlclient & wait $!; tar zcf /tmp/$$.tar.gz .??* * && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
+(/opt/thinlinc/bin/tlclient & wait $!; tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
