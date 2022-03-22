@@ -1,7 +1,7 @@
 all: ipxe ubuntu
 
 ubuntu:
-	docker build --pull -t dbrrg-ubuntu -f Dockerfile.ubuntu .
+	docker build --pull --no-cache -t dbrrg-ubuntu -f Dockerfile.ubuntu .
 	docker run --rm -v $$PWD/scripts:/scripts -v $$PWD/image-export:/image-export dbrrg-ubuntu /scripts/image-export.sh
 
 ipxe:
