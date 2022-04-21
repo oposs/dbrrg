@@ -6,9 +6,21 @@ systemctl --user stop pulseaudio.service
 systemctl --user stop pulseaudio.socket
 systemctl --user disable pulseaudio.service
 systemctl --user disable pulseaudio.socket
-while true; do
-  ping -nc 1 $BOOT_SRV && break
-  sleep 1
-done
-(cd $HOME;curl ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} | /bin/tar -zxf -)
-(/opt/thinlinc/bin/tlclient & wait $!; tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
+cd $HOME
+if [ "" != "$BOOT_SRV" ]; then
+  while true; do
+    ping -nc 1 $BOOT_SRV && break
+    sleep 1
+  done
+  curl ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} | /bin/tar -zxf -
+  (/opt/thinlinc/bin/tlclient; tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
+elif [ -b /dev/disk/by-partlabel/EFI-SYSTEM ]; then
+  sudo mkdir -p /boot/efi
+  sudo mount /dev/disk/by-partlabel/EFI-SYSTEM /boot/efi
+  if [ -f /boot/efi/home.tar.gz ]; then
+    sudo cat /boot/efi/home.tar.gz | /bin/tar -zxf -
+  fi
+  (/opt/thinlinc/bin/tlclient; tar zcf - . | sudo dd of=/boot/efi/home.tar.gz; sudo umount /boot/efi)&
+else
+   /opt/thinlinc/bin/tlclient
+fi

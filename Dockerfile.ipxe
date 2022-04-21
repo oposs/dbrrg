@@ -8,7 +8,7 @@ RUN apt-get install -yq \
     build-essential \
     git \
     liblzma-dev
-RUN apt-get -qq clean
+
 RUN cd / && git clone https://github.com/ipxe/ipxe.git
 RUN cd ipxe/src && make \
     bin-x86_64-pcbios/ipxe.pxe \

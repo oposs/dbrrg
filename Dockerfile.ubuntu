@@ -43,7 +43,7 @@ RUN wget https://www.cendio.com/downloads/clients/tl-4.14.0-clients.zip && \
      dpkg --install tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
     rm -rf tl-4.14.0-clients.zip tl-4.14.0-clients
 ADD overlay/ /__overlay
-RUN cp -r /__overlay/* / && rm -rf /__overlay
+RUN tar cf - --exclude="*~" -C /__overlay * | tar xf - && rm -rf /__overlay
 RUN update-initramfs -c -v -k all
 RUN locale-gen
 RUN /bin/rm -f -v /etc/ssh/ssh_host_*_key* && \

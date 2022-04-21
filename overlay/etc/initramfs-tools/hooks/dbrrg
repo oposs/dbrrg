@@ -56,8 +56,8 @@ copy_exec /bin/pixz
 copy_exec /bin/tar
 copy_exec /bin/curl
 
-# get the sound drivers
-for kmod in $(find "${MODULESDIR}/kernel/sound" -name "*.ko" -print); do
+# get some extra drivers
+for kmod in $(find "${MODULESDIR}/kernel/sound"  "${MODULESDIR}/kernel/drivers/usb/storage" -name "*.ko" -print); do
     manual_add_modules $(basename ${kmod} .ko)
 done
 

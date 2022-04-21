@@ -24,7 +24,7 @@ ramroot_mount()
 {
 	local ramroot="$1"
 	local memtotal=$(awk '/^MemTotal:/{print $2"k"}' /proc/meminfo)
-
+    set -x
 	# Mount a ramdisk to extract the tar image on
 	if mount -t tmpfs -o size=${memtotal:-500M} tmpfs ${rootmnt} ; then
 		:
@@ -33,16 +33,22 @@ ramroot_mount()
 	else
 		mount -t ramfs ramfs ${rootmnt}
 	fi
-
+    # give the system a littel bit of time to detect usb sticks
+    sleep 2
 	# Download and extract ramdisk tar image
 	if ramroot_is_remote "$ramroot"; then
 		curl "$ramroot"
+	elif [ -b /dev/disk/by-partlabel/EFI-SYSTEM ]; then
+ 		mkdir /mnt
+		mount /dev/disk/by-partlabel/EFI-SYSTEM /mnt
+		cat "/mnt/$ramroot"
+		umount /mnt
 	else
-		busybox cat "$ramroot"
+		cat "$ramroot"	
 	fi | if ramroot_is_xzipped "$ramroot"; then
 		pixz -d -t
 	else
-		busybox cat
+		cat
 	fi | ( cd ${rootmnt} && tar -x ) || panic 'Unable to extract root filesystem'
 }
 
@@ -73,8 +79,8 @@ mountroot()
 		[ "$quiet" != "y" ] && log_begin_msg "Configuring networking for RamRoot"
 		modprobe af_packet
 		wait_for_udev 10
-        # the empty '' is important to use any interface found
-        ipconfig -c dhcp '' | sed -nr 's/.+dns0 +: +([^ ]+).+/nameserver \1/p'> /etc/resolv.conf
+	        # the empty '' is important to use any interface found
+        	ipconfig -c dhcp '' | sed -nr 's/.+dns0 +: +([^ ]+).+/nameserver \1/p'> /etc/resolv.conf
 		[ "$quiet" != "y" ] && log_end_msg
 	fi
 
