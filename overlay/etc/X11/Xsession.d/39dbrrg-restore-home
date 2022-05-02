@@ -1,11 +1,6 @@
 BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
 MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
 BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
-# wait for dns to come up
-systemctl --user stop pulseaudio.service
-systemctl --user stop pulseaudio.socket
-systemctl --user disable pulseaudio.service
-systemctl --user disable pulseaudio.socket
 cd $HOME
 if [ "" != "$BOOT_SRV" ]; then
   while true; do
@@ -13,14 +8,11 @@ if [ "" != "$BOOT_SRV" ]; then
     sleep 1
   done
   curl ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} | /bin/tar -zxf -
-  (/opt/thinlinc/bin/tlclient; tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR} )&
 elif [ -b /dev/disk/by-partlabel/EFI-SYSTEM ]; then
   sudo mkdir -p /boot/efi
   sudo mount /dev/disk/by-partlabel/EFI-SYSTEM /boot/efi
   if [ -f /boot/efi/home.tar.gz ]; then
     sudo cat /boot/efi/home.tar.gz | /bin/tar -zxf -
   fi
-  (/opt/thinlinc/bin/tlclient; tar zcf - . | sudo dd of=/boot/efi/home.tar.gz; sudo umount /boot/efi)&
-else
-   /opt/thinlinc/bin/tlclient
+  sudo umount /boot/efi
 fi

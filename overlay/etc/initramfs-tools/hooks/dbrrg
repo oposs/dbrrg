@@ -57,7 +57,14 @@ copy_exec /bin/tar
 copy_exec /bin/curl
 
 # get some extra drivers
-for kmod in $(find "${MODULESDIR}/kernel/sound"  "${MODULESDIR}/kernel/drivers/usb/storage" -name "*.ko" -print); do
+for kmod in $(find \
+	"${MODULESDIR}/kernel/sound" \
+	"${MODULESDIR}/kernel/drivers/usb/storage" \
+	"${MODULESDIR}/kernel/drivers/net/wireless" \
+	"${MODULESDIR}/kernel/net" \
+	"${MODULESDIR}/kernel/crypto" \
+	"${MODULESDIR}/kernel/arch/x86/kernel" \
+    -name "*.ko" -print); do
     manual_add_modules $(basename ${kmod} .ko)
 done
 

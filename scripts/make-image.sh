@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-SIZE=512
+SIZE=600
 cd /image-export
 IMG=thinlinc-efi-boot.img
 MD="mmd -i ${IMG}@@1M"

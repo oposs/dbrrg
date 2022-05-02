@@ -17,6 +17,13 @@ make image
 
 Now you find all the generated image files in the `image-export`.
 
+## Tipps
+
+If you want to active a wlan in your usb image, edit the `wifi.yaml` and the
+`.xsessionrc` files in your home once you have booted the image. Then exit
+the thinlinc client. This will save the content of the home back to the efi
+partition.
+
 ## Todo
 
 * Integrate the booserver system

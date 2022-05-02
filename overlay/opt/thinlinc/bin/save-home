@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
+BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
+# wait for dns to come up
+systemctl --user stop pulseaudio.service
+systemctl --user stop pulseaudio.socket
+systemctl --user disable pulseaudio.service
+systemctl --user disable pulseaudio.socket
+cd $HOME
+if [ "" != "$BOOT_SRV" ]; then
+  while true; do
+    ping -nc 1 $BOOT_SRV 2>&1 >/dev/null && break
+    sleep 1
+  done
+  tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR}
+  rm /tmp/$$.tar.gz
+elif [ -b /dev/disk/by-partlabel/EFI-SYSTEM ]; then
+  sudo mkdir -p /boot/efi
+  sudo mount /dev/disk/by-partlabel/EFI-SYSTEM /boot/efi
+  tar zcf - . | sudo dd of=/boot/efi/home.tar.gz
+  sudo umount /boot/efi
+else
+  echo "Sorry, no idea how to store your home persistanly"
+fi
+echo "home saved"

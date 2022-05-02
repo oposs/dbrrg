@@ -1,0 +1,5 @@
+# put anything you want todo at session startup
+# eg:
+#
+#sudo cp wifi.yaml /etc/netplan
+#sudo netplan apply
