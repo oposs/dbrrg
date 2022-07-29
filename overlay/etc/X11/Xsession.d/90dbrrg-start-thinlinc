@@ -2,4 +2,4 @@ systemctl --user stop pulseaudio.service
 systemctl --user stop pulseaudio.socket
 systemctl --user disable pulseaudio.service
 systemctl --user disable pulseaudio.socket
-(/opt/thinlinc/bin/tlclient;save-home)&
+(/opt/thinlinc/bin/tlclient;/opt/thinlinc/bin/save-home)&
