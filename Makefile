@@ -1,11 +1,11 @@
 all: ipxe ubuntu
 
 ubuntu:
-	docker build --pull -t dbrrg-ubuntu -f Dockerfile.ubuntu .
+	docker build --pull --progress=plain  -t dbrrg-ubuntu -f Dockerfile.ubuntu .
 	docker run --rm -v $$PWD/scripts:/scripts -v $$PWD/image-export:/image-export dbrrg-ubuntu /scripts/image-export.sh
 
 ipxe:
-	docker build --pull -t dbrrg-ipxe -f Dockerfile.ipxe .
+	docker build --pull --progress=plain  -t dbrrg-ipxe -f Dockerfile.ipxe .
 	docker run --rm -v $$PWD/scripts:/scripts -v $$PWD/image-export:/image-export dbrrg-ipxe /scripts/make-ipxe.sh
 
 image: ubuntu ipxe
@@ -13,7 +13,7 @@ image: ubuntu ipxe
 	docker run --rm \
 		-v $$PWD/scripts:/scripts \
 		-v $$PWD/image-export:/image-export \
-		-v $$PWD/refind.conf:/refind.conf \
+		-v $$PWD/syslinux.cfg:/syslinux.cfg \
 		dbrrg-image /scripts/make-image.sh
 
 server:

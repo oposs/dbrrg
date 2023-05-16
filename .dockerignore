@@ -1,3 +1,5 @@
 *
-!overlay
 *~
+!overlay
+!*.patch
+!syslinux.cfg

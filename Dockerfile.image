@@ -11,15 +11,23 @@ RUN apt-get install -yq \
     unzip \
     parted \
     udev \
-    coreutils
-RUN wget https://sourceforge.net/projects/refind/files/${REFIND}/refind-bin-${REFIND}.zip && \
-   unzip refind-*.zip && \
-   mv refind-bin-*/refind / && \
-   rm -rf refind-bin*
-RUN wget https://www.memtest86.com/downloads/memtest86-usb.zip && \
-   unzip memtest86-usb.zip memtest86-usb.img && \
-   mcopy -s -i memtest86-usb.img@@1M ::EFI/BOOT memtest86 && \
-   rm memtest86-usb.img memtest86-usb.zip
-RUN wget https://github.com/tianocore/edk2/releases/download/edk2-stable201911/ShellBinPkg.zip && \
-   unzip ShellBinPkg.zip && \
-   rm ShellBinPkg.zip
+    coreutils \
+    gdisk \
+    dosfstools \
+    strace \
+    tzdata \
+    coreutils \
+    qemu-utils \
+    syslinux \
+    syslinux-efi
+#RUN wget https://sourceforge.net/projects/refind/files/${REFIND}/refind-bin-${REFIND}.zip && \
+#   unzip refind-*.zip && \
+#   mv refind-bin-*/refind / && \
+#   rm -rf refind-bin*
+#RUN wget https://www.memtest86.com/downloads/memtest86-usb.zip && \
+#   unzip memtest86-usb.zip memtest86-usb.img && \
+#   mcopy -s -i memtest86-usb.img@@1M ::EFI/BOOT memtest86 && \
+#   rm memtest86-usb.img memtest86-usb.zip
+#RUN wget https://github.com/tianocore/edk2/releases/download/edk2-stable201911/ShellBinPkg.zip && \
+#   unzip ShellBinPkg.zip && \
+#   rm ShellBinPkg.zip
