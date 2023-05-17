@@ -58,6 +58,7 @@ copy_exec /bin/curl
 
 # get some extra drivers
 for kmod in $(find \
+	"${MODULESDIR}/updates" \
 	"${MODULESDIR}/kernel/sound" \
 	"${MODULESDIR}/kernel/drivers/usb/storage" \
 	"${MODULESDIR}/kernel/drivers/net/wireless" \

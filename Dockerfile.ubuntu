@@ -42,19 +42,22 @@ RUN apt-get install -yq \
     plymouth-theme-spinner \
     linux-image-generic
 RUN chmod u+s /usr/bin/ping
-RUN apt-get install -yq backport-iwlwifi-dkms 
-COPY 0001-killer-ax1690-7af0.patch /usr/src/backport-iwlwifi-9904/
-RUN cd /usr/src/backport-iwlwifi-9904 && patch -p1 < 0001-killer-ax1690-7af0.patch
-RUN ls /boot
-RUN dkms remove backport-iwlwifi/9904 -k 6.2.0-20-generic && \
-    dkms build backport-iwlwifi/9904 -k 6.2.0-20-generic && \
-    dkms install backport-iwlwifi/9904 -k 6.2.0-20-generic --force
-RUN apt-get -qy remove backport-iwlwifi-dkms
+#RUN apt-get install -yq backport-iwlwifi-dkms 
+#COPY 0001-killer-ax1690-7af0.patch /usr/src/backport-iwlwifi-9904/
+#RUN cd /usr/src/backport-iwlwifi-9904 && patch -p1 < 0001-killer-ax1690-7af0.patch
+#RUN ls /boot
+#RUN dkms remove backport-iwlwifi/9904 -k 6.2.0-20-generic && \
+#    dkms build backport-iwlwifi/9904 -k 6.2.0-20-generic && \
+#    dkms install backport-iwlwifi/9904 -k 6.2.0-20-generic --force
+#RUN mv /usr/lib/modules/6.2.0-20-generic/updates /x
+#RUN apt-get -qy remove backport-iwlwifi-dkms
 RUN apt-get -qqy clean
 RUN apt-get -qqy autoremove
-RUN wget https://www.cendio.com/downloads/clients/tl-4.14.0-clients.zip && \
+#RUN mv /x /usr/lib/modules/6.2.0-20-generic/updates
+#RUN depmod -a 6.2.0-20-generic
+RUN wget -q https://www.cendio.com/downloads/clients/tl-4.14.0-clients.zip && \
     unzip tl-4.14.0-clients.zip tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
-     dpkg --install tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
+    dpkg --install tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
     rm -rf tl-4.14.0-clients.zip tl-4.14.0-clients
 RUN passwd -d root
 RUN adduser --disabled-password --gecos "ThinUser" tluser
