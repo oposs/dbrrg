@@ -1,5 +1,8 @@
 # put anything you want todo at session startup
 # eg:
 #
+#setxkbmap -layout us -option compose:ralt,ctrl:nocaps,compose:menu
 #sudo cp wifi.yaml /etc/netplan
+#sudo chown root /etc/netplan/*
+#sudo chmod 400 /etc/netplan/*
 #sudo netplan apply

@@ -56,9 +56,13 @@ copy_exec /bin/pixz
 copy_exec /bin/tar
 copy_exec /bin/curl
 
+# make NUC13 iwlwifi work out of the box
+for pnv in /usr/lib/firmware/iwlwifi-*.pnvm; do
+  copy_file firmware $pnv
+done
+
 # get some extra drivers
 for kmod in $(find \
-	"${MODULESDIR}/updates" \
 	"${MODULESDIR}/kernel/sound" \
 	"${MODULESDIR}/kernel/drivers/usb/storage" \
 	"${MODULESDIR}/kernel/drivers/net/wireless" \
