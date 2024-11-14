@@ -66,6 +66,7 @@ done
 # get some extra drivers
 for kmod in $(find \
 	"${MODULESDIR}/kernel/sound" \
+	"${MODULESDIR}/kernel/drivers/gpu" \
 	"${MODULESDIR}/kernel/drivers/usb/storage" \
 	"${MODULESDIR}/kernel/drivers/net/wireless" \
 	"${MODULESDIR}/kernel/drivers/nvme" \
