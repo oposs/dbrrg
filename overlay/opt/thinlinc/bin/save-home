@@ -4,10 +4,10 @@ BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
 MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
 BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
 # wait for dns to come up
-systemctl --user stop pulseaudio.service
-systemctl --user stop pulseaudio.socket
-systemctl --user disable pulseaudio.service
-systemctl --user disable pulseaudio.socket
+#systemctl --user stop pulseaudio.service
+#systemctl --user stop pulseaudio.socket
+#systemctl --user disable pulseaudio.service
+#systemctl --user disable pulseaudio.socket
 cd $HOME
 if [ "" != "$BOOT_SRV" ]; then
   while true; do

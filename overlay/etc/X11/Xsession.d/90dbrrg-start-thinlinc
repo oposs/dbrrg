@@ -1,3 +1,5 @@
+# disable userspace pulseaudio since the tlclient starts its own copy as it
+# seems
 systemctl --user stop pulseaudio.service
 systemctl --user stop pulseaudio.socket
 systemctl --user disable pulseaudio.service

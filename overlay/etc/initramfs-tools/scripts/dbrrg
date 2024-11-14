@@ -91,9 +91,9 @@ mountroot()
 	[ "$quiet" != "y" ] && log_begin_msg "Installing root filesystem"
 	ramroot_mount "$ramroot"
 
-    # copy the kernel modules to the new root
-    mkdir -p ${rootmnt}/lib/modules
-    cp -rp /lib/modules/* ${rootmnt}/lib/modules
+        # copy the kernel modules to the new root
+        mkdir -p ${rootmnt}/lib/modules
+        cp -rp /lib/modules/* ${rootmnt}/lib/modules
 
 	[ "$quiet" != "y" ] && log_end_msg
 

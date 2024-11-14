@@ -1,5 +1,4 @@
-FROM ubuntu:23.04
-
+FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update
 RUN apt-get upgrade -y
@@ -9,6 +8,8 @@ RUN apt-get update
 RUN apt-get install -yq \
     systemd-sysv \
     vim \
+    wireguard \
+    resolvconf-admin \
     openssh-server \
     sudo \
     iproute2 \
@@ -27,20 +28,24 @@ RUN apt-get install -yq \
     locales \
     rsync \
     unzip \
+    bluetooth \
     initramfs-tools \
     pixz \
     curl \
     xorg \
     nodm \
     wm2 \
-    numlockx \
     dialog \
+    numlockx \
     alsa-base \
     pulseaudio \
     lxterminal \
     plymouth \
     plymouth-theme-spinner \
-    linux-image-generic
+    intel-microcode \
+    xserver-xorg-video-intel \
+    linux-image-generic \
+    linux-modules-iwlwifi-generic
 RUN chmod u+s /usr/bin/ping
 #RUN apt-get install -yq backport-iwlwifi-dkms 
 #COPY 0001-killer-ax1690-7af0.patch /usr/src/backport-iwlwifi-9904/
@@ -55,10 +60,9 @@ RUN apt-get -qqy clean
 RUN apt-get -qqy autoremove
 #RUN mv /x /usr/lib/modules/6.2.0-20-generic/updates
 #RUN depmod -a 6.2.0-20-generic
-RUN wget -q https://www.cendio.com/downloads/clients/tl-4.14.0-clients.zip && \
-    unzip tl-4.14.0-clients.zip tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
-    dpkg --install tl-4.14.0-clients/client-linux-deb/thinlinc-client_4.14.0-2324_amd64.deb && \
-    rm -rf tl-4.14.0-clients.zip tl-4.14.0-clients
+RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.17.0-3543_amd64.deb && \
+    apt install ./thinlinc-client_4.17.0-*_amd64.deb && \
+    rm -rf tl-*deb
 RUN passwd -d root
 RUN adduser --disabled-password --gecos "ThinUser" tluser
 RUN adduser tluser sudo && \

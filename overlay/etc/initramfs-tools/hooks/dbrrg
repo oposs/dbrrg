@@ -2,6 +2,7 @@
 
 # large parts stolen from https://github.com/medallia/ramroot
 set -e
+#set -x
 
 PREREQ=""
 
@@ -57,7 +58,8 @@ copy_exec /bin/tar
 copy_exec /bin/curl
 
 # make NUC13 iwlwifi work out of the box
-for pnv in /usr/lib/firmware/iwlwifi-*.pnvm; do
+
+for pnv in /usr/lib/firmware/iwlwifi-*; do
   copy_file firmware $pnv
 done
 
@@ -66,11 +68,12 @@ for kmod in $(find \
 	"${MODULESDIR}/kernel/sound" \
 	"${MODULESDIR}/kernel/drivers/usb/storage" \
 	"${MODULESDIR}/kernel/drivers/net/wireless" \
+	"${MODULESDIR}/kernel/drivers/nvme" \
 	"${MODULESDIR}/kernel/net" \
 	"${MODULESDIR}/kernel/crypto" \
 	"${MODULESDIR}/kernel/arch/x86/kernel" \
-    -name "*.ko" -print); do
-    manual_add_modules $(basename ${kmod} .ko)
+    -name "*.ko.*" -print); do
+    manual_add_modules $(basename ${kmod} .ko.zst )
 done
 
 # end
