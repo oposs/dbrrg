@@ -8,7 +8,7 @@ artifacts/
 # Backup files
 *.old
 *~
-
+__pycache__
 # OS files
 .DS_Store
 Thumbs.db
