@@ -1,2 +1,0 @@
-MODULES=netboot
-FRAMEBUFFER=y

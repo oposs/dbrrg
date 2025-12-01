@@ -1,8 +1,0 @@
-#!/bin/sh
-echo "This will OVERWRITE your /dev/sda disk with the latest boot image"
-curl --silent https://tobi.oetiker.ch/test/thinlinc-efi-boot.img | sudo dd of=/dev/sda bs=1M status=progress conv=fsync
-echo waiting for image to settle
-sleep 5
-save-home
-echo "now reboot"
-###

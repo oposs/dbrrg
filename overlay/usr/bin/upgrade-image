@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""
+upgrade-image - dbrrg firmware upgrade utility
+
+Installs or upgrades dbrrg firmware on USB drives.
+Supports A/B updates for existing dbrrg drives, or fresh install for new drives.
+"""
+
+import atexit
+import glob
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+# ============ Constants ============
+
+DEFAULT_URL = "https://tobi.oetiker.ch/dbrrg"
+EFI_PARTLABEL = "EFI-SYSTEM"
+FIRMWARE_FILES = ("vmlinuz", "initrd.img", "ramroot.sqsh")
+
+# ============ Data Classes ============
+
+@dataclass
+class DriveInfo:
+    """Information about a detected block device"""
+    device: str              # /dev/sda
+    size: str                # "16G"
+    model: str               # "SanDisk Cruzer"
+    label: str               # Filesystem label
+    is_dbrrg: bool           # True if this is a dbrrg drive
+    efi_partition: Optional[str]  # /dev/sda1 if EFI-SYSTEM exists
+    part_size_mb: int        # EFI partition size in MB
+    is_boot: bool            # True if this is the current boot device
+    has_tl_old: bool         # True if tl.old/ exists (has fallback)
+    has_tl_new: bool         # True if tl.new/ exists (pending upgrade)
+
+
+# ============ Global State ============
+
+_cleanup_items: List[Tuple[str, str]] = []  # (type, path) - "mount" or "dir"
+
+
+def _register_cleanup(cleanup_type: str, path: str) -> None:
+    """Register an item for cleanup on exit"""
+    _cleanup_items.append((cleanup_type, path))
+
+
+def _unregister_cleanup(cleanup_type: str, path: str) -> None:
+    """Remove an item from cleanup list"""
+    global _cleanup_items
+    _cleanup_items = [(t, p) for t, p in _cleanup_items if not (t == cleanup_type and p == path)]
+
+
+def _do_cleanup() -> None:
+    """Cleanup all registered items (called on exit)"""
+    for cleanup_type, path in reversed(_cleanup_items):
+        try:
+            if cleanup_type == "mount":
+                run_cmd(["umount", path], check=False, capture=True)
+            elif cleanup_type == "dir":
+                shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+
+
+atexit.register(_do_cleanup)
+
+
+# ============ Utility Functions ============
+
+def die(message: str) -> None:
+    """Print error and exit"""
+    print(f"\nERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def log(message: str) -> None:
+    """Print log message"""
+    print(f"==> {message}")
+
+
+def ensure_root() -> None:
+    """Re-execute with sudo if not running as root"""
+    if os.geteuid() != 0:
+        print("Requesting root privileges...")
+        os.execvp("sudo", ["sudo"] + sys.argv)
+
+
+def run_cmd(
+    cmd: List[str],
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a command"""
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True)
+
+
+def get_cmd_output(cmd: List[str]) -> str:
+    """Run command and return stdout, empty string on failure"""
+    try:
+        result = run_cmd(cmd, check=False, capture=True)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+# ============ Menu Functions ============
+
+def print_header(title: str) -> None:
+    """Print a section header"""
+    print()
+    print("=" * 60)
+    print(f"  {title}")
+    print("=" * 60)
+
+
+def show_menu(title: str, options: List[Tuple[str, str]], allow_back: bool = True) -> Optional[str]:
+    """Show a numbered menu and get user selection."""
+    print_header(title)
+
+    for i, (_, desc) in enumerate(options, 1):
+        print(f"  {i}) {desc}")
+
+    if allow_back:
+        print(f"  0) {'Back' if options else 'Cancel'}")
+
+    print()
+
+    while True:
+        try:
+            choice = input("Select option: ").strip()
+            if not choice:
+                continue
+
+            num = int(choice)
+            if num == 0 and allow_back:
+                return None
+            if 1 <= num <= len(options):
+                return options[num - 1][0]
+
+            print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Please enter a number.")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+
+
+def show_input(prompt: str, default: str = "") -> Optional[str]:
+    """Get text input from user"""
+    try:
+        if default:
+            result = input(f"{prompt} [{default}]: ").strip()
+            return result if result else default
+        else:
+            return input(f"{prompt}: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+
+def confirm(message: str) -> bool:
+    """Ask yes/no confirmation"""
+    try:
+        while True:
+            response = input(f"{message} (y/n): ").strip().lower()
+            if response in ("y", "yes"):
+                return True
+            if response in ("n", "no"):
+                return False
+            print("Please enter 'y' or 'n'.")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+
+
+# ============ Boot Device Detection ============
+
+def detect_boot_device() -> Optional[str]:
+    """Detect which device we booted from (if any)."""
+    sqsh_path_file = Path("/run/dbrrg/state/squashfs-path")
+    if not sqsh_path_file.exists():
+        return None
+
+    try:
+        sqsh_path = sqsh_path_file.read_text().strip()
+    except Exception:
+        return None
+
+    if not sqsh_path.startswith("/run/dbrrg/storage/efi/"):
+        return None
+
+    boot_part = get_cmd_output(["findmnt", "-n", "-o", "SOURCE", "/run/dbrrg/storage/efi"])
+    if not boot_part:
+        return None
+
+    parent = get_cmd_output(["lsblk", "-no", "PKNAME", boot_part])
+    return f"/dev/{parent}" if parent else None
+
+
+# ============ Drive Detection ============
+
+def find_efi_partition(device: str) -> Optional[str]:
+    """Find EFI-SYSTEM partition on a device"""
+    devname = os.path.basename(device)
+
+    for pattern in [f"/dev/{devname}*[0-9]", f"/dev/{devname}p*[0-9]"]:
+        for part in glob.glob(pattern):
+            partlabel = get_cmd_output(["blkid", "-s", "PARTLABEL", "-o", "value", part])
+            if partlabel == EFI_PARTLABEL:
+                return part
+
+    return None
+
+
+def examine_efi_partition(efi_partition: str) -> Tuple[bool, bool, bool]:
+    """
+    Examine EFI partition to determine if it's a dbrrg drive.
+    Returns: (is_dbrrg, has_tl_old, has_tl_new)
+    """
+    tmp_mount = tempfile.mkdtemp(prefix="dbrrg-check-")
+    _register_cleanup("dir", tmp_mount)
+
+    is_dbrrg = False
+    has_tl_old = False
+    has_tl_new = False
+
+    try:
+        result = run_cmd(["mount", "-o", "ro", efi_partition, tmp_mount], check=False, capture=True)
+        if result.returncode == 0:
+            _register_cleanup("mount", tmp_mount)
+
+            tl_path = os.path.join(tmp_mount, "tl")
+            if os.path.isdir(tl_path):
+                # Check for firmware files
+                has_vmlinuz = os.path.isfile(os.path.join(tl_path, "vmlinuz"))
+                has_ramroot = os.path.isfile(os.path.join(tl_path, "ramroot.sqsh"))
+                is_dbrrg = has_vmlinuz and has_ramroot
+
+            has_tl_old = os.path.isdir(os.path.join(tmp_mount, "tl.old"))
+            has_tl_new = os.path.isdir(os.path.join(tmp_mount, "tl.new"))
+
+            run_cmd(["umount", tmp_mount], check=False, capture=True)
+            _unregister_cleanup("mount", tmp_mount)
+    except Exception:
+        pass
+
+    shutil.rmtree(tmp_mount, ignore_errors=True)
+    _unregister_cleanup("dir", tmp_mount)
+
+    return is_dbrrg, has_tl_old, has_tl_new
+
+
+def enumerate_drives() -> List[DriveInfo]:
+    """Find all suitable block devices"""
+    drives = []
+    boot_dev = detect_boot_device()
+
+    for block_dir in Path("/sys/block").iterdir():
+        devname = block_dir.name
+
+        # Consider sd*, nvme*, vd* devices
+        if not any(devname.startswith(p) for p in ("sd", "nvme", "vd")):
+            continue
+
+        # Skip loop devices, ram disks, etc.
+        if devname.startswith(("loop", "ram", "zram")):
+            continue
+
+        device = f"/dev/{devname}"
+
+        # Get drive info
+        size = get_cmd_output(["lsblk", "-dno", "SIZE", device]) or "?"
+        model = get_cmd_output(["lsblk", "-dno", "MODEL", device]) or "Unknown"
+
+        # Check for EFI-SYSTEM partition
+        efi_part = find_efi_partition(device)
+
+        is_dbrrg = False
+        has_tl_old = False
+        has_tl_new = False
+        part_size_mb = 0
+        label = ""
+
+        if efi_part:
+            # Get partition size
+            part_size_str = get_cmd_output(["lsblk", "-bno", "SIZE", efi_part])
+            try:
+                part_size_mb = int(part_size_str) // (1024 * 1024) if part_size_str else 0
+            except ValueError:
+                part_size_mb = 0
+
+            # Get filesystem label
+            label = get_cmd_output(["blkid", "-s", "LABEL", "-o", "value", efi_part])
+
+            # Examine partition contents
+            is_dbrrg, has_tl_old, has_tl_new = examine_efi_partition(efi_part)
+
+        is_boot = boot_dev is not None and device == boot_dev
+
+        drives.append(DriveInfo(
+            device=device,
+            size=size,
+            model=model.strip(),
+            label=label,
+            is_dbrrg=is_dbrrg,
+            efi_partition=efi_part,
+            part_size_mb=part_size_mb,
+            is_boot=is_boot,
+            has_tl_old=has_tl_old,
+            has_tl_new=has_tl_new,
+        ))
+
+    return drives
+
+
+# ============ Source Selection ============
+
+def select_source() -> Optional[str]:
+    """Let user select firmware source URL"""
+    options = [
+        ("default", f"Default: {DEFAULT_URL}"),
+        ("custom", "Enter custom URL"),
+    ]
+
+    choice = show_menu("Select Firmware Source", options)
+    if choice is None:
+        return None
+
+    if choice == "default":
+        return DEFAULT_URL
+    elif choice == "custom":
+        return show_input("Enter firmware URL", DEFAULT_URL)
+
+    return None
+
+
+# ============ Firmware Download ============
+
+def download_file(url: str, dest: str) -> bool:
+    """Download a file with progress"""
+    print(f"  Downloading {os.path.basename(url)}...")
+    result = subprocess.run(
+        ["curl", "-L", "--progress-bar", "-o", dest, url],
+        check=False
+    )
+    return result.returncode == 0
+
+
+def download_firmware(base_url: str, work_dir: str) -> str:
+    """Download firmware files from URL, returns path to firmware directory"""
+    log(f"Downloading firmware from {base_url}...")
+
+    firmware_dir = os.path.join(work_dir, "firmware")
+    os.makedirs(firmware_dir, exist_ok=True)
+
+    for filename in FIRMWARE_FILES:
+        url = f"{base_url}/{filename}"
+        dest = os.path.join(firmware_dir, filename)
+        if not download_file(url, dest):
+            die(f"Failed to download {filename}")
+
+    log("Firmware downloaded successfully")
+    return firmware_dir
+
+
+def download_and_write_image(base_url: str, device: str) -> None:
+    """Download compressed image and write directly to device"""
+    image_url = f"{base_url}/dbrrg-usb.img.zst"
+
+    log(f"Downloading and writing image to {device}...")
+    print(f"  Source: {image_url}")
+
+    # curl | zstd -d | dd
+    curl_cmd = ["curl", "-L", "--progress-bar", image_url]
+    zstd_cmd = ["zstd", "-d"]
+    dd_cmd = ["dd", f"of={device}", "bs=1M", "conv=fsync"]
+
+    curl_proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE)
+    zstd_proc = subprocess.Popen(zstd_cmd, stdin=curl_proc.stdout, stdout=subprocess.PIPE)
+    dd_proc = subprocess.Popen(dd_cmd, stdin=zstd_proc.stdout)
+
+    curl_proc.stdout.close()
+    zstd_proc.stdout.close()
+    dd_proc.communicate()
+
+    if dd_proc.returncode != 0:
+        die("Failed to write image")
+
+    log("Image written successfully")
+
+
+# ============ Upgrade Operations ============
+
+def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
+    """Perform A/B upgrade on existing dbrrg drive"""
+
+    if drive.is_boot:
+        # Boot drive - use already mounted partition
+        efi_mount = "/run/dbrrg/storage/efi"
+        if not os.path.ismount(efi_mount):
+            die(f"Boot EFI partition not mounted at {efi_mount}")
+        owned_mount = False
+    else:
+        # Non-boot drive - mount it
+        efi_mount = tempfile.mkdtemp(prefix="dbrrg-upgrade-")
+        _register_cleanup("dir", efi_mount)
+
+        result = run_cmd(["mount", drive.efi_partition, efi_mount], check=False, capture=True)
+        if result.returncode != 0:
+            die(f"Failed to mount EFI partition: {result.stderr}")
+        _register_cleanup("mount", efi_mount)
+        owned_mount = True
+
+    # Download firmware
+    work_dir = tempfile.mkdtemp(prefix="dbrrg-fw-")
+    _register_cleanup("dir", work_dir)
+
+    firmware_dir = download_firmware(base_url, work_dir)
+
+    # Paths
+    tl_path = os.path.join(efi_mount, "tl")
+    tl_old_path = os.path.join(efi_mount, "tl.old")
+    tl_new_path = os.path.join(efi_mount, "tl.new")
+
+    if drive.is_boot:
+        # Additive upgrade - write to tl.new/, finalized on next boot
+        log("Installing firmware to tl.new/ (will activate on reboot)...")
+
+        if os.path.exists(tl_new_path):
+            run_cmd(["rm", "-rf", tl_new_path])
+
+        run_cmd(["mkdir", "-p", tl_new_path])
+        for filename in FIRMWARE_FILES:
+            run_cmd(["cp", os.path.join(firmware_dir, filename), tl_new_path])
+    else:
+        # Direct A/B rotation
+        log("Rotating firmware (tl -> tl.old, installing new tl)...")
+
+        if os.path.exists(tl_old_path):
+            run_cmd(["rm", "-rf", tl_old_path])
+
+        if os.path.exists(tl_path):
+            run_cmd(["mv", tl_path, tl_old_path])
+
+        if os.path.exists(tl_new_path):
+            run_cmd(["rm", "-rf", tl_new_path])
+
+        run_cmd(["mkdir", "-p", tl_path])
+        for filename in FIRMWARE_FILES:
+            run_cmd(["cp", os.path.join(firmware_dir, filename), tl_path])
+
+    run_cmd(["sync"])
+
+    # Cleanup
+    if owned_mount:
+        run_cmd(["umount", efi_mount])
+        _unregister_cleanup("mount", efi_mount)
+        shutil.rmtree(efi_mount, ignore_errors=True)
+        _unregister_cleanup("dir", efi_mount)
+
+    shutil.rmtree(work_dir, ignore_errors=True)
+    _unregister_cleanup("dir", work_dir)
+
+    if drive.is_boot:
+        log("Upgrade staged! Reboot to activate new firmware.")
+        log("If new version fails, select 'previous' at boot menu.")
+    else:
+        log("Upgrade complete! Previous version saved as fallback.")
+
+
+def do_fresh_install(drive: DriveInfo, base_url: str) -> None:
+    """Write fresh image to drive"""
+
+    print_header("WARNING - Data Loss")
+    print(f"\n  This will ERASE ALL DATA on {drive.device}!")
+    print(f"\n  Device: {drive.device}")
+    print(f"  Model:  {drive.model}")
+    print(f"  Size:   {drive.size}")
+    print()
+
+    if not confirm("  Continue?"):
+        die("Aborted")
+
+    download_and_write_image(base_url, drive.device)
+
+    # Sync and reload partition table
+    run_cmd(["sync"])
+    run_cmd(["partprobe", drive.device], check=False, capture=True)
+
+    log("Fresh install complete!")
+
+
+# ============ Drive Display ============
+
+def format_drive_info(d: DriveInfo) -> str:
+    """Format drive information for display"""
+    parts = [d.device, d.size]
+
+    if d.model and d.model != "Unknown":
+        parts.append(d.model)
+
+    if d.label:
+        parts.append(f'"{d.label}"')
+
+    return " ".join(parts)
+
+
+def format_drive_status(d: DriveInfo) -> str:
+    """Format drive status tags"""
+    tags = []
+
+    if d.is_boot:
+        tags.append("<<< BOOT DRIVE >>>")
+
+    if d.is_dbrrg:
+        tags.append("[dbrrg]")
+        if d.has_tl_old:
+            tags.append("[has fallback]")
+        if d.has_tl_new:
+            tags.append("[pending upgrade]")
+    elif d.efi_partition:
+        tags.append("[has EFI]")
+    else:
+        tags.append("[empty]")
+
+    return " ".join(tags)
+
+
+def show_drives_with_operations(drives: List[DriveInfo]) -> Optional[Tuple[DriveInfo, str]]:
+    """
+    Show all drives with their available operations.
+    Returns (selected_drive, operation) or None if cancelled.
+    """
+    print_header("Available Drives")
+    print()
+
+    # Build list of all options across all drives
+    options = []
+    option_num = 1
+
+    for d in drives:
+        # Print drive info header
+        info = format_drive_info(d)
+        status = format_drive_status(d)
+        print(f"  {info}")
+        print(f"    {status}")
+
+        # Determine available operations for this drive
+        if d.is_boot:
+            # Boot drive: only upgrade available
+            print(f"    {option_num}) Upgrade firmware (A/B, activates on reboot)")
+            options.append((d, "upgrade"))
+            option_num += 1
+        elif d.is_dbrrg:
+            # Other dbrrg drive: upgrade or overwrite
+            print(f"    {option_num}) Upgrade firmware (A/B with fallback)")
+            options.append((d, "upgrade"))
+            option_num += 1
+            print(f"    {option_num}) Overwrite entire drive (fresh install)")
+            options.append((d, "overwrite"))
+            option_num += 1
+        else:
+            # Non-dbrrg drive: only overwrite
+            print(f"    {option_num}) Install dbrrg (overwrites entire drive)")
+            options.append((d, "overwrite"))
+            option_num += 1
+
+        print()
+
+    print(f"  0) Cancel")
+    print()
+
+    while True:
+        try:
+            choice = input("Select option: ").strip()
+            if not choice:
+                continue
+
+            num = int(choice)
+            if num == 0:
+                return None
+            if 1 <= num <= len(options):
+                return options[num - 1]
+
+            print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Please enter a number.")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+
+
+# ============ Main ============
+
+def main() -> int:
+    """Main entry point"""
+    try:
+        ensure_root()
+
+        # Step 1: Select firmware source first
+        base_url = select_source()
+        if base_url is None:
+            return 0
+
+        # Ensure URL doesn't end with /
+        base_url = base_url.rstrip("/")
+
+        # Step 2: Enumerate drives
+        drives = enumerate_drives()
+        if not drives:
+            die("No suitable drives found")
+
+        # Step 3: Show drives and let user select operation
+        result = show_drives_with_operations(drives)
+        if result is None:
+            return 0
+
+        drive, operation = result
+
+        # Step 4: Execute the selected operation
+        if operation == "upgrade":
+            # Confirm upgrade
+            print_header("Confirm Upgrade")
+            print(f"\n  Target: {format_drive_info(drive)}")
+            print(f"  Source: {base_url}")
+            if drive.is_boot:
+                print(f"  Mode:   Additive (writes to tl.new/, activates on reboot)")
+            else:
+                print(f"  Mode:   A/B upgrade (current -> tl.old, new -> tl)")
+            print()
+
+            if not confirm("  Proceed?"):
+                return 0
+
+            do_ab_upgrade(drive, base_url)
+        else:
+            # Fresh install (overwrite)
+            if drive.is_boot:
+                die("Cannot overwrite the boot drive while running!")
+            do_fresh_install(drive, base_url)
+
+        # Try to save home before potential reboot
+        try:
+            subprocess.run(["save-home"], capture_output=True, timeout=60)
+        except Exception:
+            pass
+
+        print_header("Success")
+        print("\n  Operation completed successfully!")
+        if operation == "upgrade" and drive.is_boot:
+            print("\n  Reboot to activate the new firmware.")
+            print("  If it fails, select 'previous' at boot menu.")
+        print()
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n\nCancelled.")
+        return 130
+
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
