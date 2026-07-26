@@ -1249,6 +1249,29 @@ Never add a `find`/`rm -rf` sweep over `/usr/lib/firmware`. To change the
 firmware set, change the package list. `test/integration/test-firmware.sh`
 guards this.
 
+### dracut must be invoked with --no-hostonly
+
+`containers/ubuntu/Dockerfile` passes `--no-hostonly` to dracut. Removing it
+silently breaks the initramfs.
+
+dracut 110 defaults `hostonly` to `-h` unless told otherwise
+(`/usr/bin/dracut:1361`). Because `podman build` shares the host kernel, that
+makes every `instmods` call filter against **the build machine's** loaded
+modules rather than the target hardware's. Measured on this repo: 683 modules
+with hostonly versus 968 without — zram, e1000, e1000e, igb, r8169, atlantic
+and iwlwifi were all silently dropped. ZRAM's absence aborts the boot outright;
+the missing NIC drivers would have broken network/PXE boot.
+
+It also made builds non-reproducible: the initramfs varied with whatever the
+build machine happened to have loaded. `overlay` survived only because podman's
+storage driver keeps overlayfs loaded.
+
+The older dracut on 24.04 defaulted to generic, which is why the existing
+comment ("Keep it generic (no --hostonly)") was true when written and became
+false on dracut 110. `--add-drivers` is not a substitute: it bypasses the
+filter for its own arguments only (`dracut:2768`), leaving every module
+requested by `90dbrrg/module-setup.sh` still filtered.
+
 ### labwc must have zero keybindings
 
 `overlay/home/tluser/.config/labwc/rc.xml` has a `<keyboard>` section with no
