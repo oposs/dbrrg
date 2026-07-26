@@ -19,7 +19,8 @@ and creates no `autostart` file.
 ## Global Constraints
 
 - Container runtime is **podman**, never docker. The Makefile uses `CONTAINER_RUNTIME ?= podman`.
-- Never use more than 4 cores in parallel for compiles/tests — this machine is shared.
+- **Never use more than 4 cores in parallel** — this machine is shared with other users. Task 0 adds `BUILD_JOBS ?= 4` and wires it into every parallel step. Never introduce `-T0`, an uncapped `mksquashfs`, or a `podman build` without `--cpus`.
+- Graphical behaviour cannot be verified by an implementer. `make qemu-smoke` boots headless to `multi-user.target` and is the only boot check available during execution; anything involving the compositor, the ThinLinc window or keyboard behaviour belongs on the human checklist and must not be claimed as verified.
 - All comments, variable names and technical documentation in **English**.
 - Base image is exactly `ubuntu:26.04`.
 - ThinLinc client is exactly `thinlinc-client_4.20.0-4284_amd64.deb`.
@@ -50,6 +51,226 @@ and creates no `autostart` file.
 **Deleted:** `overlay/etc/default/nodm`, `overlay/etc/X11/xorg.conf.d/00-keyboard.conf`, `overlay/etc/X11/Xsession.d/39dbrrg-restore-home`, `overlay/etc/X11/Xsession.d/90dbrrg-start-thinlinc`, `overlay/home/tluser/.xsessionrc`.
 
 **Task order is a de-risking order.** Firmware fix and base upgrade land first and are independently verifiable; the session change and the audio change — the two with real hardware risk — land last and separately, so a failure is attributable.
+
+---
+
+### Task 0: Build infrastructure — core cap and headless boot smoke test
+
+Must land before any rebuild. Two independent build-system changes, added
+during execution planning rather than in the original spec.
+
+**Files:**
+- Modify: `Makefile` (add `BUILD_JOBS`, apply it, add `qemu-smoke`)
+- Modify: `containers/ubuntu/Dockerfile:104`
+- Modify: `scripts/export-rootfs.sh` (mksquashfs `-processors`)
+- Create: `scripts/check-boot-smoke.sh`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `BUILD_JOBS` make variable (default 4, overridable);
+  `make qemu-smoke` target; `scripts/check-boot-smoke.sh LOGFILE` exiting 0
+  on a clean boot, 1 otherwise. Tasks 2 and 4 use `make qemu-smoke`.
+
+- [ ] **Step 1: Add the BUILD_JOBS variable**
+
+In `Makefile`, next to the other configuration variables:
+
+```make
+# Parallelism cap. This machine is shared - never use more than this many
+# cores for compression, container builds or QEMU.
+BUILD_JOBS ?= 4
+```
+
+- [ ] **Step 2: Apply the cap to every parallel step**
+
+`Makefile` — the USB image compression currently uses `-T0` (all cores):
+
+```make
+	zstd -f -3 -T$(BUILD_JOBS) $(USB_IMAGE) -o $(USB_IMAGE_COMPRESSED)
+```
+
+`Makefile` — add `--cpus` to all three `podman build` invocations
+(`.ubuntu-container`, `.ipxe-container`, `.image-builder-container`):
+
+```make
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
+```
+
+`Makefile` — pass the cap into the rootfs export container by adding to the
+existing `-e` flags on the `$(KERNEL) $(INITRD) $(SQUASHFS)` rule:
+
+```make
+		-e BUILD_JOBS=$(BUILD_JOBS) \
+```
+
+`containers/ubuntu/Dockerfile` — the dracut compression at line 104:
+
+```dockerfile
+    --compress "zstd -3 -T4" \
+```
+
+`scripts/export-rootfs.sh` — add near the other configuration defaults:
+
+```sh
+BUILD_JOBS="${BUILD_JOBS:-4}"
+```
+
+and add `-processors` to the `mksquashfs` invocation:
+
+```sh
+mksquashfs / "$SQSH_OUTPUT" \
+    -comp "$SQUASHFS_COMP" \
+    -Xcompression-level "$SQUASHFS_COMP_LEVEL" \
+    -b 1M \
+    -processors "$BUILD_JOBS" \
+    -noappend \
+    -no-progress \
+    -e boot tmp var/tmp artifacts proc sys dev run || die "mksquashfs failed"
+```
+
+- [ ] **Step 3: Write the boot log checker**
+
+Create `scripts/check-boot-smoke.sh`:
+
+```bash
+#!/bin/bash
+# Assert that a headless QEMU boot log shows a healthy boot.
+#
+# Usage: scripts/check-boot-smoke.sh path/to/qemu-smoke.log
+
+set -uo pipefail
+
+LOG="${1:?usage: check-boot-smoke.sh LOGFILE}"
+
+if [[ ! -s "$LOG" ]]; then
+    echo "FAIL: $LOG is empty - the VM produced no serial output" >&2
+    exit 1
+fi
+
+fail=0
+
+want() {
+    if grep -qE -- "$2" "$LOG"; then
+        echo "ok   - $1"
+    else
+        echo "FAIL - $1 (no match for: $2)"
+        fail=1
+    fi
+}
+
+unwant() {
+    if grep -qE -- "$2" "$LOG"; then
+        echo "FAIL - $1"
+        grep -nE -- "$2" "$LOG" | head -3 | sed 's/^/         /'
+        fail=1
+    else
+        echo "ok   - $1"
+    fi
+}
+
+want   "reached multi-user target"   'Reached target.*[Mm]ulti-[Uu]ser'
+unwant "no i915 DMC firmware error"  'Failed to load DMC firmware'
+unwant "no GuC firmware error"       'GuC firmware.*fetch failed'
+unwant "GPU not wedged"              'declaring it wedged'
+unwant "no dracut emergency shell"   'Entering emergency mode|dracut: FATAL'
+unwant "no kernel panic"             'Kernel panic'
+
+if [[ $fail -ne 0 ]]; then
+    echo ""
+    echo "FAILED - boot log shows problems (full log: $LOG)"
+    exit 1
+fi
+
+echo ""
+echo "PASSED - clean boot"
+exit 0
+```
+
+```bash
+chmod +x scripts/check-boot-smoke.sh
+```
+
+- [ ] **Step 4: Add the qemu-smoke target**
+
+In `Makefile`, add `qemu-smoke` to the `.PHONY` list and add this target.
+
+QEMU boots the kernel and initramfs directly with `-kernel`/`-initrd` rather
+than going through syslinux. That is deliberate: driving the bootloader menu
+over a serial line is racy, and booting directly is deterministic while still
+exercising everything that matters — the kernel, the initramfs, the dbrrg
+dracut module, the squashfs mount, the overlay setup and systemd startup.
+Syslinux itself is covered by the interactive `qemu-test` target.
+
+```make
+QEMU_SMOKE_LOG := $(IMAGE_DIR)/qemu-smoke.log
+QEMU_SMOKE_TIMEOUT ?= 300
+
+qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
+	@echo "Running headless boot smoke test..."
+	@rm -f $(QEMU_SMOKE_LOG)
+	-timeout $(QEMU_SMOKE_TIMEOUT) qemu-system-x86_64 \
+		-machine type=q35,accel=kvm \
+		-cpu host,migratable=off \
+		-smp $(BUILD_JOBS) \
+		-m $(QEMU_MEMORY) \
+		-display none \
+		-no-reboot \
+		-object rng-random,filename=/dev/urandom,id=rng0 \
+		-device virtio-rng-pci,rng=rng0 \
+		-net nic,model=virtio -net user \
+		-drive file=$(QCOW2_BOOT_IMAGE),format=qcow2,if=virtio \
+		-kernel $(KERNEL) \
+		-initrd $(INITRD) \
+		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console" \
+		-serial file:$(QEMU_SMOKE_LOG)
+	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
+```
+
+- [ ] **Step 5: Verify the cap is actually applied**
+
+```bash
+grep -n 'BUILD_JOBS\|--cpus\|-T0' Makefile
+grep -n 'T0\|T4' containers/ubuntu/Dockerfile
+grep -n 'processors\|BUILD_JOBS' scripts/export-rootfs.sh
+```
+
+Expected: no `-T0` remains anywhere; `--cpus=$(BUILD_JOBS)` on all three
+`podman build` lines; `-processors "$BUILD_JOBS"` in the mksquashfs call.
+
+- [ ] **Step 6: Verify the checker logic without a VM**
+
+The checker is testable directly. Run:
+
+```bash
+printf 'Reached target Multi-User System.\n' > /tmp/smoke-good.log
+scripts/check-boot-smoke.sh /tmp/smoke-good.log; echo "exit=$?"
+
+printf 'Reached target Multi-User System.\ni915 0000:00:02.0: [drm] Failed to load DMC firmware i915/adlp_dmc.bin\n' > /tmp/smoke-bad.log
+scripts/check-boot-smoke.sh /tmp/smoke-bad.log; echo "exit=$?"
+
+: > /tmp/smoke-empty.log
+scripts/check-boot-smoke.sh /tmp/smoke-empty.log; echo "exit=$?"
+```
+
+Expected: `PASSED` and `exit=0` for the first; `FAIL - no i915 DMC firmware error` and `exit=1` for the second; `FAIL: /tmp/smoke-empty.log is empty` and `exit=1` for the third.
+
+Do not run `make qemu-smoke` in this task — there is no 26.04 image yet. Task 2 is its first real use.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Makefile containers/ubuntu/Dockerfile scripts/export-rootfs.sh scripts/check-boot-smoke.sh
+git commit -m "build: cap parallelism at 4 cores and add headless boot smoke test
+
+This machine is shared; zstd -T0 and an uncapped mksquashfs were using all
+128 cores during every build. BUILD_JOBS (default 4) now caps compression,
+container builds and QEMU.
+
+make qemu-smoke boots the image headless via -kernel/-initrd and asserts on
+the serial log, so boot regressions are catchable without a human watching a
+GTK window. Driving syslinux over serial would be racy; the interactive
+qemu-test target still covers the bootloader."
+```
 
 ---
 
@@ -296,13 +517,17 @@ lsinitrd artifacts/rootfs/initrd.img 2>/dev/null | grep -E 'dbrrg|mount-squashfs
 
 Expected: the initrd filename carries a `7.0.0-*` version, and `mount-squashfs.sh`, `setup-overlay.sh` and `parse-dbrrg.sh` are listed. If `lsinitrd` is unavailable on the host, this is covered by the boot in step 10 — a missing dbrrg module fails the boot outright.
 
-- [ ] **Step 10: Boot it**
+- [ ] **Step 10: Boot it headlessly**
 
 ```bash
-make image && make qemu-test
+make image && make qemu-smoke
 ```
 
-Expected: boots to the ThinLinc client under X11 as before. Note the squashfs size for comparison.
+Expected: `PASSED - clean boot`. Note the squashfs size for comparison.
+
+This is the first real use of the Task 0 smoke target. The i915 assertions in `check-boot-smoke.sh` are meaningful here — a QEMU guest has no Intel GPU, so they cannot fail for hardware reasons; they would only fire if something re-introduced firmware loading errors. The authoritative i915 check is on real hardware.
+
+Interactive `make qemu-test` is not run by the implementer; it is on the human checklist at the end of this plan.
 
 - [ ] **Step 11: Commit**
 
@@ -721,16 +946,23 @@ test/integration/test-session-packages.sh
 
 Expected: both print `PASSED`.
 
-- [ ] **Step 11: Boot it**
+- [ ] **Step 11: Boot it headlessly**
 
 ```bash
-make image && make qemu-test
+make image && make qemu-smoke
 ```
 
-Expected: autologin on tty1, labwc starts, ThinLinc client appears. Verify by hand inside the VM:
-- `A-Tab` and `W-Return` do nothing (no compositor keybindings)
-- `echo $WAYLAND_DISPLAY` is set in a shell on another VT
-- the ThinLinc connection dialog can go fullscreen
+Expected: `PASSED - clean boot`.
+
+Note what this does and does not prove. `qemu-smoke` boots to `multi-user.target`, so it verifies the system still boots with the X11 stack removed — it does **not** start the graphical session. Add this assertion, which is checkable from the multi-user boot:
+
+```bash
+grep -E 'getty@tty1|autologin' artifacts/images/qemu-smoke.log | head
+```
+
+Expected: tty1 getty starts with the autologin override.
+
+The compositor itself (labwc starts, ThinLinc appears, no keybindings respond) requires the interactive `make qemu-test` and is on the human checklist at the end of this plan. Do not mark this task's graphical behaviour verified.
 
 - [ ] **Step 12: Commit**
 
