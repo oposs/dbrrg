@@ -37,6 +37,9 @@ SQUASHFS_COMP ?= zstd
 SQUASHFS_COMP_LEVEL ?= 3
 EFI_PARTITION_SIZE ?= 2000
 
+# Local (non-archive) packages staged into the container build context
+OXULNK_DEB ?= /scratch/oetiker/cargo-target/oxulnk-desktop-ux-fixes-2404/debian/oxulnk-desktop_0.1.0+dev20260726183924_amd64.deb
+
 # QEMU settings
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
@@ -77,7 +80,11 @@ $(if $(shell $(CONTAINER_RUNTIME) image exists $(UBUNTU_IMAGE) 2>/dev/null || ec
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .image-builder-container))
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .ipxe-container))
 
-.ubuntu-container: containers/ubuntu/Dockerfile $(OVERLAY_FILES) | $(ROOTFS_DIR)
+vendor/oxulnk-desktop.deb: $(OXULNK_DEB)
+	@mkdir -p vendor
+	cp $< $@
+
+.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
 	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \

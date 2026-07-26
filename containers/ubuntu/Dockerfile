@@ -57,7 +57,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     parted \
     fdisk \
     gdisk \
-    python3
+    python3 \
+    vainfo \
+    intel-media-va-driver \
+    i965-va-driver
 
 # Set ping setuid
 RUN chmod u+s /usr/bin/ping
@@ -66,6 +69,11 @@ RUN chmod u+s /usr/bin/ping
 RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.20.0-4284_amd64.deb && \
     apt install -y ./thinlinc-client_4.20.0-*_amd64.deb && \
     rm -f thinlinc-client_*.deb
+
+# Install locally built packages staged by the Makefile into vendor/
+COPY vendor/oxulnk-desktop.deb /tmp/oxulnk-desktop.deb
+RUN apt-get install -yq --no-install-recommends /tmp/oxulnk-desktop.deb && \
+    rm -f /tmp/oxulnk-desktop.deb
 
 # Remove root password
 RUN passwd -d root
