@@ -45,7 +45,7 @@ dd if=artifacts/images/dbrrg-usb.img of=/dev/sdX bs=1M status=progress conv=fsyn
 
 The boot process involves several interconnected components:
 
-1. **SYSLINUX/EFI Boot** - Initial bootloader (syslinux.cfg) loads kernel with `rd.dbrrg.ramroot=` parameter
+1. **SYSLINUX/EFI Boot** - Initial bootloader (syslinux.cfg) loads kernel with `ramroot=` parameter
 
 2. **Dracut Module** (overlay/usr/lib/dracut/modules.d/90dbrrg/) - Modern initramfs using Dracut:
    - **module-setup.sh** - Installs hooks and tools into initramfs
@@ -67,7 +67,7 @@ The boot process involves several interconnected components:
 
 ## Key Configuration Files
 
-- **configs/syslinux.cfg** - Boot menu and kernel parameters. The `rd.dbrrg.ramroot=` parameter determines boot source (local: `tl/ramroot.sqsh`, network: `http://server/path/ramroot.sqsh`)
+- **configs/syslinux.cfg** - Boot menu and kernel parameters. The `ramroot=` parameter determines boot source (local: `tl/ramroot.sqsh`, network: `http://server/path/ramroot.sqsh`)
 - **overlay/home/tluser/.thinlinc/tlclient.conf** - ThinLinc client configuration
 - **overlay/home/tluser/wifi.yaml** - WiFi configuration template for netplan
 - **overlay/usr/lib/dracut/modules.d/90dbrrg/** - Dracut module for boot process
@@ -85,7 +85,7 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - System services: `overlay/etc/systemd/system/`
 - Network configuration: `overlay/etc/netplan/`
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
-- Session/compositor: `overlay/home/tluser/.config/labwc/` (`rc.xml`, `environment`)
+- Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory)
 - Session startup: `overlay/usr/local/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
 - Autologin: `overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf`
 - User defaults: `overlay/home/tluser/`
@@ -157,6 +157,11 @@ load-bearing. All three have caused shipped-image bugs.
 `find /usr/lib/firmware -type f -not -name "iwlwifi*" -delete` before
 `mksquashfs`. It silently deleted i915 GPU firmware (wedged GPUs in the
 field) and `intel-ucode` (no CPU microcode updates, ever) from every image.
+The `-type f` predicate also does not match symlinks, and a large fraction
+of `/usr/lib/firmware` is symlinks - roughly 93 of them pointed at files the
+same `find` had just deleted, so the sweep also left the tree full of
+dangling firmware symlinks with no missing-file error to flag it, a symptom
+that could otherwise be misdiagnosed as something else entirely.
 
 Ubuntu 26.04 splits `linux-firmware` per vendor, and `linux-firmware-minimal`
 satisfies `linux-image-generic`'s hard dependency via `Provides` while only
@@ -165,7 +170,7 @@ satisfies `linux-image-generic`'s hard dependency via `Provides` while only
 
 Never add a `find`/`rm -rf` sweep over `/usr/lib/firmware`. To change the
 firmware set, change the package list. `test/integration/test-firmware.sh`
-guards this.
+guards this - run via `make test`.
 
 ### dracut must be invoked with --no-hostonly
 
@@ -194,8 +199,12 @@ requested by `90dbrrg/module-setup.sh` still filtered.
 
 ### labwc must have zero keybindings
 
-`overlay/home/tluser/.config/labwc/rc.xml` has a `<keyboard>` section with no
-`<default />` and no `<keybind>` entries. This is mandatory.
+`overlay/etc/dbrrg/labwc/rc.xml` has a `<keyboard>` section with no
+`<default />` and no `<keybind>` entries. This is mandatory. The config
+directory lives at `/etc/dbrrg/labwc`, not under `$HOME` - see
+[Persistent Home Directory](#persistent-home-directory) for why - and is
+selected via `labwc -C /etc/dbrrg/labwc` in
+`overlay/etc/profile.d/10-dbrrg-session.sh`.
 
 labwc 0.9.3 does not implement `zwp_keyboard_shortcuts_inhibit_manager_v1`,
 even though Xwayland requests inhibition when an X11 client calls
@@ -205,28 +214,37 @@ key combination that can never reach the remote ThinLinc session.
 
 If a future labwc gains this support, this constraint can be relaxed - check
 for `wlr_keyboard_shortcuts_inhibit_v1_create` in the labwc binary's
-undefined symbols. `test/integration/test-session-packages.sh` guards this.
+undefined symbols. `test/integration/test-session-packages.sh` guards this -
+run via `make test`.
 
 ## Known Limitations
 
 Open items found during the Ubuntu 26.04/Wayland/PipeWire upgrade. These are
 not fixed; they are recorded so they aren't rediscovered from scratch.
 
-### x11-xserver-utils is no longer installed
+### x11-xserver-utils: investigated and disproved
 
 `xrandr`, `xset` and `xrdb` were a hard dependency of the `xorg` metapackage,
-which was removed when the session moved to labwc/Wayland. If the ThinLinc
-client shells out to `xrandr` for fullscreen resolution negotiation, that call
-now fails silently. Unverified - needs a check on real hardware.
+which was removed when the session moved to labwc/Wayland. This was flagged
+as a risk (ThinLinc shelling out to `xrandr` for fullscreen resolution
+negotiation) and then checked: `vncviewer`/`tlclient.bin` dlopen
+`libXrandr.so.2`, which **is** still present in the image, and grepping for
+the executables `xrandr`/`xset`/`xrdb` across `/opt/thinlinc/` returns zero
+hits. ThinLinc uses the RandR *library*, never the CLI tools that
+`x11-xserver-utils` shipped, so removing that package is safe.
 
-### Session respawn has no backoff
+## Debugging
 
-`overlay/usr/local/bin/dbrrg-session` has no error handling, and `labwc -S`
-exits as soon as the script returns. Because the tty1 login shell `exec`s
-labwc, that kills the `agetty` -> `login` -> shell chain outright.
-`getty@tty1` uses systemd's default `Restart=always`/`RestartSec=0`, so a
-fast-crashing client can exhaust `StartLimitBurst` and leave tty1 dead (blank
-screen) until `systemctl reset-failed` or a reboot.
+With zero labwc keybindings ([Standing Constraints](#standing-constraints))
+and no menu, `foot` has no launch path from within the session itself. Reach
+it from a VT (Ctrl+Alt+F2, say) or over SSH instead:
+
+```bash
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 foot
+```
+
+Do not add a keybinding to launch it - that would violate the
+zero-keybindings constraint.
 
 ## Potential Enhancements
 

@@ -2,7 +2,7 @@ network:
     version: 2
     renderer: networkd
     wifis:
-        # try iwlist to figure out the name
+        # try "iw dev <iface> scan" to figure out the name
         "device name of your wifi card":
             dhcp4: true
             access-points:

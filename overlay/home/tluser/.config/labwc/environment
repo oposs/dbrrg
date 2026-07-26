@@ -1,5 +1,0 @@
-# Keyboard configuration. Replaces the Xorg InputClass that used to live in
-# /etc/X11/xorg.conf.d/00-keyboard.conf.
-XKB_DEFAULT_MODEL=pc105
-XKB_DEFAULT_LAYOUT=us
-XKB_DEFAULT_OPTIONS=compose:menu,ctrl:nocaps

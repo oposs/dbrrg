@@ -39,7 +39,7 @@ present "Xwayland"         'usr/bin/Xwayland$'
 present "foot"             'usr/bin/foot$'
 present "session script"   'usr/local/bin/dbrrg-session$'
 present "restore-home"     'usr/local/bin/dbrrg-restore-home$'
-present "labwc rc.xml"     'home/tluser/\.config/labwc/rc\.xml$'
+present "labwc rc.xml"     'etc/dbrrg/labwc/rc\.xml$'
 present "tty1 autologin"   'getty@tty1\.service\.d/autologin\.conf$'
 
 absent  "Xorg server"      'usr/lib/xorg/Xorg$'
@@ -52,8 +52,8 @@ absent  "lxterminal"       'usr/bin/lxterminal$'
 # binding it owns can never reach the remote ThinLinc session.
 RC=$(mktemp -d)
 trap 'chmod -R u+rwX "$RC" 2>/dev/null; rm -rf "$LIST" "$RC"' EXIT
-if unsquashfs -q -f -d "$RC" "$SQSH" 'home/tluser/.config/labwc/rc.xml' >/dev/null 2>&1; then
-    if grep -qE '<keybind|<default */>' "$RC/home/tluser/.config/labwc/rc.xml"; then
+if unsquashfs -q -f -d "$RC" "$SQSH" 'etc/dbrrg/labwc/rc.xml' >/dev/null 2>&1; then
+    if grep -qE '<keybind|<default */>' "$RC/etc/dbrrg/labwc/rc.xml"; then
         echo "FAIL - rc.xml registers keybindings (breaks remote key passthrough)"
         fail=1
     else

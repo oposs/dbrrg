@@ -44,7 +44,7 @@ OXULNK_DEB ?= /scratch/oetiker/cargo-target/oxulnk-desktop-ux-fixes-2404/debian/
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test help
 
 all: image
 	@echo "✓ Build complete!"
@@ -58,6 +58,7 @@ help:
 	@echo "  ipxe              - Build iPXE network boot loaders"
 	@echo "  image             - Build bootable USB image"
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
+	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  clean             - Remove artifacts"
 	@echo "  help              - Show this help"
 	@echo ""
@@ -68,6 +69,7 @@ help:
 	@echo "  QEMU_MEMORY=2G             - QEMU RAM allocation"
 	@echo "  QCOW2_TEST_SIZE=4G         - Size for qemu-test"
 	@echo "  QEMU_EXTRA_ARGS=\"\"          - Additional QEMU arguments"
+	@echo "  OXULNK_DEB=path/to.deb     - Locally built oxulnk-desktop package"
 
 $(ARTIFACT_DIR) $(ROOTFS_DIR) $(IMAGE_DIR):
 	mkdir -p $@
@@ -81,6 +83,10 @@ $(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || e
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .ipxe-container))
 
 vendor/oxulnk-desktop.deb: $(OXULNK_DEB)
+	@test -f "$(OXULNK_DEB)" || { \
+	  echo "ERROR: oxulnk-desktop package not found at:"; \
+	  echo "  $(OXULNK_DEB)"; \
+	  echo "Set OXULNK_DEB=/path/to/oxulnk-desktop_*.deb"; exit 1; }
 	@mkdir -p vendor
 	cp $< $@
 
@@ -243,6 +249,10 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console" \
 		-serial file:$(QEMU_SMOKE_LOG)
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
+
+test: rootfs
+	@test/integration/test-firmware.sh
+	@test/integration/test-session-packages.sh
 
 clean:
 	rm -rf $(ARTIFACT_DIR)/*

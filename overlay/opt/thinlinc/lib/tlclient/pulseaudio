@@ -29,10 +29,16 @@ unset LD_LIBRARY_PATH
 log() { echo "dbrrg-tlclient-audio: $*" >&2; }
 
 # --- locate the module specification among the arguments --------------------
+# Match only module-native-protocol-tcp, the module this wrapper knows how to
+# translate. tlclient.bin's argv can contain other module-* literals
+# (module-tunnel-sink-new, module-always-sink, module-suspend-on-idle, ...);
+# matching any module-* and taking the last one risked translating the wrong
+# module if a future client version passed more than one -L spec, silently
+# appending auth-anonymous=true to a module with no such argument.
 spec=
 for arg in "$@"; do
     case "$arg" in
-        module-*) spec="$arg" ;;
+        module-native-protocol-tcp*) spec="$arg" ;;
     esac
 done
 
@@ -45,12 +51,14 @@ fi
 module_name=${spec%% *}
 listen=
 port=
+set -f
 for token in $spec; do
     case "$token" in
         listen=*) listen=$token ;;
         port=*)   port=$token ;;
     esac
 done
+set +f
 
 set -- "$module_name"
 [ -n "$listen" ] && set -- "$@" "$listen"

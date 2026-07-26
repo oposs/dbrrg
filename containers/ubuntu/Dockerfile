@@ -3,9 +3,17 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # Update and install base packages in single layer to avoid stale cache.
 #
-# xcursor-themes ships the only Xcursor pointer theme in this image. It used
-# to arrive transitively via lxterminal (GTK) / xorg; both are gone now, so
-# without it labwc has no cursor image to load and the pointer is invisible.
+# xcursor-themes ships Xcursor pointer theme files (whiteglass, redglass,
+# handhelds) in this image. It used to arrive transitively via lxterminal
+# (GTK) / xorg; both are gone now. Installing the package alone is not
+# enough to get a visible pointer, though: it registers its themes with
+# update-alternatives at priority 20, below x11-common's core.theme at
+# priority 30, so the x-cursor-theme alternative still resolves to
+# core.theme - which inherits from "core", the X server's built-in cursor
+# font, meaningless to a Wayland compositor. XCURSOR_THEME in
+# overlay/etc/dbrrg/labwc/environment is what actually selects
+# xcursor-themes' whiteglass theme; both the package and that setting are
+# required.
 RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     --no-install-recommends --no-install-suggests \
     systemd-sysv \
