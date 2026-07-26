@@ -1,3 +1,10 @@
+#!/bin/sh
+# Restore /home/tluser from the boot medium.
+#
+# Network boot: fetch home.pkg from the boot server over HTTP.
+# USB boot:     untar home.tar.gz from the EFI-SYSTEM partition.
+#
+# Formerly /etc/X11/Xsession.d/39dbrrg-restore-home.
 BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
 MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
 BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')

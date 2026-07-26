@@ -1,0 +1,13 @@
+#!/bin/sh
+# Body of the graphical session, run by labwc via 'labwc -S'.
+#
+# Ordering matches the Xsession.d hooks this replaces:
+#   39dbrrg-restore-home  -> dbrrg-restore-home
+#   90dbrrg-start-thinlinc -> tlclient, then save-home
+#
+# When this script returns, labwc terminates and the tty1 login starts a
+# fresh session. Leaving the compositor running would strand the user on a
+# bare desktop with no keybindings and no way to recover.
+/usr/local/bin/dbrrg-restore-home
+/opt/thinlinc/bin/tlclient
+/opt/thinlinc/bin/save-home

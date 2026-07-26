@@ -12,6 +12,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     openssh-server \
     sudo \
     curl \
+    ca-certificates \
     iproute2 \
     iw \
     wpasupplicant \
@@ -27,19 +28,19 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     rsync \
     unzip \
     bluetooth \
-    xorg \
-    nodm \
-    wm2 \
+    labwc \
+    xwayland \
+    foot \
+    foot-terminfo \
+    xfonts-base \
+    fonts-dejavu-core \
     dialog \
-    numlockx \
     alsa-base \
     pulseaudio \
-    lxterminal \
     plymouth \
     plymouth-themes \
     plymouth-theme-spinner \
     intel-microcode \
-    xserver-xorg-video-intel \
     linux-image-generic \
     linux-modules-iwlwifi-generic \
     linux-firmware-minimal \

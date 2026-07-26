@@ -1,7 +1,0 @@
-# disable userspace pulseaudio since the tlclient starts its own copy as it
-# seems
-systemctl --user stop pulseaudio.service
-systemctl --user stop pulseaudio.socket
-systemctl --user disable pulseaudio.service
-systemctl --user disable pulseaudio.socket
-(/opt/thinlinc/bin/tlclient;/opt/thinlinc/bin/save-home)&
