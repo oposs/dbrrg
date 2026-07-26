@@ -40,8 +40,14 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     fonts-dejavu-core \
     xcursor-themes \
     dialog \
-    alsa-base \
-    pulseaudio \
+    pipewire \
+    pipewire-pulse \
+    pipewire-alsa \
+    pipewire-audio \
+    wireplumber \
+    libspa-0.2-bluetooth \
+    pulseaudio-utils \
+    alsa-utils \
     plymouth \
     plymouth-themes \
     plymouth-theme-spinner \
@@ -90,9 +96,6 @@ RUN adduser --disabled-password --gecos "ThinUser" tluser && \
     adduser tluser sudo && \
     echo "tluser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     adduser tluser audio
-
-# Disable pulseaudio auto-start
-RUN sudo -u tluser systemctl --user disable pulseaudio.service pulseaudio.socket || true
 
 # Apply overlay
 ADD overlay/ /__overlay
