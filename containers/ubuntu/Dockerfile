@@ -101,7 +101,7 @@ RUN KERNEL_VERSION=$(ls /lib/modules | head -1) && \
     dracut --force --add "dbrrg plymouth" \
     --omit "drm dash crypt dmraid multipath iscsi nfs nbd fcoe fcoe-uefi biosdevname dmsquash-live dmsquash-live-ntfs" \
     --omit-drivers "btrfs xfs reiserfs jfs ocfs2 gfs2 f2fs bcachefs cramfs minix hfs hfsplus qnx4 qnx6 ufs nouveau radeon amdgpu i915 vmwgfx qxl virtio-gpu bochs" \
-    --compress "zstd -3 -T0" \
+    --compress "zstd -3 -T4" \
     --kver $KERNEL_VERSION
 
 # Cleanup - remove unnecessary firmware (keep only Intel NUC essentials)

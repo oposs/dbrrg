@@ -10,6 +10,7 @@ SQUASHFS_COMP="${SQUASHFS_COMP:-zstd}"
 SQUASHFS_COMP_LEVEL="${SQUASHFS_COMP_LEVEL:-3}"
 VERSION="${VERSION:-dev}"
 BUILD_ID="${BUILD_ID:-unknown}"
+BUILD_JOBS="${BUILD_JOBS:-4}"
 
 log_info "Rootfs Export"
 log_info "  Version:     $VERSION"
@@ -46,6 +47,7 @@ mksquashfs / "$SQSH_OUTPUT" \
     -comp "$SQUASHFS_COMP" \
     -Xcompression-level "$SQUASHFS_COMP_LEVEL" \
     -b 1M \
+    -processors "$BUILD_JOBS" \
     -noappend \
     -no-progress \
     -e boot tmp var/tmp artifacts proc sys dev run || die "mksquashfs failed"

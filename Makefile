@@ -7,6 +7,10 @@ BUILD_ID := $(shell date -u +%Y%m%d-%H%M%S)
 
 CONTAINER_RUNTIME ?= podman
 
+# Parallelism cap. This machine is shared - never use more than this many
+# cores for compression, container builds or QEMU.
+BUILD_JOBS ?= 4
+
 # Directories
 ARTIFACT_DIR := artifacts
 ROOTFS_DIR := $(ARTIFACT_DIR)/rootfs
@@ -37,7 +41,7 @@ EFI_PARTITION_SIZE ?= 2000
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke help
 
 all: image
 	@echo "✓ Build complete!"
@@ -75,7 +79,7 @@ $(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || ec
 
 .ubuntu-container: containers/ubuntu/Dockerfile $(OVERLAY_FILES) | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
 		--build-arg VERSION=$(VERSION) \
 		-t $(UBUNTU_IMAGE) \
 		-f containers/ubuntu/Dockerfile \
@@ -91,6 +95,7 @@ $(KERNEL) $(INITRD) $(SQUASHFS): .ubuntu-container | $(ROOTFS_DIR)
 		-e SQUASHFS_COMP_LEVEL=$(SQUASHFS_COMP_LEVEL) \
 		-e VERSION=$(VERSION) \
 		-e BUILD_ID=$(BUILD_ID) \
+		-e BUILD_JOBS=$(BUILD_JOBS) \
 		$(UBUNTU_IMAGE) \
 		/scripts/export-rootfs.sh
 
@@ -99,7 +104,7 @@ rootfs: $(KERNEL) $(INITRD) $(SQUASHFS)
 # iPXE build
 .ipxe-container: containers/ipxe/Dockerfile | $(ROOTFS_DIR)
 	@echo "Building iPXE container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
 		-t $(IPXE_BUILDER) \
 		-f containers/ipxe/Dockerfile \
 		containers/ipxe
@@ -116,7 +121,7 @@ ipxe: $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI)
 
 .image-builder-container: containers/image-builder/Dockerfile | $(IMAGE_DIR)
 	@echo "Building image builder container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
 		-t $(IMAGE_BUILDER) \
 		-f containers/image-builder/Dockerfile \
 		containers/image-builder
@@ -137,7 +142,7 @@ $(USB_IMAGE): rootfs .image-builder-container | $(IMAGE_DIR)
 
 $(USB_IMAGE_COMPRESSED): $(USB_IMAGE)
 	@echo "Compressing USB image..."
-	zstd -f -3 -T0 $(USB_IMAGE) -o $(USB_IMAGE_COMPRESSED)
+	zstd -f -3 -T$(BUILD_JOBS) $(USB_IMAGE) -o $(USB_IMAGE_COMPRESSED)
 	@echo "✓ Compressed: $$(du -h $(USB_IMAGE_COMPRESSED) | cut -f1) (was $$(du -h $(USB_IMAGE) | cut -f1))"
 
 $(USB_CHECKSUM): $(USB_IMAGE_COMPRESSED)
@@ -201,6 +206,36 @@ qemu-test: $(QCOW2_BOOT_IMAGE) $(QCOW2_TARGET_IMAGE) $(QCOW2_EMPTY_IMAGE)
 		-drive file=$(QCOW2_EMPTY_IMAGE),format=qcow2,if=virtio \
 		-serial mon:stdio \
 		$(QEMU_EXTRA_ARGS)
+
+# Headless boot smoke test. QEMU boots the kernel and initramfs directly with
+# -kernel/-initrd rather than going through syslinux. That is deliberate:
+# driving the bootloader menu over a serial line is racy, and booting
+# directly is deterministic while still exercising everything that matters -
+# the kernel, the initramfs, the dbrrg dracut module, the squashfs mount, the
+# overlay setup and systemd startup. Syslinux itself is covered by the
+# interactive qemu-test target.
+QEMU_SMOKE_LOG := $(IMAGE_DIR)/qemu-smoke.log
+QEMU_SMOKE_TIMEOUT ?= 300
+
+qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
+	@echo "Running headless boot smoke test..."
+	@rm -f $(QEMU_SMOKE_LOG)
+	-timeout $(QEMU_SMOKE_TIMEOUT) qemu-system-x86_64 \
+		-machine type=q35,accel=kvm \
+		-cpu host,migratable=off \
+		-smp $(BUILD_JOBS) \
+		-m $(QEMU_MEMORY) \
+		-display none \
+		-no-reboot \
+		-object rng-random,filename=/dev/urandom,id=rng0 \
+		-device virtio-rng-pci,rng=rng0 \
+		-net nic,model=virtio -net user \
+		-drive file=$(QCOW2_BOOT_IMAGE),format=qcow2,if=virtio \
+		-kernel $(KERNEL) \
+		-initrd $(INITRD) \
+		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console" \
+		-serial file:$(QEMU_SMOKE_LOG)
+	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
 
 clean:
 	rm -rf $(ARTIFACT_DIR)/*
