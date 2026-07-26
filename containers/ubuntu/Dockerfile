@@ -1,7 +1,11 @@
 FROM ubuntu:26.04
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Update and install base packages in single layer to avoid stale cache
+# Update and install base packages in single layer to avoid stale cache.
+#
+# xcursor-themes ships the only Xcursor pointer theme in this image. It used
+# to arrive transitively via lxterminal (GTK) / xorg; both are gone now, so
+# without it labwc has no cursor image to load and the pointer is invisible.
 RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     --no-install-recommends --no-install-suggests \
     systemd-sysv \
@@ -34,6 +38,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     foot-terminfo \
     xfonts-base \
     fonts-dejavu-core \
+    xcursor-themes \
     dialog \
     alsa-base \
     pulseaudio \

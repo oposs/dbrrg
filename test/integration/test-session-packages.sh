@@ -51,7 +51,7 @@ absent  "lxterminal"       'usr/bin/lxterminal$'
 # it does not implement zwp_keyboard_shortcuts_inhibit_manager_v1 and any
 # binding it owns can never reach the remote ThinLinc session.
 RC=$(mktemp -d)
-trap 'rm -rf "$LIST" "$RC"' EXIT
+trap 'chmod -R u+rwX "$RC" 2>/dev/null; rm -rf "$LIST" "$RC"' EXIT
 if unsquashfs -q -f -d "$RC" "$SQSH" 'home/tluser/.config/labwc/rc.xml' >/dev/null 2>&1; then
     if grep -qE '<keybind|<default */>' "$RC/home/tluser/.config/labwc/rc.xml"; then
         echo "FAIL - rc.xml registers keybindings (breaks remote key passthrough)"
