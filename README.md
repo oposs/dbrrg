@@ -1,4 +1,4 @@
-# dbrrg - Docker-Based RamRoot Generator v2.0
+# dbrrg - Docker-Based RamRoot Generator v3.0
 
 Modern diskless Linux system using SquashFS + OverlayFS + ZRAM + Dracut.
 

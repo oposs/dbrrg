@@ -63,7 +63,7 @@ The boot process involves several interconnected components:
 
 4. **Un-dockerization** (overlay/etc/systemd/system/un-dockerize.service) - First-boot service removes Docker artifacts, fixes /etc/hosts, reconfigures systemd-resolved
 
-5. **Home Persistence** - X session scripts restore home directory at login (39dbrrg-restore-home) and save on logout (90dbrrg-start-thinlinc calls save-home)
+5. **Home Persistence** - `overlay/usr/local/bin/dbrrg-session` (run by labwc via `labwc -S`) restores the home directory at login (`dbrrg-restore-home`) and saves it on logout, after the ThinLinc client exits (`save-home`)
 
 ## Key Configuration Files
 
@@ -85,7 +85,9 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - System services: `overlay/etc/systemd/system/`
 - Network configuration: `overlay/etc/netplan/`
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
-- X11/display settings: `overlay/etc/X11/`, `overlay/etc/default/nodm`
+- Session/compositor: `overlay/home/tluser/.config/labwc/` (`rc.xml`, `environment`)
+- Session startup: `overlay/usr/local/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
+- Autologin: `overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf`
 - User defaults: `overlay/home/tluser/`
 
 After modifying overlay files, rebuild with `make image`.
@@ -114,7 +116,7 @@ The containers/ubuntu/Dockerfile follows several important patterns:
 
 1. **SSH Host Keys**: Host keys are removed before building initramfs and regenerated on first boot via `regenerate_ssh_host_keys.service`. This ensures each deployed instance has unique SSH keys.
 
-2. **Initramfs Generation**: The build uses Dracut (`dracut --force --add "dbrrg plymouth"`) to create initramfs. The custom module in `overlay/usr/lib/dracut/modules.d/90dbrrg/` is automatically included. This must run AFTER overlay files are applied and SSH keys are removed.
+2. **Initramfs Generation**: The build uses Dracut (`dracut --force --no-hostonly --add "dbrrg plymouth"`) to create initramfs. The `--no-hostonly` flag is mandatory - see [Standing Constraints](#standing-constraints). The custom module in `overlay/usr/lib/dracut/modules.d/90dbrrg/` is automatically included. This must run AFTER overlay files are applied and SSH keys are removed.
 
 3. **Systemd Service Management**: Services are explicitly enabled/disabled during build to control first-boot behavior. The `un-dockerize.service` runs once and disables itself.
 
@@ -143,6 +145,88 @@ The system persists systemd's machine-id across reboots by storing it in `/confi
 - The machine-id is generated once on first boot and reused thereafter
 
 The EFI partition `/config/` directory can also store other persistent configuration.
+
+## Standing Constraints
+
+Three rules in this repository look like ordinary configuration but are
+load-bearing. All three have caused shipped-image bugs.
+
+### Firmware is selected by package, never by cleanup
+
+`scripts/export-rootfs.sh` once ran
+`find /usr/lib/firmware -type f -not -name "iwlwifi*" -delete` before
+`mksquashfs`. It silently deleted i915 GPU firmware (wedged GPUs in the
+field) and `intel-ucode` (no CPU microcode updates, ever) from every image.
+
+Ubuntu 26.04 splits `linux-firmware` per vendor, and `linux-firmware-minimal`
+satisfies `linux-image-generic`'s hard dependency via `Provides` while only
+*recommending* the rest. The installed set is therefore exactly what
+`containers/ubuntu/Dockerfile` lists, given `--no-install-recommends`.
+
+Never add a `find`/`rm -rf` sweep over `/usr/lib/firmware`. To change the
+firmware set, change the package list. `test/integration/test-firmware.sh`
+guards this.
+
+### dracut must be invoked with --no-hostonly
+
+`containers/ubuntu/Dockerfile` passes `--no-hostonly` to dracut. Removing it
+silently breaks the initramfs.
+
+dracut 110 defaults `hostonly` to `-h` unless told otherwise
+(`/usr/bin/dracut:1361`). Because `podman build` shares the host kernel, that
+makes every `instmods` call filter against **the build machine's** loaded
+modules rather than the target hardware's. Measured on this repo: the shipped
+initramfs went from 683 modules to 955 once the flag was added - zram, e1000,
+e1000e, igb, r8169, atlantic and iwlwifi had all been silently dropped. ZRAM's
+absence aborts the boot outright; the missing NIC drivers would have broken
+network/PXE boot. (An isolated probe build without `--omit-drivers` showed 968;
+955 is the real figure for the shipped flag set.)
+
+It also made builds non-reproducible: the initramfs varied with whatever the
+build machine happened to have loaded. `overlay` survived only because podman's
+storage driver keeps overlayfs loaded.
+
+The older dracut on 24.04 defaulted to generic, which is why the existing
+comment ("Keep it generic (no --hostonly)") was true when written and became
+false on dracut 110. `--add-drivers` is not a substitute: it bypasses the
+filter for its own arguments only (`dracut:2768`), leaving every module
+requested by `90dbrrg/module-setup.sh` still filtered.
+
+### labwc must have zero keybindings
+
+`overlay/home/tluser/.config/labwc/rc.xml` has a `<keyboard>` section with no
+`<default />` and no `<keybind>` entries. This is mandatory.
+
+labwc 0.9.3 does not implement `zwp_keyboard_shortcuts_inhibit_manager_v1`,
+even though Xwayland requests inhibition when an X11 client calls
+`XGrabKeyboard` and wlroots implements the server side. A client therefore
+cannot reclaim keys the compositor has bound, so every labwc keybinding is a
+key combination that can never reach the remote ThinLinc session.
+
+If a future labwc gains this support, this constraint can be relaxed - check
+for `wlr_keyboard_shortcuts_inhibit_v1_create` in the labwc binary's
+undefined symbols. `test/integration/test-session-packages.sh` guards this.
+
+## Known Limitations
+
+Open items found during the Ubuntu 26.04/Wayland/PipeWire upgrade. These are
+not fixed; they are recorded so they aren't rediscovered from scratch.
+
+### x11-xserver-utils is no longer installed
+
+`xrandr`, `xset` and `xrdb` were a hard dependency of the `xorg` metapackage,
+which was removed when the session moved to labwc/Wayland. If the ThinLinc
+client shells out to `xrandr` for fullscreen resolution negotiation, that call
+now fails silently. Unverified - needs a check on real hardware.
+
+### Session respawn has no backoff
+
+`overlay/usr/local/bin/dbrrg-session` has no error handling, and `labwc -S`
+exits as soon as the script returns. Because the tty1 login shell `exec`s
+labwc, that kills the `agetty` -> `login` -> shell chain outright.
+`getty@tty1` uses systemd's default `Restart=always`/`RestartSec=0`, so a
+fast-crashing client can exhaust `StartLimitBurst` and leave tty1 dead (blank
+screen) until `systemctl reset-failed` or a reboot.
 
 ## Potential Enhancements
 

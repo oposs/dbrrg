@@ -1,7 +1,7 @@
 # Makefile for dbrrg - SquashFS + OverlayFS + ZRAM + Dracut
 
 PROJECT_NAME := dbrrg
-VERSION := 2.0.0
+VERSION := 3.0.0
 BUILD_DATE := $(shell date -u +%Y-%m-%d)
 BUILD_ID := $(shell date -u +%Y%m%d-%H%M%S)
 
