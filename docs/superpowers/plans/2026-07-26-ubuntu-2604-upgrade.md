@@ -1257,10 +1257,12 @@ silently breaks the initramfs.
 dracut 110 defaults `hostonly` to `-h` unless told otherwise
 (`/usr/bin/dracut:1361`). Because `podman build` shares the host kernel, that
 makes every `instmods` call filter against **the build machine's** loaded
-modules rather than the target hardware's. Measured on this repo: 683 modules
-with hostonly versus 968 without — zram, e1000, e1000e, igb, r8169, atlantic
-and iwlwifi were all silently dropped. ZRAM's absence aborts the boot outright;
-the missing NIC drivers would have broken network/PXE boot.
+modules rather than the target hardware's. Measured on this repo: the shipped
+initramfs went from 683 modules to 955 once the flag was added — zram, e1000,
+e1000e, igb, r8169, atlantic and iwlwifi had all been silently dropped. ZRAM's
+absence aborts the boot outright; the missing NIC drivers would have broken
+network/PXE boot. (An isolated probe build without `--omit-drivers` showed 968;
+955 is the real figure for the shipped flag set.)
 
 It also made builds non-reproducible: the initramfs varied with whatever the
 build machine happened to have loaded. `overlay` survived only because podman's
