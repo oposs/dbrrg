@@ -79,7 +79,7 @@ $(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || ec
 
 .ubuntu-container: containers/ubuntu/Dockerfile $(OVERLAY_FILES) | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \
 		-t $(UBUNTU_IMAGE) \
 		-f containers/ubuntu/Dockerfile \
@@ -104,7 +104,7 @@ rootfs: $(KERNEL) $(INITRD) $(SQUASHFS)
 # iPXE build
 .ipxe-container: containers/ipxe/Dockerfile | $(ROOTFS_DIR)
 	@echo "Building iPXE container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		-t $(IPXE_BUILDER) \
 		-f containers/ipxe/Dockerfile \
 		containers/ipxe
@@ -121,7 +121,7 @@ ipxe: $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI)
 
 .image-builder-container: containers/image-builder/Dockerfile | $(IMAGE_DIR)
 	@echo "Building image builder container..."
-	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		-t $(IMAGE_BUILDER) \
 		-f containers/image-builder/Dockerfile \
 		containers/image-builder
