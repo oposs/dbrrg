@@ -93,8 +93,11 @@ BUILD_JOBS ?= 4
 (`.ubuntu-container`, `.ipxe-container`, `.image-builder-container`):
 
 ```make
-	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpus=$(BUILD_JOBS) \
+	$(CONTAINER_RUNTIME) build --pull --progress=plain \
+		--cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 ```
+
+**Corrected during execution.** The original plan text said `--cpus=$(BUILD_JOBS)`, which does not exist: podman 4.9.3's `build` subcommand offers only `--cpu-period`, `--cpu-quota`, `--cpuset-cpus` and `--cpuset-mems`. (`--cpus` exists on `podman run`, not `build`.) The CFS quota above is the equivalent — it caps total CPU time at `BUILD_JOBS` core-equivalents. `--cpuset-cpus` was rejected as the alternative because pinning to specific physical cores on a shared machine risks colliding with other users' pinned work.
 
 `Makefile` — pass the cap into the rootfs export container by adding to the
 existing `-e` flags on the `$(KERNEL) $(INITRD) $(SQUASHFS)` rule:
