@@ -36,7 +36,6 @@ log_success "Initramfs exported"
 # Cleanup
 log_step "Cleaning up rootfs..."
 rm -rf /boot/* /.dockerenv /etc/machine-id /var/lib/dbus/machine-id /var/log/* /tmp/* /var/tmp/*
-find /usr/lib/firmware -type f -not -name "iwlwifi*" -delete 2>/dev/null || true
 log_success "Cleanup complete"
 
 # Create squashfs

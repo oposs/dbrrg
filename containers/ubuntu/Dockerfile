@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 ARG DEBIAN_FRONTEND=noninteractive
 
 # Update and install base packages in single layer to avoid stale cache
@@ -13,7 +13,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     sudo \
     curl \
     iproute2 \
-    wireless-tools \
+    iw \
     wpasupplicant \
     netplan.io \
     less \
@@ -42,6 +42,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     xserver-xorg-video-intel \
     linux-image-generic \
     linux-modules-iwlwifi-generic \
+    linux-firmware-minimal \
+    linux-firmware-intel-graphics \
+    linux-firmware-intel-wireless \
+    linux-firmware-realtek \
+    firmware-sof-signed \
     dracut \
     dracut-network \
     isc-dhcp-client \
@@ -58,9 +63,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
 RUN chmod u+s /usr/bin/ping
 
 # Install ThinLinc
-RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.19.0-4005_amd64.deb && \
-    apt install -y ./thinlinc-client_4.19.0-*_amd64.deb && \
-    rm -f tl-*deb
+RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.20.0-4284_amd64.deb && \
+    apt install -y ./thinlinc-client_4.20.0-*_amd64.deb && \
+    rm -f thinlinc-client_*.deb
 
 # Remove root password
 RUN passwd -d root
@@ -96,23 +101,28 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable systemd-resolved
 
 # Build initramfs with dracut
-# Keep it generic (no --hostonly) but omit unnecessary modules
+# Keep it generic but omit unnecessary modules.
+#
+# --no-hostonly is required explicitly (not just implied by omitting --hostonly):
+# dracut's own default is "hostonly=-h" unless hostonly is explicitly set to "no"
+# (see /usr/bin/dracut: "hostonly shell variable defaults to -h if not specified").
+# With that default active, every instmods call - including the ones in the dbrrg
+# module below - gets silently filtered against a "hostonly module list" that dracut
+# auto-detects from whatever happens to be loaded on the machine BUILDING the image
+# (via the container's leaked /sys, since podman shares the host kernel). On this
+# build host that dropped zram (not loaded here) and would have silently dropped
+# needed NIC drivers (e1000/e1000e/igb/r8169/atlantic/iwlwifi) too, depending on
+# what the build host happens to have loaded - fine on one machine, broken on
+# another. --no-hostonly forces the true generic path this comment always intended.
 RUN KERNEL_VERSION=$(ls /lib/modules | head -1) && \
-    dracut --force --add "dbrrg plymouth" \
+    dracut --force --no-hostonly --add "dbrrg plymouth" \
     --omit "drm dash crypt dmraid multipath iscsi nfs nbd fcoe fcoe-uefi biosdevname dmsquash-live dmsquash-live-ntfs" \
     --omit-drivers "btrfs xfs reiserfs jfs ocfs2 gfs2 f2fs bcachefs cramfs minix hfs hfsplus qnx4 qnx6 ufs nouveau radeon amdgpu i915 vmwgfx qxl virtio-gpu bochs" \
     --compress "zstd -3 -T4" \
     --kver $KERNEL_VERSION
 
-# Cleanup - remove unnecessary firmware (keep only Intel NUC essentials)
-# Whitelist approach: keep iwlwifi, i915, intel-ucode, intel/sof*, and remove everything else
-# This saves ~450MB
-RUN cd /usr/lib/firmware && \
-    mkdir -p /tmp/fw-keep && \
-    mv iwlwifi-* i915 intel intel-ucode /tmp/fw-keep/ 2>/dev/null || true && \
-    rm -rf /usr/lib/firmware/* && \
-    mv /tmp/fw-keep/* /usr/lib/firmware/ && \
-    rm -rf /tmp/fw-keep && \
-    rm -rf /usr/lib/firmware/intel/{ice,vpu,vsc,ipu} && \
-    rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* && \
+# Cleanup. Firmware content is determined by package selection alone -
+# see the linux-firmware-minimal + per-vendor packages above. Never
+# re-introduce a find/rm sweep over /usr/lib/firmware.
+RUN rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* && \
     apt-get -qqy clean && apt-get -qqy autoremove
