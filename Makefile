@@ -77,6 +77,14 @@ $(ARTIFACT_DIR) $(ROOTFS_DIR) $(IMAGE_DIR):
 # Find all overlay files (excluding editor backups)
 OVERLAY_FILES := $(shell find overlay -type f ! -name '*~' 2>/dev/null)
 
+# labwc is rebuilt from source inside the ubuntu container, patched with
+# every file here (see containers/ubuntu/Dockerfile's labwc-build stage).
+# They must be a build input like OVERLAY_FILES: without this, editing or
+# adding a patch doesn't invalidate .ubuntu-container, so 'make rootfs'
+# reports "Nothing to be done" and ships a stale image that still passes
+# the test suite - false-confidence green, not a real pass.
+PATCH_FILES := $(wildcard containers/ubuntu/patches/*.patch)
+
 # Remove stale stamp files if container images don't exist (checked at parse time)
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(UBUNTU_IMAGE) 2>/dev/null || echo missing),$(shell rm -f .ubuntu-container))
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .image-builder-container))
@@ -90,7 +98,7 @@ vendor/oxulnk-desktop.deb: $(OXULNK_DEB)
 	@mkdir -p vendor
 	cp $< $@
 
-.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) | $(ROOTFS_DIR)
+.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) $(PATCH_FILES) | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
 	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \
