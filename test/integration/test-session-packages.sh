@@ -82,6 +82,18 @@ else
     fail=1
 fi
 
+present "fullscreen span enabled in labwc environment" \
+        "etc/dbrrg/labwc/environment"
+if unsquashfs -no-xattrs -d "$DPKG_TMP/env" "$SQSH" \
+        etc/dbrrg/labwc/environment >/dev/null 2>&1 &&
+   grep -q '^LABWC_FULLSCREEN_SPAN_OUTPUTS=1' \
+        "$DPKG_TMP/env/etc/dbrrg/labwc/environment"; then
+    echo "ok   - LABWC_FULLSCREEN_SPAN_OUTPUTS is set"
+else
+    echo "FAIL - LABWC_FULLSCREEN_SPAN_OUTPUTS not set in the shipped environment"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"

@@ -44,7 +44,7 @@ OXULNK_DEB ?= /scratch/oetiker/cargo-target/oxulnk-desktop-ux-fixes-2404/debian/
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
@@ -253,6 +253,18 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 test: rootfs
 	@test/integration/test-firmware.sh
 	@test/integration/test-session-packages.sh
+
+# Runtime session tests. Needs network (installs python3-xlib into a
+# test-only image) and runs a compositor, so it is deliberately not part of
+# 'make test'.
+test-runtime: rootfs
+	$(CONTAINER_RUNTIME) build --progress=plain \
+		--cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
+		--build-arg BASE=$(UBUNTU_IMAGE) \
+		-t $(PROJECT_NAME)-runtime-test:$(VERSION) \
+		-f test/runtime/Dockerfile \
+		test/runtime
+	@test/runtime/test-labwc-runtime.sh $(PROJECT_NAME)-runtime-test:$(VERSION)
 
 clean:
 	rm -rf $(ARTIFACT_DIR)/*

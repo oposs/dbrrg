@@ -2,6 +2,6 @@
 *~
 !overlay
 !*.patch
-!containers/ubuntu/patches/.gitkeep
+!containers/ubuntu/patches
 !syslinux.cfg
 !vendor

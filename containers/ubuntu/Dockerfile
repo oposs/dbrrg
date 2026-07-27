@@ -25,6 +25,8 @@ RUN apt-get source labwc
 COPY containers/ubuntu/patches/ /patches/
 RUN set -eu; \
     cd /build/labwc-*/; \
+    mkdir -p debian/patches; \
+    touch debian/patches/series; \
     for p in /patches/*.patch; do \
         [ -e "$p" ] || continue; \
         cp "$p" debian/patches/; \

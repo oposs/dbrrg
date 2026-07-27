@@ -1,0 +1,52 @@
+diff --git a/src/view.c b/src/view.c
+index c439b44..0725272 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -1216,6 +1216,37 @@ view_apply_tiled_geometry(struct view *view)
+ 		view->output, view->tiled));
+ }
+ 
++/*
++ * dbrrg: Xwayland fullscreen may span the whole output layout.
++ *
++ * labwc clamps a fullscreen view to view->output. The ThinLinc client
++ * (TigerVNC) derives the remote screen layout from the geometry it actually
++ * receives, comparing it against the X screens it fully covers, so handing it
++ * the union of all outputs restores a genuine multi-monitor remote session.
++ *
++ * Xwayland views only: a Wayland client's xdg_toplevel.set_fullscreen names
++ * one output and the client renders one buffer at that output's size and
++ * scale, so spanning it would be protocol-incorrect.
++ */
++static bool
++fullscreen_spans_outputs(struct view *view)
++{
++	static int enabled = -1;
++
++	if (enabled < 0) {
++		const char *env = getenv("LABWC_FULLSCREEN_SPAN_OUTPUTS");
++		enabled = (env && env[0] != '\0' && env[0] != '0') ? 1 : 0;
++	}
++	if (!enabled) {
++		return false;
++	}
++#if HAVE_XWAYLAND
++	return view->type == LAB_XWAYLAND_VIEW;
++#else
++	return false;
++#endif
++}
++
+ static void
+ view_apply_fullscreen_geometry(struct view *view)
+ {
+@@ -1225,7 +1256,8 @@ view_apply_fullscreen_geometry(struct view *view)
+ 
+ 	struct wlr_box box = { 0 };
+ 	wlr_output_layout_get_box(view->server->output_layout,
+-		view->output->wlr_output, &box);
++		fullscreen_spans_outputs(view)
++			? NULL : view->output->wlr_output, &box);
+ 	view_move_resize(view, box);
+ }
+ 
