@@ -44,6 +44,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     xwayland \
     foot \
     foot-terminfo \
+    kanshi \
+    wlr-randr \
     xfonts-base \
     fonts-dejavu-core \
     xcursor-themes \

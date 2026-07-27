@@ -87,6 +87,20 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
 - Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory)
 - Session startup: `overlay/usr/local/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
+- **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the ThinLinc client. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
+
+- **Per-machine user environment:** `overlay/home/tluser/.dbrrg-environment` — variables the compositor reads at **startup**: keyboard layout (`XKB_DEFAULT_*`) and cursor theme. Sourced by `overlay/etc/profile.d/10-dbrrg-session.sh` after `/etc/dbrrg/labwc/environment`, so the user's value wins. Also persisted via `save-home`.
+
+  **The two user files are split by timing, and it is not arbitrary:**
+
+  | file | sourced | for |
+  | --- | --- | --- |
+  | `~/.dbrrg-environment` | before the compositor starts | variables read at startup — keyboard, cursor |
+  | `~/.dbrrg-sessionrc` | inside the running session | commands needing a compositor — `wlr-randr`, `kanshi`, netplan |
+
+  This is why `dbrrg-restore-home` runs in `10-dbrrg-session.sh` **before** launching labwc, rather than from `dbrrg-session` as the X11 setup did: a user's saved `.dbrrg-environment` has to be on disk before the compositor reads `XKB_DEFAULT_*`. Restoring home inside the session would make a user keyboard change take effect only on the *next* boot. Do not move the restore back into `dbrrg-session`.
+
+  Note the deliberate split from system config: user-editable settings live in `$HOME`, but `overlay/etc/dbrrg/labwc/rc.xml` does **not** — see [Standing Constraints](#standing-constraints).
 - Autologin: `overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf`
 - User defaults: `overlay/home/tluser/`
 

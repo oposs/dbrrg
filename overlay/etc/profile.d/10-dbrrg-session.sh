@@ -49,6 +49,34 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
         set +a
     fi
 
+    # Restore the home directory HERE, before the compositor starts - not from
+    # inside the session as the X11 setup did.
+    #
+    # The reason is the user-controlled keyboard layout below. XKB_DEFAULT_*
+    # is read by the compositor when it starts, so a user override has to be
+    # on disk and sourced before that. Restoring home inside the session (the
+    # obvious place, and where dbrrg-restore-home used to run) would make any
+    # user keyboard setting take effect only on the NEXT boot.
+    #
+    # The user sees the plymouth splash during this, exactly as before; only
+    # the ordering relative to the compositor changed.
+    /usr/local/bin/dbrrg-restore-home >>"$DBRRG_SESSION_LOG" 2>&1 || true
+
+    # User overrides, sourced AFTER the system defaults so the user wins.
+    # This file is for variables the compositor reads at STARTUP - keyboard
+    # layout, cursor theme. Commands that need a running compositor
+    # (wlr-randr, kanshi) belong in ~/.dbrrg-sessionrc instead, which runs
+    # inside the session.
+    #
+    # It lives in $HOME, so it is saved by save-home and restored above on
+    # every subsequent boot: a user can set the keyboard layout for their own
+    # machine without rebuilding the image.
+    if [ -r "$HOME/.dbrrg-environment" ]; then
+        set -a
+        . "$HOME/.dbrrg-environment"
+        set +a
+    fi
+
     # The compositor's stderr is the only record of why a session failed.
     # Without this redirection it lands on tty1 and is erased when getty
     # restarts the session seconds later.
