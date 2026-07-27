@@ -93,7 +93,20 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 
   | variable | default | effect |
   | --- | --- | --- |
-  | `LABWC_FULLSCREEN_SPAN_OUTPUTS` | `1` | fullscreen Xwayland windows (the ThinLinc client) span every monitor; set `0` here for single-monitor fullscreen on this machine only |
+  | `LABWC_FULLSCREEN_SPAN_OUTPUTS` | `1` | fullscreen Xwayland windows (the ThinLinc client) span every monitor |
+
+  **A per-machine override in `~/.dbrrg-environment` is not currently
+  effective for any key also set in `/etc/dbrrg/labwc/environment` -
+  including `LABWC_FULLSCREEN_SPAN_OUTPUTS` above and the pre-existing
+  `XKB_DEFAULT_*` / `XCURSOR_*` keyboard and cursor overrides.** labwc's
+  `session_environment_init()` (`src/config/session.c:77`) calls
+  `setenv(key, value, 1)` - overwrite - and, run with `-C`, treats
+  `/etc/dbrrg/labwc/environment` as the *only* environment file it reads
+  (`src/common/dir.c:153-157`, called from `src/main.c:211`), which happens
+  after `10-dbrrg-session.sh` has already exported the user's file into the
+  process environment. So for any key present in both files, the system
+  file's value wins and the user's value is silently discarded. A fix is
+  needed; none is proposed here.
 
   **The two user files are split by timing, and it is not arbitrary:**
 

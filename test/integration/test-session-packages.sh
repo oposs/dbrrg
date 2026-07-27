@@ -47,9 +47,13 @@ absent  "nodm"             'usr/sbin/nodm$'
 absent  "wm2"              'usr/bin/wm2$'
 absent  "lxterminal"       'usr/bin/lxterminal$'
 
-# Guard the standing constraint: labwc must register no keybindings, because
-# it does not implement zwp_keyboard_shortcuts_inhibit_manager_v1 and any
-# binding it owns can never reach the remote ThinLinc session.
+# Guard the standing constraint: labwc must register no keybindings. Rootless
+# Xwayland never requests zwp_keyboard_shortcuts_inhibit_manager_v1 (that was
+# this repo's earlier, disproved explanation); the mechanism that matters is
+# zwp_xwayland_keyboard_grab_manager_v1, which our labwc now implements but
+# which remains unverified on real hardware - so any binding it owns can
+# still never reach the remote ThinLinc session. See CLAUDE.md's "labwc must
+# have zero keybindings".
 RC=$(mktemp -d)
 trap 'chmod -R u+rwX "$RC" 2>/dev/null; rm -rf "$LIST" "$RC"' EXIT
 if unsquashfs -q -f -d "$RC" "$SQSH" 'etc/dbrrg/labwc/rc.xml' >/dev/null 2>&1; then
@@ -98,7 +102,10 @@ fi
 # zwp_xwayland_keyboard_grab_manager_v1; without it a compositor never learns
 # about an XGrabKeyboard call at all. Confirm the shipped binary implements
 # the protocol (a static string check, not proof it works - test-runtime's
-# grab_keyboard assertion covers that).
+# headless rig only proves Xwayland binds the manager global, since it has
+# no input devices to generate a real grab; see the comment in
+# test/runtime/test-labwc-runtime.sh for why a grab_keyboard assertion isn't
+# possible there).
 if unsquashfs -no-xattrs -d "$DPKG_TMP/bin" "$SQSH" usr/bin/labwc >/dev/null 2>&1 &&
    grep -aq 'zwp_xwayland_keyboard_grab_manager_v1' "$DPKG_TMP/bin/usr/bin/labwc"; then
     echo "ok   - labwc implements zwp_xwayland_keyboard_grab_manager_v1"

@@ -1,3 +1,21 @@
+Description: allow fullscreen Xwayland views to span every output
+ labwc clamps a fullscreen view's geometry to its own output
+ (view_apply_fullscreen_geometry() -> wlr_output_layout_get_box() with a
+ non-NULL reference output). The ThinLinc client (TigerVNC) derives its
+ remote screen layout from the geometry it actually receives, so handing an
+ Xwayland fullscreen view the union of all outputs restores the
+ multi-monitor remote session that the previous X11 window manager (wm2)
+ provided. Gated behind the LABWC_FULLSCREEN_SPAN_OUTPUTS environment
+ variable (default on) and restricted to Xwayland views only, since a native
+ Wayland client's xdg_toplevel.set_fullscreen names a single output and
+ spanning it would be protocol-incorrect.
+ .
+ dbrrg-specific: not proposed for upstream inclusion, see Forwarded below.
+Author: dbrrg maintainers
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2026-07-27
+---
 diff --git a/src/view.c b/src/view.c
 index c439b44..0725272 100644
 --- a/src/view.c

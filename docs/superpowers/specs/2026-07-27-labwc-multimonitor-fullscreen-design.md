@@ -164,9 +164,10 @@ Deliberately unchanged:
 Be clear about what this buys. With zero keybindings configured, Patch B
 changes nothing observable today. Its value is that the safety property stops
 depending on a documented rule a future maintainer might break, and that a
-false rationale in `CLAUDE.md` gets corrected. That value is real only if the
-test proves the grab actually arrives, so the grab test is load-bearing, not
-garnish.
+false rationale in `CLAUDE.md` gets corrected. As the Testing section and
+Status header note, the headless rig can only prove the manager global is
+created, advertised, and filtered to Xwayland - it cannot prove a real
+`XGrabKeyboard` forward ever arrives, so that stronger claim is not made here.
 
 Keybindings stay at zero in this change. Adding them later becomes a
 config-only decision, taken after the grab path has been seen working on
@@ -184,10 +185,17 @@ under `set -a` before exec'ing labwc, and labwc also reads it directly via
 prefix becomes part of the key and the variable is never set, with no error
 to flag it.
 
-`~/.dbrrg-environment` is sourced *after* the system file, so a machine that
-wants single-monitor fullscreen sets `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` there
-and `save-home` persists it. This is the documented user-config mechanism
-used as designed; `CLAUDE.md`'s `.dbrrg-environment` table gains a row.
+`~/.dbrrg-environment` is sourced *after* the system file into the shell
+environment, but that ordering does not make the override effective: labwc's
+`session_environment_init()` (`src/config/session.c:77`) calls `setenv(key,
+value, 1)` while parsing `/etc/dbrrg/labwc/environment` via `-C`
+(`src/common/dir.c:153-157`, `src/main.c:211`), which runs *after*
+`10-dbrrg-session.sh` has exported the user's file and therefore overwrites
+it for any key present in both. So a machine that wants single-monitor
+fullscreen setting `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` in
+`~/.dbrrg-environment` today has no effect; the system default of `1` always
+wins. `CLAUDE.md`'s `.dbrrg-environment` table notes this as not currently
+effective. A fix is out of scope for this change.
 
 ### Build integration
 

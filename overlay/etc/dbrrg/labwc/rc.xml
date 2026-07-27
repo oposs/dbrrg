@@ -5,12 +5,17 @@
   IMPORTANT: the <keyboard> section deliberately contains no default-keybind
   element and no keybind entries, so labwc registers ZERO keybindings.
 
-  This is required, not cosmetic. labwc 0.9.3 does not implement
-  zwp_keyboard_shortcuts_inhibit_manager_v1, so a remote-desktop client
-  cannot reclaim keys that the compositor has bound - even though Xwayland
-  requests inhibition on XGrabKeyboard and wlroots implements the server
-  side. Every keybinding added here is a key combination that can never
-  reach the ThinLinc session.
+  This is required, not cosmetic. Rootless Xwayland (always the case under
+  labwc) never requests zwp_keyboard_shortcuts_inhibit_manager_v1 - its only
+  call site returns immediately when rootless - so that protocol was never
+  the mechanism here. The real one is zwp_xwayland_keyboard_grab_manager_v1,
+  which forwards X11 keyboard grabs (XGrabKeyboard) to the compositor. Our
+  labwc carries a patch implementing it
+  (containers/ubuntu/patches/0002-xwayland-keyboard-grab.patch), but that
+  path is unverified on real hardware with a keyboard attached (see
+  CLAUDE.md's "labwc must have zero keybindings" and the design spec in
+  docs/superpowers/specs/). Until it is confirmed, every keybinding added
+  here is a key combination that can never reach the ThinLinc session.
 
   labwc treats default keybinds as opt-in: omitting the default-keybind
   element yields none.

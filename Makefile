@@ -59,6 +59,7 @@ help:
 	@echo "  image             - Build bootable USB image"
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
 	@echo "  test              - Run integration guard tests against rootfs"
+	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
 	@echo "  clean             - Remove artifacts"
 	@echo "  help              - Show this help"
 	@echo ""
@@ -83,6 +84,14 @@ OVERLAY_FILES := $(shell find overlay -type f ! -name '*~' 2>/dev/null)
 # adding a patch doesn't invalidate .ubuntu-container, so 'make rootfs'
 # reports "Nothing to be done" and ships a stale image that still passes
 # the test suite - false-confidence green, not a real pass.
+#
+# PATCH_FILES is a wildcard, expanded once at parse time: deleting a patch
+# removes its own name from this list along with it, so the deleted file's
+# prerequisite vanishes too and make sees nothing that changed. The bare
+# directory containers/ubuntu/patches, added as a second prerequisite on
+# .ubuntu-container below, closes that hole - its mtime changes whenever a
+# file is added to or removed from it, even when no surviving patch file
+# changed.
 PATCH_FILES := $(wildcard containers/ubuntu/patches/*.patch)
 
 # Remove stale stamp files if container images don't exist (checked at parse time)
@@ -98,7 +107,7 @@ vendor/oxulnk-desktop.deb: $(OXULNK_DEB)
 	@mkdir -p vendor
 	cp $< $@
 
-.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) $(PATCH_FILES) | $(ROOTFS_DIR)
+.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) $(PATCH_FILES) containers/ubuntu/patches | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
 	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \

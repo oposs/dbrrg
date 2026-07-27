@@ -1,3 +1,29 @@
+Description: implement zwp_xwayland_keyboard_grab_manager_v1
+ Rootless Xwayland (always the case under labwc) forwards X11 keyboard grabs
+ (XGrabKeyboard/XUngrabKeyboard) via zwp_xwayland_keyboard_grab_manager_v1,
+ not via zwp_keyboard_shortcuts_inhibit_manager_v1 - the latter's only call
+ site in Xwayland returns immediately for rootless servers. Neither wlroots
+ nor labwc implemented the manager that actually matters, so a compositor
+ keybinding could never be reclaimed by a remote X11 client such as the
+ ThinLinc/TigerVNC session this image ships.
+ .
+ Adds a new protocol source (src/protocols/xwayland-keyboard-grab.c)
+ implementing the manager global, restricted via server_global_filter() to
+ the Xwayland wl_client only. A new per-view flag,
+ keybinds_inhibited_by_grab, is OR'd into view_inhibits_actions() without
+ reusing the existing user-toggled inhibits_keybinds flag, so a grab arriving
+ mid-session cannot clobber the user's own ToggleKeybinds state.
+ .
+ This does not by itself add any labwc keybinding - the image still ships
+ zero (see rc.xml) pending confirmation of the grab-forwarding path on real
+ hardware with a keyboard attached.
+ .
+ dbrrg-specific: not proposed for upstream inclusion, see Forwarded below.
+Author: dbrrg maintainers
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2026-07-27
+---
 diff --git a/include/labwc.h b/include/labwc.h
 index 3d3ca2a..d497ed1 100644
 --- a/include/labwc.h
