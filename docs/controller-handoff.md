@@ -1,4 +1,4 @@
-# Controller Handoff — dbrrg Ubuntu 26.04 / Wayland / PipeWire upgrade
+# Controller Handoff — dbrrg patched labwc (multi-monitor fullscreen + X keyboard grab)
 
 > Starter pack for the next controller session. This handoff lives in ONE
 > worktree — run `git worktree list` first and confirm this is the workstream
@@ -10,230 +10,241 @@
 > not blank page. On merge into another branch, rewrite that branch's handoff
 > to the merged reality — do not merge or preserve this text.
 
-Handoff commit: acf35ce   Date: 2026-07-27   Reason: context budget
+Handoff commit: 5b93e6f   Date: 2026-07-27   Reason: context budget
 Worktree / branch: `/scratch/oetiker/claude-worktrees/dbrrg-feat-ubuntu-2604` @ `feat/session-diagnostics`
-Sibling worktrees: `/home/oetiker/checkouts/dbrrg` @ `main` — trunk, at `c3508ab`. **Live work is here, not there**: this branch is one commit ahead. `main` is 20 commits ahead of `origin/main` and unpushed.
+Sibling worktrees: `/home/oetiker/checkouts/dbrrg` @ `main`, at `c3508ab` — trunk, **no live work there**; this branch is 12 commits ahead. `main` is also ~20 commits ahead of `origin/main` and unpushed.
 
 ## 1. Mission
 
-dbrrg builds a diskless thin-client image that runs entirely from RAM
-(SquashFS + OverlayFS on ZRAM) whose sole job is running the ThinLinc remote
-desktop client. The user asked for three things: upgrade to Ubuntu 26.04,
-upgrade the ThinLinc client, and fix missing i915 GPU firmware.
+dbrrg builds a diskless Ubuntu 26.04 thin client that runs entirely from RAM
+and whose sole job is the ThinLinc client. The 26.04 upgrade moved the session
+from Xorg+wm2 to labwc/Wayland, which broke two things stock labwc cannot do.
+This branch fixes both by shipping labwc as a **locally patched rebuild**
+(`0.9.3-1+dbrrg1`) instead of the archive package:
 
-The firmware request turned out to be a **build bug, not a packaging gap** —
-`export-rootfs.sh` deleted all firmware except `iwlwifi*` right before
-`mksquashfs`, so every image ever shipped lacked i915 firmware *and*
-`intel-ucode`. That is fixed and merged.
+- **Patch A** — a fullscreen Xwayland window spans the whole output layout
+  instead of being clamped to one output, restoring multi-monitor ThinLinc.
+- **Patch B** — implements `zwp_xwayland_keyboard_grab_manager_v1`, the
+  protocol rootless Xwayland actually uses to forward `XGrabKeyboard`.
 
-The mental model that matters now: **this is a hardware-integration problem
-wearing a packaging problem's clothes.** Everything that can be verified in a
-container or QEMU has been. What remains — and what has produced every real
-bug since — is behaviour that only appears on the physical NUC: USB
-enumeration timing, DRM/plymouth interaction, monitor layout, audio. QEMU
-passing means very little here; see §4.
+A third fix followed from a review finding: `~/.dbrrg-environment` per-machine
+overrides had **never** worked, because labwc re-reads its own `-C`
+environment file and overwrites whatever the session script exported. That
+broke the new fullscreen knob *and* the pre-existing per-machine keyboard
+feature that `CLAUDE.md` documented as working.
+
+The mental model to keep: almost every bug in this layer is an **ordering or
+resolution-chain** bug, not a logic bug. Something is installed but not
+selected, exported but then overwritten, or asserted against the wrong
+artifact. See §4.
 
 ## 2. Where we are now
 
-**Merged to `main` (c3508ab) and validated on hardware — the NUC boots and
-runs.** Base 26.04 (kernel 7.0, systemd 259), ThinLinc 4.20.0-4284, firmware
-selected declaratively by package, labwc/Wayland replacing nodm/xorg/wm2,
-PipeWire replacing PulseAudio, VA-API + `oxulnk-desktop` added. Squashfs
-537 MiB (from 498 MB).
+All five tasks complete, reviewed and committed (`74772cf..5b93e6f`, 12
+commits). The whole-branch review returned **fit to merge**; its findings were
+fixed in `cabbd13`. Test state — every one of these was run and seen by the
+controller itself, not taken from a subagent report:
 
-**On this branch, three commits above main.** `2cc54c9` adds user-controlled
-keyboard and display config (`~/.dbrrg-environment`, `~/.dbrrg-sessionrc`,
-`wlr-randr`, `kanshi`); `acf35ce` fixes a smoke-checker race. The build
-completed and is **verified good**: firmware 6/6, session guard 11/11, smoke
-clean, both user templates and both tools present in the image, and
-`dbrrg-restore-home` invoked exactly once (from the profile hook).
-`artifacts/images/dbrrg-usb.img.zst` is current as of 11:23.
+- `test/integration/test-session-packages.sh` — 16/16, including
+  `rc.xml registers no keybindings` and `labwc is the local rebuild (0.9.3-1+dbrrg1)`.
+- `test/integration/test-labwc-config-merge.sh` — 9/9 (new).
+- `make test-runtime` — 3/3: span `2560x720`; Xwayland binds the grab manager;
+  a later duplicate env assignment wins (`1280x720`).
+- `artifacts/images/dbrrg-usb.img` built 16:24 on 2026-07-27 from this HEAD.
 
-That build initially reported a smoke FAILURE that was **not** real — see
-`acf35ce`. Worth knowing because it nearly sent a good image back for
-rework, and because it is the third time a tooling artefact rather than the
-product produced a false signal (§4).
+**Nothing here is confirmed on hardware.** The user was writing the image to a
+USB stick as this was written. Everything above is compositor-side, in a
+headless two-output rig.
 
-The user's stated next step: **deploy this build and test**. They have not
-yet reported results.
-
-Working but unverified on hardware: audio (either direction), multi-monitor
-fullscreen, F8 to the client, PXE boot on a physical NIC.
+Not done: the branch is neither merged nor pushed, and
+`superpowers:finishing-a-development-branch` was never run.
 
 ## 3. Do this next
 
-1. **Nothing needs building.** The image at
-   `artifacts/images/dbrrg-usb.img.zst` is current and verified (§2). Do not
-   rebuild speculatively — it costs ~15 min on a shared machine.
-2. **Wait for the user's hardware result.** Do not start new work
-   speculatively; the last several rounds were all driven by concrete NUC
-   findings, and guessing ahead of them has been consistently wrong (§4).
-3. **When they report back**, two items still need a hardware verdict:
-   multi-monitor fullscreen (§7, now implemented via a patched labwc, not yet
-   confirmed on the dual-head machine) and `save-home` hardening (§7, not
-   started).
+1. **Take the user's hardware results as authoritative** and expect them to
+   invalidate part of this file. What they were testing, in priority order:
+   does a session start at all (Task 5 changed the `labwc -C` path, and a
+   diskless client has no local recovery); does fullscreen span both monitors;
+   does `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` in `~/.dbrrg-environment` give
+   single-monitor fullscreen; does the per-machine keyboard layout finally
+   apply (it never has).
+2. **If the session fails to start**, the fallback should have caught it —
+   look in the session log for `dbrrg: config merge failed` or
+   `dbrrg: XDG_RUNTIME_DIR unset or unwritable`. Either means labwc ran with
+   `-C /etc/dbrrg/labwc` (old behaviour) and the merge is the suspect. Get a
+   shell via SSH or Ctrl+Alt+F2 — `foot` has no launch path inside the session.
+3. **Then finish the branch** — `superpowers:finishing-a-development-branch`.
 
 ## 4. Lessons & traps  ← the irreplaceable part
 
-**QEMU proves almost nothing about this product.** Three separate bugs
-shipped past a green `qemu-smoke`. The boot-medium race is the clearest: the
-old code gave the USB device a 2-second budget, and QEMU's virtio-blk
-appeared in ~1 second — passing with one second of margin, every time, for
-however long that code has existed. When a QEMU result and a hardware result
-disagree, **the hardware is right and QEMU's pass was luck.**
+Carried forward, still true:
 
-**"Installed" ≠ "selected" ≠ "reaches the hardware".** This cost the most
-time and recurred three times:
-- `xcursor-themes` was installed and verified — but `update-alternatives`
-  still resolved `x-cursor-theme` to x11-common's `core.theme` (priority 30
-  vs 20), which inherits from a theme that doesn't exist on disk. The "fix"
-  provably did nothing until `XCURSOR_THEME` was set explicitly.
-- `intel-ucode` in the squashfs delivers nothing on kernel 7.0 (late loading
-  is gone). It works only because dracut's `early_microcode` default puts it
-  in the initramfs — which nothing in this repo pins or tests.
-- `podman build --cpus` was verified present by grep, and doesn't exist in
-  podman 4.9.3 at all.
-Verify to the **end of the resolution chain**, against the built artifact,
-not the source tree.
+**QEMU proves almost nothing about this product.** Three bugs shipped past a
+green `qemu-smoke`. When QEMU and hardware disagree, the hardware is right and
+QEMU's pass was luck.
 
-**dracut 110 defaults `hostonly` ON.** This was the single worst latent bug
-found. Because `podman build` shares the host kernel, every `instmods` call
-filtered against *the build machine's* loaded modules: 683 modules instead of
-955, silently dropping zram (aborts boot) and every NIC driver (breaks PXE).
-`overlay` survived only because podman's storage driver keeps overlayfs
-loaded — pure luck. `--add-drivers` is **not** a workaround: it bypasses the
-filter for its own arguments only.
+**"Installed" ≠ "selected" ≠ "reaches the hardware".** `xcursor-themes` was
+installed but `update-alternatives` never selected it; `intel-ucode` in the
+squashfs delivers nothing on kernel 7.0 and works only via dracut's
+`early_microcode` default, which nothing pins or tests; `podman build --cpus`
+was "verified" by grep and does not exist in podman 4.9.3. Verify to the **end
+of the resolution chain, against the built artifact**.
 
-**labwc's partial EWMH is worse than wm2's absent EWMH, for one case.** Under
-wm2 (no EWMH at all) ThinLinc sized *itself* to the union of both monitors
-and wm2 left it alone — multi-monitor fullscreen worked. labwc implements
-`_NET_WM_STATE_FULLSCREEN`, honours it, and clamps to one output.
-`_NET_WM_FULLSCREEN_MONITORS` is implemented **nowhere** in the practical
-field — checked and absent from libwlroots (so sway/cage/wayfire/labwc all
-lack it), and from openbox and i3. Switching compositors will not fix this.
+**dracut 110 defaults `hostonly` ON**, and `podman build` shares the host
+kernel — 683 modules instead of 955, silently dropping zram and every NIC
+driver. `--add-drivers` is not a workaround.
 
 **Ordering is the recurring shape of bugs in the session layer.** XKB is read
-once at compositor startup, so anything user-controlled must be on disk
-before labwc launches — which is why `dbrrg-restore-home` now runs in
-`10-dbrrg-session.sh` and not in `dbrrg-session`. Similarly, output rotation
-must be applied before `tlclient` starts, because the client reads the
-monitor layout once.
+once at compositor startup, so user-controlled values must be on disk before
+labwc launches — which is why `dbrrg-restore-home` runs in
+`10-dbrrg-session.sh`, not `dbrrg-session`. Output rotation likewise must
+precede `tlclient`, which reads the monitor layout once.
 
-**My own tooling produced three false readings — more than the product did.**
-`pgrep -f "qemu…"` matched the watcher's own command line (always true);
-`pgrep -x qemu-system-x86_64` never matches because the name exceeds 15 chars
-(always false) — use `pidof`. I reported a smoke failure that was my checker
-racing a log QEMU was still writing. And the smoke checker itself asserted on
-a line that agetty's terminal reset can overwrite mid-write, producing a red
-result on a perfectly good image (`acf35ce`). **Judge the finished artifact,
-never process timing — and when a check disagrees with a boot that visibly
-completed, suspect the check.**
+New this session:
 
-**Subagents in this session completed good work and then went silent ~10
-times**, several times leaving everything uncommitted. The work was sound
-every time; the reporting wasn't. Verify against the repo, not the report.
+**`_NET_WM_FULLSCREEN_MONITORS` is unnecessary — the earlier conclusion that
+multi-monitor was structurally unfixable was wrong.** TigerVNC's
+`remoteResize()` (`vncviewer/DesktopWindow.cxx`, fullscreen branch) builds the
+remote `ScreenSet` from the window's **actual geometry** versus the X screens
+it fully covers. It never reads the atom. Forcing union geometry
+compositor-side is therefore sufficient, and yields a genuine two-screen
+remote layout. Do not spend time implementing the atom in wlroots.
+
+**labwc silently discards `~/.dbrrg-environment`, and this class of bug will
+recur.** `session_environment_init()` (`src/config/session.c:77`) does
+`setenv(key, value, 1)` — overwrite — while parsing `<config_dir>/environment`,
+and with `-C` that file is the *only* one considered
+(`src/common/dir.c:153-157`), at `src/main.c:211`, i.e. **after** the session
+script exported the user's values. Exporting into labwc's environment is not
+enough: whatever labwc re-reads wins. Hence
+`overlay/usr/local/bin/dbrrg-compose-labwc-config`. The ordering assumption it
+rests on — that a *later* duplicate assignment wins — is **tested against the
+real binary**, not assumed.
+
+**The `export` keyword breaks that same file.** `10-dbrrg-session.sh` sources
+it under `set -a` (bare assignments export fine), and labwc's own parser
+splits on the first `=`, so an `export ` prefix becomes part of the key and
+the variable is never set — with no error. Keep every line bare `KEY=VALUE`.
+
+**The headless rig cannot test keyboard grabs, structurally.**
+`WLR_BACKENDS=headless` supplies no input devices, so `wl_seat` advertises
+`capabilities(0)`, so Xwayland never creates `xwl_seat->keyboard` and never
+installs its grab-forwarding hook. The rig asserts only that Xwayland *binds*
+the manager global. Do not "fix" that assertion back to looking for a
+`grab_keyboard` request — it can never pass there. wlroots' headless backend
+has no `add_input_device` API.
+
+**libwayland 1.24 changed the `WAYLAND_DEBUG` separator from `@` to `#`.** A
+reviewer checked the *host's* libwayland 1.22 (`%s@%u`), concluded the rig's
+regex could never match, and accused two implementers of fabricating
+transcripts. The image ships 1.24 (`%s#%u`); the transcripts were honest.
+Check the library the code actually runs against. The assertion now accepts
+`[@#]`.
+
+**Patch files must be Makefile prerequisites.** `.ubuntu-container` listed the
+Dockerfile, the vendor deb and every overlay file — but not
+`containers/ubuntu/patches/*`. Editing a patch therefore did not trigger a
+rebuild, so `make rootfs && make test` would validate a **stale image and
+report green**. Fixed via `PATCH_FILES` plus the bare directory (so deletions
+are caught too). Watch for this shape whenever a new build input appears.
+
+**`.dockerignore` negation cannot un-prune a pruned directory.** `!*.patch`
+does not rescue files under a directory excluded by a broader `*` rule — the
+directory itself must be negated. This would have shipped an unpatched labwc
+while the build stayed green; only the first real patch exposed it.
+
+**Reviewers see the brief, not your dispatch.** Four corrections handed to an
+implementer in its dispatch message were silently classed "out of scope" by
+the reviewer, which had only read the task brief — so a task passed review
+with none of them applied. Requirements added at dispatch time must be
+restated into the review prompt as first-class requirements.
+
+**Subagents here do good work and then stall before reporting or committing —
+eight times this session.** The work was sound every time; the reporting was
+not. Verify against the repo, never the report. For short
+verification-and-commit tails, doing it in the controller costs less than
+another nudge cycle.
+
+**My own controller error, worth not repeating:** I told the user a
+verification rebuild was "in progress" when nothing was running — inferred
+from an idle notification plus a modified file rather than checked. `ps`,
+`pgrep` and artifact timestamps take seconds. Judge process state by checking
+it; a subagent's silence is not evidence of activity.
 
 ## 5. Don'ts & constraints
 
-Four constraints are recorded in `CLAUDE.md` under "Standing Constraints"
-with their failure modes. Read them before touching the build. Summary:
+Four constraints live in `CLAUDE.md` under "Standing Constraints" with their
+failure modes. Read them before touching the build. Summary:
 
 - **Firmware is selected by package only.** Never re-add a `find`/`rm -rf`
-  sweep over `/usr/lib/firmware`. Guarded by `test/integration/test-firmware.sh`.
+  sweep over `/usr/lib/firmware`. Guarded by `test-firmware.sh`.
 - **dracut must keep `--no-hostonly`.** See §4.
 - **labwc must register zero keybindings.** Not because of
   `zwp_keyboard_shortcuts_inhibit_manager_v1` — that was this repo's earlier
-  (wrong) rationale; Xwayland never requests that inhibition since it always
-  runs rootless under labwc. Our labwc now carries a patch implementing the
-  protocol Xwayland actually uses, `zwp_xwayland_keyboard_grab_manager_v1`,
-  but keybindings stay at zero until a real grab has been confirmed on
-  hardware — see CLAUDE.md's "labwc must have zero keybindings" for the full
-  correction. Guarded by `test-session-packages.sh`. Do not add a
-  "convenient" terminal shortcut — `foot` is deliberately reachable only from
-  a VT or SSH.
-- **labwc is a local rebuild (`0.9.3-1+dbrrg1`), not the archive package** —
-  see CLAUDE.md's "labwc is a local rebuild, not the archive package". It
-  carries the fullscreen-span and keyboard-grab patches above; reverting to
-  the archive version silently loses both.
-- Keep `--no-install-recommends --no-install-suggests`; it is what stops
-  `linux-firmware-minimal` pulling ~1.5 GB.
+  (wrong) rationale; rootless Xwayland never requests that inhibition. Our
+  labwc now implements the protocol Xwayland *does* use, but keybindings stay
+  at zero until a real grab is confirmed on hardware. `foot` is deliberately
+  reachable only from a VT or SSH.
+- **labwc is a local rebuild (`0.9.3-1+dbrrg1`), not the archive package.**
+  Reverting to the archive silently loses both patches. Patches live in
+  `containers/ubuntu/patches/` as a quilt series; `dpkg-buildpackage` fails
+  loudly if one stops applying.
+- Keep `--no-install-recommends --no-install-suggests`.
 - **Never more than 4 cores** in any build step — shared machine. `BUILD_JOBS`.
 
-Settled decisions, do not relitigate:
-- **The tty1 console fallback stays.** The user chose to keep it after I
-  recommended removing it. It is commented as intentional in
-  `10-dbrrg-session.sh`; do not "clean up" what looks like leftover debugging.
-- `labwc` is the compositor. Alternatives were checked and none solve the
-  multi-monitor problem (§4).
-- `overlay/etc/dbrrg/labwc/rc.xml` stays **out of `$HOME`** — `save-home`
-  tars the whole home with no excludes, so a copy there would be pinned on
-  deployed machines forever and the keybinding constraint would become
-  unenforceable in the field. User-editable config goes in `$HOME`; system
-  config does not.
-- Compose is on **right-Alt** (`compose:ralt`), a deliberate divergence from
-  the migration table in `docs/superpowers/specs/`.
+Settled, do not relitigate:
+- **The tty1 console fallback stays** — the user chose to keep it after a
+  recommendation to remove it; it is commented as intentional.
+- `labwc` is the compositor; alternatives were checked and none help.
+- `overlay/etc/dbrrg/labwc/rc.xml` stays **out of `$HOME`** — `save-home` tars
+  the whole home, so a copy there would be pinned forever on deployed machines
+  and the keybinding constraint would become unenforceable in the field.
+- Compose is on **right-Alt** (`compose:ralt`), a deliberate divergence.
+- `_NET_WM_FULLSCREEN_MONITORS` is rejected — see §4.
+- `OXULNK_DEB`'s default path is stale on this machine; pass
+  `OXULNK_DEB=vendor/oxulnk-desktop.deb`. Do not "fix" it in the repo without
+  asking — the default points at another project's build output.
 
 ## 6. Where the detail lives
 
-- Change history: `git log 2cc54c9..HEAD`, and `git log c3508ab..HEAD` for
-  this branch's work above trunk.
-- Plan: `docs/superpowers/plans/2026-07-26-ubuntu-2604-upgrade.md` — **the
-  multi-monitor-fullscreen reasoning in this plan is superseded**, see below.
-- Design spec: `docs/superpowers/specs/2026-07-26-ubuntu-2604-upgrade-design.md`
-  — **same caveat**: its keybinding rationale
-  (`zwp_keyboard_shortcuts_inhibit_manager_v1`) is also superseded, by
-  `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`.
-  Both July-26 files are left as-written, historical records of what was
-  believed at that design time - each now carries a one-line pointer at the
-  top to the file that corrects it; read that file for current fact.
-- Progress ledger (every task, review, finding and ruling, including two
-  controller errors): `.superpowers/sdd/2026-07-26-ubuntu-2604-upgrade/progress.md`
-- `CLAUDE.md` → "Standing Constraints" — the four load-bearing rules.
+- Change history: `git log 5b93e6f..HEAD`; `git log 42bd38a..5b93e6f` for this
+  workstream's implementation.
+- Design spec: `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`
+  — records why the atom was rejected and what remains unverified.
+- Plan: `docs/superpowers/plans/2026-07-27-labwc-patches.md`
+- Progress ledger — every ruling, rejected finding and controller error:
+  `.superpowers/sdd/2026-07-27-labwc-patches/progress.md`
+- `CLAUDE.md` → "Standing Constraints" and the `.dbrrg-environment` section.
+- `overlay/usr/local/bin/dbrrg-compose-labwc-config` — the merge, with the
+  full root-cause writeup in its header.
 - `overlay/etc/profile.d/10-dbrrg-session.sh` — session launch, home restore,
-  env sourcing order, tty1 fallback. The ordering here is load-bearing.
-- `overlay/usr/local/bin/dbrrg-session` — restore is *not* here, deliberately.
-- `overlay/usr/lib/dracut/modules.d/90dbrrg/dbrrg-lib.sh` —
-  `dbrrg_wait_for_efi()`, the boot-medium poll.
-- `overlay/opt/thinlinc/lib/tlclient/pulseaudio` — the audio wrapper; replaces
-  Cendio's bundled PulseAudio 6.0 and translates the module spec.
+  env sourcing, the merge call and its fallback. Ordering here is load-bearing.
+- `test/runtime/test-labwc-runtime.sh` — the rig; its comment block explains
+  what the rig structurally cannot prove.
 
 ## 7. Open questions / pending decisions
 
-- **Multi-monitor fullscreen: implemented, hardware-unverified.** labwc now
-  carries a local patch spanning fullscreen Xwayland windows across the whole
-  output layout. Proven in a headless two-output rig (`make test-runtime`);
-  still unconfirmed against a real ThinLinc session on the dual-head machine.
-  The `_NET_WM_FULLSCREEN_MONITORS` angle recorded here previously is
-  unnecessary - TigerVNC derives its remote screen layout from the geometry it
-  is actually given, not from that atom.
-- **`save-home` is not crash-safe.** `tar zcf - . | sudo dd of=…` doesn't
-  check the tar's exit status (no `pipefail`), so an interrupted save leaves a
-  truncated `home.tar.gz` that gets restored over the user's home next boot.
-  Silent data loss. Offered, not yet done: write to a temp file, verify,
-  rename. Worth doing before fleet deployment.
-- **Audio is entirely unverified.** The wrapper drops ThinLinc's `cookie=`
-  and substitutes `auth-anonymous=true` on a loopback listener. Note before
-  concluding it's a regression: the *old* wrapper also passed an invalid
-  `cookie=` to PulseAudio 16, so that module may never have loaded on 24.04
-  either.
-- **`main` is 20 commits ahead of `origin/main`, unpushed.** The user hasn't
-  said when to push.
-- Per-machine keyboard now works via `~/.dbrrg-environment`, but has not been
-  tested on hardware.
+- **Everything on this branch is hardware-unverified.** Top item.
+- **`save-home` is not crash-safe.** `tar zcf - . | sudo dd of=…` doesn't check
+  the tar's exit status (no `pipefail`), so an interrupted save leaves a
+  truncated `home.tar.gz` that gets restored over the user's home next boot —
+  silent data loss. Offered, not done. Worth doing before fleet deployment.
+- **Audio remains entirely unverified** (PipeWire wrapper from `2e108fb`).
+- **`main` is far behind and unpushed.** The user hasn't said when to push.
+- Two Minor items parked from reviews: a `present`-regex missing a `$` anchor
+  in `test-session-packages.sh`, and the compose helper's error messages
+  dropping errno detail.
 
 ## 8. Staleness watch
 
-- **The user was about to deploy and test.** Any hardware finding they report
-  supersedes §2 and probably §7. Expect the first message of the next session
-  to invalidate part of this file.
-- §7's multi-monitor fullscreen entry is now the *implemented* state, not an
-  angle to try. The "let ThinLinc size itself via `tlclient.conf`" idea this
-  bullet used to describe was tried first and did not work (see
-  `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`,
-  "Problem"); the labwc patch replaced it. What's still open is only the
-  hardware confirmation noted in §7, not which approach to take.
-- The `mutter` check in §4 covered only its helper libraries, not the main
-  `libmutter-*.so`. The wlroots/openbox/i3 results are solid; mutter's is not.
-- The `.superpowers/sdd/` workspace still exists. The SDD skill says to
-  delete it once the final review is merged; it was kept because the ledger
-  holds the hardware checklist and the reasoning behind each ruling.
+- **The user was mid-hardware-test when this was written.** Any result they
+  report supersedes §2 and most of §3. Expect it.
+- The claim that the fullscreen span reaches real hardware is a *traced*
+  conclusion (session script → `main.c:211` → `dir.c` → the patch's `getenv`),
+  reinforced by the rig passing without the env var injected into the
+  container. It is not a hardware observation.
+- Task 5's fallback path was read closely by two reviewers and the controller
+  but never executed end-to-end through a real session start.
+- `.superpowers/sdd/2026-07-27-labwc-patches/` still exists; the SDD skill says
+  to delete it once the final review is clean and the branch finished. It was
+  kept because the branch is not finished.
