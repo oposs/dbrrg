@@ -65,9 +65,17 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # error would scroll past unread. Hold this shell on tty1 with the log
     # in view so the failure is diagnosable at the machine itself.
     #
-    # NOTE: DEBUGGING AID, not production behaviour. This trades "retry the
-    # client forever" for visibility: a crash-looping client now strands the
-    # user at a shell prompt. Remove this block before fleet deployment.
+    # This is INTENTIONAL PRODUCTION BEHAVIOUR, kept on purpose - do not
+    # remove it as leftover debugging. The trade was made knowingly: a
+    # failing session shows the operator what went wrong instead of retrying
+    # invisibly, at the cost of leaving a shell prompt on screen rather than
+    # continuing to attempt the client.
+    #
+    # Consequence worth knowing: because this holds the shell, getty does not
+    # restart on failure at all, so the StartLimitIntervalSec/RestartSec
+    # settings in the getty@tty1 drop-in are belt-and-braces rather than the
+    # thing preventing a dead tty1. They still matter if this block is ever
+    # changed to exit.
     echo ""
     echo "=============================================================="
     echo " dbrrg: graphical session exited with status $DBRRG_SESSION_RC"
