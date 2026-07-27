@@ -91,6 +91,10 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 
 - **Per-machine user environment:** `overlay/home/tluser/.dbrrg-environment` — variables the compositor reads at **startup**: keyboard layout (`XKB_DEFAULT_*`) and cursor theme. Sourced by `overlay/etc/profile.d/10-dbrrg-session.sh` after `/etc/dbrrg/labwc/environment`, so the user's value wins. Also persisted via `save-home`.
 
+  | variable | default | effect |
+  | --- | --- | --- |
+  | `LABWC_FULLSCREEN_SPAN_OUTPUTS` | `1` | fullscreen Xwayland windows (the ThinLinc client) span every monitor; set `0` here for single-monitor fullscreen on this machine only |
+
   **The two user files are split by timing, and it is not arbitrary:**
 
   | file | sourced | for |
@@ -220,16 +224,54 @@ directory lives at `/etc/dbrrg/labwc`, not under `$HOME` - see
 selected via `labwc -C /etc/dbrrg/labwc` in
 `overlay/etc/profile.d/10-dbrrg-session.sh`.
 
-labwc 0.9.3 does not implement `zwp_keyboard_shortcuts_inhibit_manager_v1`,
-even though Xwayland requests inhibition when an X11 client calls
-`XGrabKeyboard` and wlroots implements the server side. A client therefore
-cannot reclaim keys the compositor has bound, so every labwc keybinding is a
-key combination that can never reach the remote ThinLinc session.
+The reason is *not* the missing `zwp_keyboard_shortcuts_inhibit_manager_v1` -
+that was this repo's earlier explanation and it is wrong. Xwayland's only use
+of that protocol is `maybe_fake_grab_devices()`, which returns immediately
+when the server is rootless, and Xwayland is always rootless under labwc.
 
-If a future labwc gains this support, this constraint can be relaxed - check
-for `wlr_keyboard_shortcuts_inhibit_v1_create` in the labwc binary's
-undefined symbols. `test/integration/test-session-packages.sh` guards this -
-run via `make test`.
+Rootless Xwayland instead forwards X11 grabs via
+`zwp_xwayland_keyboard_grab_manager_v1`, which upstream labwc and every
+wlroots compositor lack. Our labwc carries a patch implementing it
+(`containers/ubuntu/patches/0002-xwayland-keyboard-grab.patch`), so a
+keybinding *would* now be suspended while the ThinLinc client holds the
+keyboard.
+
+Keybindings nonetheless stay at zero until that path has been confirmed on
+hardware with a real ThinLinc session. `vncviewer` calls `XGrabKeyboard`, but
+the headless test only proves Xwayland *binds* the manager global - the rig
+supplies no input devices, so `xwl_seat->keyboard` is never created and
+Xwayland never installs the hook that would send a `grab_keyboard` request in
+the first place (see the comment in `test/runtime/test-labwc-runtime.sh`).
+Whether a real grab actually suspends keybindings for the session's duration
+is therefore unverified and can only be confirmed on hardware with a keyboard
+attached. Adding a keybinding is now a config decision rather than an
+impossibility - make it deliberately, and re-run `make test-runtime` after.
+
+`test/integration/test-session-packages.sh` guards the zero-keybindings
+assertion on `rc.xml` itself - run via `make test`.
+
+### labwc is a local rebuild, not the archive package
+
+`containers/ubuntu/Dockerfile` builds `labwc_0.9.3-1+dbrrg1` from Ubuntu's
+source package with the patches in `containers/ubuntu/patches/`, applied as a
+quilt series. Two behaviours depend on it:
+
+- fullscreen Xwayland windows span every output
+  (`LABWC_FULLSCREEN_SPAN_OUTPUTS`), which is what makes the ThinLinc client
+  fill both monitors;
+- `zwp_xwayland_keyboard_grab_manager_v1` exists, so X11 keyboard grabs
+  suspend compositor keybindings.
+
+Reverting to the archive `labwc` silently loses both. On a labwc or wlroots
+version bump, expect to rebase the patches; `dpkg-buildpackage` fails loudly
+when a hunk no longer applies, and `make test` plus `make test-runtime` cover
+the rest. `_NET_WM_FULLSCREEN_MONITORS` was investigated and rejected - see
+the design spec for why it is unnecessary.
+
+`containers/ubuntu/patches/*.patch` are listed as prerequisites of the
+`.ubuntu-container` target (`PATCH_FILES` in the `Makefile`). Editing a patch
+without that dependency would not trigger a rebuild, leaving `make test` and
+`make test-runtime` validating a stale image while still reporting green.
 
 ## Known Limitations
 

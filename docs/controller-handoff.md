@@ -68,8 +68,10 @@ fullscreen, F8 to the client, PXE boot on a physical NIC.
 2. **Wait for the user's hardware result.** Do not start new work
    speculatively; the last several rounds were all driven by concrete NUC
    findings, and guessing ahead of them has been consistently wrong (§4).
-3. **When they report back**, the two known-open items are multi-monitor
-   fullscreen (§7) and `save-home` hardening (§7). Neither is started.
+3. **When they report back**, two items still need a hardware verdict:
+   multi-monitor fullscreen (§7, now implemented via a patched labwc, not yet
+   confirmed on the dual-head machine) and `save-home` hardening (§7, not
+   started).
 
 ## 4. Lessons & traps  ← the irreplaceable part
 
@@ -133,17 +135,26 @@ every time; the reporting wasn't. Verify against the repo, not the report.
 
 ## 5. Don'ts & constraints
 
-Three constraints are recorded in `CLAUDE.md` under "Standing Constraints"
+Four constraints are recorded in `CLAUDE.md` under "Standing Constraints"
 with their failure modes. Read them before touching the build. Summary:
 
 - **Firmware is selected by package only.** Never re-add a `find`/`rm -rf`
   sweep over `/usr/lib/firmware`. Guarded by `test/integration/test-firmware.sh`.
 - **dracut must keep `--no-hostonly`.** See §4.
-- **labwc must register zero keybindings.** labwc 0.9.3 lacks
-  `zwp_keyboard_shortcuts_inhibit_manager_v1`, so any key it binds can never
-  reach the remote session. Guarded by `test-session-packages.sh`. Do not add
-  a "convenient" terminal shortcut — `foot` is deliberately reachable only
-  from a VT or SSH.
+- **labwc must register zero keybindings.** Not because of
+  `zwp_keyboard_shortcuts_inhibit_manager_v1` — that was this repo's earlier
+  (wrong) rationale; Xwayland never requests that inhibition since it always
+  runs rootless under labwc. Our labwc now carries a patch implementing the
+  protocol Xwayland actually uses, `zwp_xwayland_keyboard_grab_manager_v1`,
+  but keybindings stay at zero until a real grab has been confirmed on
+  hardware — see CLAUDE.md's "labwc must have zero keybindings" for the full
+  correction. Guarded by `test-session-packages.sh`. Do not add a
+  "convenient" terminal shortcut — `foot` is deliberately reachable only from
+  a VT or SSH.
+- **labwc is a local rebuild (`0.9.3-1+dbrrg1`), not the archive package** —
+  see CLAUDE.md's "labwc is a local rebuild, not the archive package". It
+  carries the fullscreen-span and keyboard-grab patches above; reverting to
+  the archive version silently loses both.
 - Keep `--no-install-recommends --no-install-suggests`; it is what stops
   `linux-firmware-minimal` pulling ~1.5 GB.
 - **Never more than 4 cores** in any build step — shared machine. `BUILD_JOBS`.
@@ -170,7 +181,7 @@ Settled decisions, do not relitigate:
 - Design spec: `docs/superpowers/specs/2026-07-26-ubuntu-2604-upgrade-design.md`
 - Progress ledger (every task, review, finding and ruling, including two
   controller errors): `.superpowers/sdd/2026-07-26-ubuntu-2604-upgrade/progress.md`
-- `CLAUDE.md` → "Standing Constraints" — the three load-bearing rules.
+- `CLAUDE.md` → "Standing Constraints" — the four load-bearing rules.
 - `overlay/etc/profile.d/10-dbrrg-session.sh` — session launch, home restore,
   env sourcing order, tty1 fallback. The ordering here is load-bearing.
 - `overlay/usr/local/bin/dbrrg-session` — restore is *not* here, deliberately.
@@ -181,12 +192,13 @@ Settled decisions, do not relitigate:
 
 ## 7. Open questions / pending decisions
 
-- **Multi-monitor fullscreen.** ThinLinc spans both monitors under wm2 but
-  not labwc (§4). The user confirmed the L-shaped geometry worked fine before
-  and wants it back. Most promising angle, untried: stop ThinLinc requesting
-  WM fullscreen and let it size itself to the union, as it did under wm2 —
-  check what geometry options `tlclient.conf` exposes. Alternative is
-  patching labwc to honour `_NET_WM_FULLSCREEN_MONITORS`.
+- **Multi-monitor fullscreen: implemented, hardware-unverified.** labwc now
+  carries a local patch spanning fullscreen Xwayland windows across the whole
+  output layout. Proven in a headless two-output rig (`make test-runtime`);
+  still unconfirmed against a real ThinLinc session on the dual-head machine.
+  The `_NET_WM_FULLSCREEN_MONITORS` angle recorded here previously is
+  unnecessary - TigerVNC derives its remote screen layout from the geometry it
+  is actually given, not from that atom.
 - **`save-home` is not crash-safe.** `tar zcf - . | sudo dd of=…` doesn't
   check the tar's exit status (no `pipefail`), so an interrupted save leaves a
   truncated `home.tar.gz` that gets restored over the user's home next boot.
