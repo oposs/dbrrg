@@ -94,6 +94,19 @@ else
     fail=1
 fi
 
+# Rootless Xwayland forwards X11 keyboard grabs via
+# zwp_xwayland_keyboard_grab_manager_v1; without it a compositor never learns
+# about an XGrabKeyboard call at all. Confirm the shipped binary implements
+# the protocol (a static string check, not proof it works - test-runtime's
+# grab_keyboard assertion covers that).
+if unsquashfs -no-xattrs -d "$DPKG_TMP/bin" "$SQSH" usr/bin/labwc >/dev/null 2>&1 &&
+   grep -aq 'zwp_xwayland_keyboard_grab_manager_v1' "$DPKG_TMP/bin/usr/bin/labwc"; then
+    echo "ok   - labwc implements zwp_xwayland_keyboard_grab_manager_v1"
+else
+    echo "FAIL - shipped labwc has no xwayland keyboard grab support"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"
