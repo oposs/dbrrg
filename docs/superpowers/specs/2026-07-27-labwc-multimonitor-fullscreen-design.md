@@ -171,10 +171,15 @@ hardware.
 
 ### Wiring
 
-`overlay/etc/dbrrg/labwc/environment` gains
-`export LABWC_FULLSCREEN_SPAN_OUTPUTS=1` - default on, since restoring the
-old behaviour is the point. `10-dbrrg-session.sh` already sources and exports
-that file before exec'ing labwc.
+`overlay/etc/dbrrg/labwc/environment` gains a bare
+`LABWC_FULLSCREEN_SPAN_OUTPUTS=1` - default on, since restoring the old
+behaviour is the point. It must **not** read `export
+LABWC_FULLSCREEN_SPAN_OUTPUTS=1`: the file is read two ways, and the
+`export` form breaks both of them silently. `10-dbrrg-session.sh` sources it
+under `set -a` before exec'ing labwc, and labwc also reads it directly via
+`-C` with a naive parser that splits on the first `=` - so an `export `
+prefix becomes part of the key and the variable is never set, with no error
+to flag it.
 
 `~/.dbrrg-environment` is sourced *after* the system file, so a machine that
 wants single-monitor fullscreen sets `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` there
@@ -210,9 +215,19 @@ project's recurring failure mode.
    sum of both outputs rather than one. Proves the compositor half without
    hardware.
 2. **Grab check** in the same rig: run Xwayland with `WAYLAND_DEBUG=1`, have
-   the client call `XGrabKeyboard`, and assert a
-   `zwp_xwayland_keyboard_grab_manager_v1` ... `grab_keyboard` request
-   appears. No input injection needed to prove the wiring.
+   the client call `XGrabKeyboard`, and assert Xwayland *binds* the
+   `zwp_xwayland_keyboard_grab_manager_v1` global. That is weaker than it
+   sounds, and deliberately so: the headless rig supplies no input devices,
+   so `wl_seat` advertises `capabilities(0)`, so Xwayland never creates
+   `xwl_seat->keyboard`, so it never installs its grab-forwarding hook -
+   meaning a `grab_keyboard` request can never appear on the wire in this rig
+   regardless of whether the implementation is correct (`test/runtime/test-
+   labwc-runtime.sh` carries the full reasoning and Xwayland source
+   references in a comment; stay consistent with it). The bind only proves
+   global creation, advertisement, and the Xwayland-only filter clause. It
+   does **not** prove that a real `XGrabKeyboard` → `grab_keyboard` forward
+   ever happens - that is unverified and can only be confirmed on hardware
+   with a keyboard attached.
 3. **Static**, extending `test/integration/test-session-packages.sh` and run
    via `make test`: the installed labwc version carries `+dbrrg1`, the env
    var is set in `/etc/dbrrg/labwc/environment`, and the shipped binary

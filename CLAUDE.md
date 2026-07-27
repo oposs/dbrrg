@@ -166,8 +166,10 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Three rules in this repository look like ordinary configuration but are
-load-bearing. All three have caused shipped-image bugs.
+Four rules in this repository look like ordinary configuration but are
+load-bearing. The first three have each caused a real shipped-image bug; the
+fourth (patched labwc) is preventive - nothing has shipped broken from it yet,
+but reverting it silently would ship regressions in both patched behaviours.
 
 ### Firmware is selected by package, never by cleanup
 

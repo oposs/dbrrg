@@ -177,8 +177,15 @@ Settled decisions, do not relitigate:
 
 - Change history: `git log 2cc54c9..HEAD`, and `git log c3508ab..HEAD` for
   this branch's work above trunk.
-- Plan: `docs/superpowers/plans/2026-07-26-ubuntu-2604-upgrade.md`
+- Plan: `docs/superpowers/plans/2026-07-26-ubuntu-2604-upgrade.md` — **the
+  multi-monitor-fullscreen reasoning in this plan is superseded**, see below.
 - Design spec: `docs/superpowers/specs/2026-07-26-ubuntu-2604-upgrade-design.md`
+  — **same caveat**: its keybinding rationale
+  (`zwp_keyboard_shortcuts_inhibit_manager_v1`) is also superseded, by
+  `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`.
+  Both July-26 files are left as-written, historical records of what was
+  believed at that design time - each now carries a one-line pointer at the
+  top to the file that corrects it; read that file for current fact.
 - Progress ledger (every task, review, finding and ruling, including two
   controller errors): `.superpowers/sdd/2026-07-26-ubuntu-2604-upgrade/progress.md`
 - `CLAUDE.md` → "Standing Constraints" — the four load-bearing rules.
@@ -219,9 +226,12 @@ Settled decisions, do not relitigate:
 - **The user was about to deploy and test.** Any hardware finding they report
   supersedes §2 and probably §7. Expect the first message of the next session
   to invalidate part of this file.
-- §7's multi-monitor angle ("let ThinLinc size itself") is an untested
-  hypothesis, not a plan. It is based on the user's report that wm2 behaved
-  that way, which is credible but not something I verified.
+- §7's multi-monitor fullscreen entry is now the *implemented* state, not an
+  angle to try. The "let ThinLinc size itself via `tlclient.conf`" idea this
+  bullet used to describe was tried first and did not work (see
+  `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`,
+  "Problem"); the labwc patch replaced it. What's still open is only the
+  hardware confirmation noted in §7, not which approach to take.
 - The `mutter` check in §4 covered only its helper libraries, not the main
   `libmutter-*.so`. The wlroots/openbox/i3 results are solid; mutter's is not.
 - The `.superpowers/sdd/` workspace still exists. The SDD skill says to

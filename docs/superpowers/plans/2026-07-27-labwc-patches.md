@@ -436,7 +436,13 @@ Append to `overlay/etc/dbrrg/labwc/environment`:
 # which ignores the variable. Set to 0 in ~/.dbrrg-environment for
 # single-monitor fullscreen on a particular machine - that file is sourced
 # after this one and is persisted by save-home.
-export LABWC_FULLSCREEN_SPAN_OUTPUTS=1
+#
+# Bare assignment, not 'export': this file is read two ways -
+# 10-dbrrg-session.sh sources it under 'set -a', and labwc reads it directly
+# via -C with a naive parser that splits on the first '=', so an 'export '
+# prefix would become part of the key and the variable would silently never
+# be set.
+LABWC_FULLSCREEN_SPAN_OUTPUTS=1
 ```
 
 - [ ] **Step 6: Add the static assertion**
@@ -449,7 +455,7 @@ present "fullscreen span enabled in labwc environment" \
         "etc/dbrrg/labwc/environment"
 if unsquashfs -no-xattrs -d "$DPKG_TMP/env" "$SQSH" \
         etc/dbrrg/labwc/environment >/dev/null 2>&1 &&
-   grep -q '^export LABWC_FULLSCREEN_SPAN_OUTPUTS=1' \
+   grep -q '^LABWC_FULLSCREEN_SPAN_OUTPUTS=1' \
         "$DPKG_TMP/env/etc/dbrrg/labwc/environment"; then
     echo "ok   - LABWC_FULLSCREEN_SPAN_OUTPUTS is set"
 else
@@ -763,11 +769,18 @@ already reachable:
 - [ ] **Step 5: Compile it before packaging it**
 
 Building inside the .deb stage first would bury compiler errors in a long
-build log. Compile in the scratch clone:
+build log. Compile in the scratch clone - but not via `sudo apt-get build-dep
+-y labwc` on the dev machine: there are no dev packages and no passwordless
+sudo here. Instead compile inside a throwaway `ubuntu:26.04` podman
+container, mirroring the Dockerfile's own `labwc-build` stage:
 
 ```bash
-sudo apt-get build-dep -y labwc     # once, on the dev machine
-meson setup build && ninja -C build -j4
+podman run --rm -it -v "$PWD:/build:z" -w /build ubuntu:26.04 bash -c '
+    apt-get update &&
+    apt-get install -yq --no-install-recommends build-essential meson ninja-build &&
+    sed -i "s/^Types: deb\$/Types: deb deb-src/" /etc/apt/sources.list.d/ubuntu.sources &&
+    apt-get update && apt-get build-dep -yq labwc &&
+    meson setup build && ninja -C build -j4'
 ```
 
 Expected: a clean build. Two likely errors, both mechanical: a missing
