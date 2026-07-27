@@ -23,6 +23,60 @@ readonly DBRRG_STORAGE="$DBRRG_BASE/storage"
 readonly DBRRG_LAYERS="$DBRRG_BASE/layers"
 readonly DBRRG_STATE="$DBRRG_BASE/state"
 
+readonly DBRRG_EFI_DEV="/dev/disk/by-partlabel/EFI-SYSTEM"
+# Set once a wait has already exhausted its budget in this boot, so a later
+# hook fails fast instead of repeating the whole timeout.
+readonly DBRRG_EFI_ABSENT_MARKER="/run/dbrrg-efi-absent"
+
+# dbrrg_wait_for_efi [timeout_seconds]
+#
+# Wait for the boot medium's EFI-SYSTEM partition to appear. Returns 0 as soon
+# as it exists, 1 if the budget expires.
+#
+# This polls rather than checking once. `udevadm settle` only drains events
+# that are ALREADY queued: if the USB host controller has not yet enumerated
+# the stick, that queue is empty and settle returns immediately. The previous
+# "settle; sleep 2; test once; give up" sequence therefore granted the device
+# barely two seconds. A USB 3 stick on real hardware routinely needs longer,
+# while QEMU's virtio-blk appears at once - which is why this failed only on
+# hardware and never in the VM.
+#
+# The bootloader having loaded the kernel from this same partition proves
+# nothing about the kernel's view: UEFI firmware used its own USB stack, and
+# the kernel re-enumerates the bus from scratch.
+dbrrg_wait_for_efi() {
+    _dwfe_timeout="${1:-${DBRRG_DEVICE_TIMEOUT:-60}}"
+    _dwfe_waited=0
+
+    [ -b "$DBRRG_EFI_DEV" ] && return 0
+    [ -e "$DBRRG_EFI_ABSENT_MARKER" ] && return 1
+
+    while [ ! -b "$DBRRG_EFI_DEV" ]; do
+        if [ "$_dwfe_waited" -ge "$_dwfe_timeout" ]; then
+            : > "$DBRRG_EFI_ABSENT_MARKER" 2>/dev/null || true
+            return 1
+        fi
+        if [ $((_dwfe_waited % 5)) -eq 0 ]; then
+            dbrrg_log "Waiting for EFI-SYSTEM to appear (${_dwfe_waited}/${_dwfe_timeout}s)"
+        fi
+        udevadm settle --timeout=5 >/dev/null 2>&1 || true
+        sleep 1
+        _dwfe_waited=$((_dwfe_waited + 1))
+    done
+
+    [ "$_dwfe_waited" -gt 0 ] && dbrrg_log "EFI-SYSTEM appeared after ${_dwfe_waited}s"
+    return 0
+}
+
+# Log what block devices the kernel can actually see. Called before giving up,
+# so the operator sees evidence instead of only "not found".
+dbrrg_dump_block_devices() {
+    dbrrg_log "Block devices visible to the kernel:"
+    blkid 2>&1 | while read -r _ddbd_line; do dbrrg_log "  $_ddbd_line"; done
+    dbrrg_log "Partition labels present:"
+    ls -l /dev/disk/by-partlabel/ 2>&1 | while read -r _ddbd_line; do dbrrg_log "  $_ddbd_line"; done
+}
+
 dbrrg_init_dirs() {
     dinfo "dbrrg: Creating $DBRRG_BASE"
     mkdir -p "$DBRRG_BASE" || die "Failed to create $DBRRG_BASE"

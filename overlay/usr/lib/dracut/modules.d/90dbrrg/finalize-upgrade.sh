@@ -17,12 +17,23 @@ if is_remote_url "$ramroot"; then
     exit 0
 fi
 
-# Wait for device
-udevadm settle --timeout=30
-
-EFI_DEV="/dev/disk/by-partlabel/EFI-SYSTEM"
-if [ ! -b "$EFI_DEV" ]; then
-    dbrrg_log "finalize-upgrade: No EFI-SYSTEM partition found - skipping"
+# Wait for the boot medium. This hook runs BEFORE mount-squashfs, so it is
+# usually the first thing in the boot to look for the device - and it used to
+# check once after `udevadm settle`, which returns immediately when the USB
+# controller has not enumerated the stick yet. See dbrrg_wait_for_efi().
+#
+# Getting this wrong here is quieter and nastier than in mount-squashfs: a
+# pending tl.new upgrade would simply not be finalized, mount-squashfs would
+# then find the device a moment later and boot the OLD tl/, and the machine
+# would come up looking perfectly healthy with the upgrade silently skipped -
+# possibly applying on some later boot instead. Upgrades must not be a race.
+EFI_DEV="$DBRRG_EFI_DEV"
+if ! dbrrg_wait_for_efi; then
+    # Still non-fatal: mount-squashfs runs next and will report authoritatively
+    # if the device never appears. But say plainly that a pending upgrade is
+    # being skipped, rather than implying there was simply nothing to do.
+    dbrrg_log "finalize-upgrade: EFI-SYSTEM did not appear - skipping"
+    dbrrg_log "finalize-upgrade: a pending tl.new upgrade (if any) was NOT applied"
     exit 0
 fi
 

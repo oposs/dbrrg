@@ -49,13 +49,17 @@ else
     # USB boot
     dbrrg_log "USB boot: Loading from $ramroot"
 
-    udevadm settle --timeout=30
-    sleep 2
-
-    efi_dev="/dev/disk/by-partlabel/EFI-SYSTEM"
+    efi_dev="$DBRRG_EFI_DEV"
     efi_mount="$DBRRG_STORAGE/efi"
 
-    [ -b "$efi_dev" ] || die "EFI-SYSTEM partition not found"
+    # See dbrrg_wait_for_efi() in dbrrg-lib.sh for why a single check raced on
+    # real hardware but never in QEMU.
+    if ! dbrrg_wait_for_efi; then
+        # Give the operator evidence rather than just "not found" - with no
+        # rd.shell, dracut answers a die() with a blank screen.
+        dbrrg_dump_block_devices
+        die "EFI-SYSTEM partition not found after ${DBRRG_DEVICE_TIMEOUT:-60}s"
+    fi
 
     fsck.vfat -a "$efi_dev" > /dev/kmsg 2>&1 || true
     mount -t vfat "$efi_dev" "$efi_mount" || die "Failed to mount EFI"
