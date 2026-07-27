@@ -1,10 +1,12 @@
 # Patched labwc: multi-monitor fullscreen for X11 clients, and X keyboard grabs
 
 Date: 2026-07-27
-Status: implemented (Patches A and B committed, built, and tested on this
-branch). Both behaviours are proven compositor-side in the headless rig;
-neither the fullscreen span nor the keyboard grab has been confirmed against
-a real ThinLinc session on dual-head hardware - see Known Limits.
+Status: implemented and confirmed on hardware (2026-07-27). A real ThinLinc
+session on a dual-head machine starts normally and spans both monitors -
+Patch A does what it was written to do. Patch B remains unverified by
+construction: the image ships zero keybindings, so a suspended keybinding is
+not observable, and the headless rig cannot generate a real grab at all - see
+Known Limits.
 
 ## Problem
 
@@ -285,8 +287,15 @@ screen layout from real geometry.
 - Each labwc or wlroots upgrade needs a quilt rebase. Both patches are
   context-minimal and quilt fails loudly rather than silently, but this is a
   standing maintenance cost that did not exist before.
-- The rig proves the compositor half only. The client-side result still needs
-  confirmation on the dual-head machine.
+- Confirmed on hardware 2026-07-27: the session starts and fullscreen spans
+  both monitors. Two things were *not* separately observed and remain open:
+  whether the remote session receives two distinct screens rather than one
+  wide one (`remoteResize()` should produce two, but nobody looked), and
+  whether `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` yields single-monitor fullscreen.
+- Patch B is unverifiable in practice while keybindings stay at zero: there is
+  nothing observable to suspend. The headless rig additionally cannot generate
+  a grab at all, having no input devices. Its correctness rests on the code
+  review plus Xwayland's own source, not on a behavioural test.
 - Mixed-scale outputs render one Xwayland buffer across both, the same as
   under wm2.
 - Patch B has no observable effect while keybindings remain at zero.

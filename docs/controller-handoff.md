@@ -52,28 +52,36 @@ controller itself, not taken from a subagent report:
   a later duplicate env assignment wins (`1280x720`).
 - `artifacts/images/dbrrg-usb.img` built 16:24 on 2026-07-27 from this HEAD.
 
-**Nothing here is confirmed on hardware.** The user was writing the image to a
-USB stick as this was written. Everything above is compositor-side, in a
-headless two-output rig.
+**Confirmed on hardware 2026-07-27**, on the dual-head machine:
+- the session starts normally (so the new merged-config-dir path works and
+  did not need its fallback);
+- fullscreen spans both monitors — Patch A does its job;
+- an `XKB_DEFAULT_*` override in `~/.dbrrg-environment` takes effect, which is
+  the per-machine feature that had never worked before this branch.
+
+Not observed, still open: whether the remote session sees two distinct screens
+rather than one wide one; whether `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` gives
+single-monitor fullscreen (same merge path as the keyboard override, so
+expected to work); and anything about Patch B, which is unobservable while
+keybindings stay at zero.
 
 Not done: the branch is neither merged nor pushed, and
 `superpowers:finishing-a-development-branch` was never run.
 
 ## 3. Do this next
 
-1. **Take the user's hardware results as authoritative** and expect them to
-   invalidate part of this file. What they were testing, in priority order:
-   does a session start at all (Task 5 changed the `labwc -C` path, and a
-   diskless client has no local recovery); does fullscreen span both monitors;
-   does `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` in `~/.dbrrg-environment` give
-   single-monitor fullscreen; does the per-machine keyboard layout finally
-   apply (it never has).
-2. **If the session fails to start**, the fallback should have caught it —
-   look in the session log for `dbrrg: config merge failed` or
-   `dbrrg: XDG_RUNTIME_DIR unset or unwritable`. Either means labwc ran with
-   `-C /etc/dbrrg/labwc` (old behaviour) and the merge is the suspect. Get a
-   shell via SSH or Ctrl+Alt+F2 — `foot` has no launch path inside the session.
-3. **Then finish the branch** — `superpowers:finishing-a-development-branch`.
+1. **Finish the branch** — `superpowers:finishing-a-development-branch`. The
+   work is done and hardware-confirmed (§2); this is the only thing standing
+   between here and merge.
+2. Optionally close the two small observation gaps on the next boot: check
+   whether the remote session reports two screens (a ThinLinc/remote-side
+   check, not a client one), and try `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` to
+   exercise the span override specifically.
+3. If a session ever fails to start after a change in this area, look in the
+   session log for `dbrrg: config merge failed` or `dbrrg: XDG_RUNTIME_DIR
+   unset or unwritable`. Either means labwc fell back to
+   `-C /etc/dbrrg/labwc` and the merge is the suspect. Get a shell via SSH or
+   Ctrl+Alt+F2 — `foot` has no launch path inside the session.
 
 ## 4. Lessons & traps  ← the irreplaceable part
 
@@ -237,14 +245,13 @@ Settled, do not relitigate:
 
 ## 8. Staleness watch
 
-- **The user was mid-hardware-test when this was written.** Any result they
-  report supersedes §2 and most of §3. Expect it.
-- The claim that the fullscreen span reaches real hardware is a *traced*
-  conclusion (session script → `main.c:211` → `dir.c` → the patch's `getenv`),
-  reinforced by the rig passing without the env var injected into the
-  container. It is not a hardware observation.
-- Task 5's fallback path was read closely by two reviewers and the controller
-  but never executed end-to-end through a real session start.
+- The hardware confirmation in §2 covers three specific observations and no
+  more. Do not let it drift into "the branch is verified" — Patch B in
+  particular has never been exercised and cannot be while keybindings are
+  zero.
+- Task 5's *fallback* path is still unexercised: the hardware boot took the
+  success path, which is the good news but means the `XDG_RUNTIME_DIR`
+  unset/unwritable branch has only ever been read, never run.
 - `.superpowers/sdd/2026-07-27-labwc-patches/` still exists; the SDD skill says
   to delete it once the final review is clean and the branch finished. It was
   kept because the branch is not finished.

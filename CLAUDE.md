@@ -118,8 +118,16 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   behaviour) rather than failing to start. This is proven by
   `test/integration/test-labwc-config-merge.sh` (the merge logic, offline)
   and `test/runtime/test-labwc-runtime.sh` (the parser assumption, against
-  real labwc); like everything else on this branch it remains unconfirmed on
-  real hardware.
+  real labwc).
+
+  **Confirmed on hardware (2026-07-27):** an `XKB_DEFAULT_*` override in
+  `~/.dbrrg-environment` takes effect, which is what the merge exists to
+  make possible - before it, that documented feature had never worked. The
+  session also starts normally, i.e. the merged config dir is used without
+  needing its fallback. Not separately exercised: setting
+  `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` to get single-monitor fullscreen. It
+  travels through the same merge, so it is expected to work, but it has not
+  been observed.
 
   **The two user files are split by timing, and it is not arbitrary:**
 
