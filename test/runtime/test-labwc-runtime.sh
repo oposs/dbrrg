@@ -101,7 +101,11 @@ if [[ $grab_rc -eq 124 || $grab_rc -eq 137 ]]; then
     exit 1
 fi
 
-if echo "$grab_out" | grep -Eq 'wl_registry#[0-9]+\.bind\([0-9]+, "zwp_xwayland_keyboard_grab_manager_v1"'; then
+# The interface/id separator in WAYLAND_DEBUG output changed between
+# libwayland versions: 1.22 and earlier print "wl_registry@N", 1.24 (shipped
+# in this image) prints "wl_registry#N". Accept either rather than pinning
+# to whichever the base image currently ships.
+if echo "$grab_out" | grep -Eq 'wl_registry[@#][0-9]+\.bind\([0-9]+, "zwp_xwayland_keyboard_grab_manager_v1"'; then
     echo "ok   - Xwayland bound the xwayland keyboard grab manager"
 else
     echo "FAIL - labwc is not advertising the manager to Xwayland"
