@@ -17,3 +17,19 @@ XKB_DEFAULT_OPTIONS=compose:ralt,ctrl:nocaps
 # gives the session a visible pointer.
 XCURSOR_THEME=whiteglass
 XCURSOR_SIZE=24
+
+# Make fullscreen Xwayland windows (the ThinLinc client) cover every monitor
+# instead of one. Requires the local labwc patch; harmless on a stock labwc,
+# which ignores the variable. Set to 0 in ~/.dbrrg-environment for
+# single-monitor fullscreen on a particular machine - that file is sourced
+# after this one and is persisted by save-home.
+#
+# No "export" here: this file is read two ways, and both require plain
+# KEY=VALUE. 10-dbrrg-session.sh sources it with "set -a" (which exports
+# bare assignments for it), and its contents also end up in the merged
+# environment file that dbrrg-compose-labwc-config writes for labwc's own
+# -C config dir - parsed by labwc's naive parser (src/config/session.c,
+# read_environment_file/process_line) that splits on the first "=" - an
+# "export " prefix would become part of the key and the variable would
+# never be set.
+LABWC_FULLSCREEN_SPAN_OUTPUTS=1

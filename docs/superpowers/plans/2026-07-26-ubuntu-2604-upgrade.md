@@ -1,5 +1,12 @@
 # Ubuntu 26.04 / Wayland / PipeWire Upgrade Implementation Plan
 
+> **Superseded in part:** the keybinding rationale in this plan
+> (`zwp_keyboard_shortcuts_inhibit_manager_v1`) turned out to be wrong, and
+> the multi-monitor-fullscreen problem it left open is now fixed by a patched
+> labwc. See
+> `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`.
+> This file is left as-written below as a historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the dbrrg thin-client image to Ubuntu 26.04 LTS with ThinLinc 4.20, fix the build bug that strips GPU firmware and CPU microcode from every shipped image, replace the X11 session stack with labwc/Wayland, and move audio to PipeWire.

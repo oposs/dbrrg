@@ -3,6 +3,12 @@
 Date: 2026-07-26
 Status: approved design, not yet implemented
 
+> **Superseded in part:** the keybinding rationale recorded here
+> (`zwp_keyboard_shortcuts_inhibit_manager_v1`) turned out to be wrong. See
+> `docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md`
+> for the correction and for the multi-monitor-fullscreen fix this design
+> didn't have. This file is left as-written below as a historical record.
+
 ## Goal
 
 Move the dbrrg thin-client image from Ubuntu 24.04 to 26.04 LTS, upgrade the

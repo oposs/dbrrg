@@ -1,0 +1,271 @@
+Description: implement zwp_xwayland_keyboard_grab_manager_v1
+ Rootless Xwayland (always the case under labwc) forwards X11 keyboard grabs
+ (XGrabKeyboard/XUngrabKeyboard) via zwp_xwayland_keyboard_grab_manager_v1,
+ not via zwp_keyboard_shortcuts_inhibit_manager_v1 - the latter's only call
+ site in Xwayland returns immediately for rootless servers. Neither wlroots
+ nor labwc implemented the manager that actually matters, so a compositor
+ keybinding could never be reclaimed by a remote X11 client such as the
+ ThinLinc/TigerVNC session this image ships.
+ .
+ Adds a new protocol source (src/protocols/xwayland-keyboard-grab.c)
+ implementing the manager global, restricted via server_global_filter() to
+ the Xwayland wl_client only. A new per-view flag,
+ keybinds_inhibited_by_grab, is OR'd into view_inhibits_actions() without
+ reusing the existing user-toggled inhibits_keybinds flag, so a grab arriving
+ mid-session cannot clobber the user's own ToggleKeybinds state.
+ .
+ This does not by itself add any labwc keybinding - the image still ships
+ zero (see rc.xml) pending confirmation of the grab-forwarding path on real
+ hardware with a keyboard attached.
+ .
+ dbrrg-specific: not proposed for upstream inclusion, see Forwarded below.
+Author: dbrrg maintainers
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2026-07-27
+---
+diff --git a/include/labwc.h b/include/labwc.h
+index 3d3ca2a..d497ed1 100644
+--- a/include/labwc.h
++++ b/include/labwc.h
+@@ -440,6 +440,8 @@ void server_init(struct server *server);
+ void server_start(struct server *server);
+ void server_finish(struct server *server);
+ 
++void xwayland_keyboard_grab_manager_create(struct server *server);
++
+ void create_constraint(struct wl_listener *listener, void *data);
+ void constrain_cursor(struct server *server, struct wlr_pointer_constraint_v1
+ 	*constraint);
+diff --git a/include/view.h b/include/view.h
+index fae462d..4792380 100644
+--- a/include/view.h
++++ b/include/view.h
+@@ -187,6 +187,13 @@ struct view {
+ 	enum lab_edge tiled;
+ 	enum lab_edge edges_visible;
+ 	bool inhibits_keybinds; /* also inhibits mousebinds */
++	/*
++	 * dbrrg: set while an X11 client holds a keyboard grab forwarded by
++	 * Xwayland. Kept separate from inhibits_keybinds, which the user
++	 * toggles via the ToggleKeybinds action and which drives an SSD
++	 * indicator - a grab must not clobber that state.
++	 */
++	bool keybinds_inhibited_by_grab;
+ 	xkb_layout_index_t keyboard_layout;
+ 
+ 	/* Pointer to an output owned struct region, may be NULL */
+diff --git a/protocols/meson.build b/protocols/meson.build
+index 80269be..87dcc97 100644
+--- a/protocols/meson.build
++++ b/protocols/meson.build
+@@ -20,6 +20,7 @@ server_protocols = [
+ 	wl_protocol_dir / 'staging/cursor-shape/cursor-shape-v1.xml',
+ 	wl_protocol_dir / 'staging/drm-lease/drm-lease-v1.xml',
+ 	wl_protocol_dir / 'staging/xwayland-shell/xwayland-shell-v1.xml',
++	wl_protocol_dir / 'unstable/xwayland-keyboard-grab/xwayland-keyboard-grab-unstable-v1.xml',
+ 	wl_protocol_dir / 'staging/tearing-control/tearing-control-v1.xml',
+ 	wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+ 	wl_protocol_dir / 'staging/ext-workspace/ext-workspace-v1.xml',
+diff --git a/src/protocols/meson.build b/src/protocols/meson.build
+index d9d17bf..4892739 100644
+--- a/src/protocols/meson.build
++++ b/src/protocols/meson.build
+@@ -1,5 +1,6 @@
+ labwc_sources += files(
+   'transaction-addon.c',
++  'xwayland-keyboard-grab.c',
+ )
+ 
+ subdir('cosmic_workspaces')
+diff --git a/src/protocols/xwayland-keyboard-grab.c b/src/protocols/xwayland-keyboard-grab.c
+new file mode 100644
+index 0000000..bdd72f4
+--- /dev/null
++++ b/src/protocols/xwayland-keyboard-grab.c
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * dbrrg: zwp_xwayland_keyboard_grab_manager_v1
++ *
++ * Rootless Xwayland forwards X11 keyboard grabs (XGrabKeyboard) with this
++ * protocol. It never uses zwp_keyboard_shortcuts_inhibit_manager_v1 - that
++ * call site (maybe_fake_grab_devices) returns early when rootless, which is
++ * always the case under labwc. While an X client holds a grab, labwc must
++ * not swallow keys for its own bindings.
++ *
++ * Xwayland only installs its grab hook if this global is advertised, so a
++ * compositor without it never learns about X grabs at all.
++ */
++#include <assert.h>
++#include <stdlib.h>
++#include <wayland-server-core.h>
++#include <wlr/types/wlr_compositor.h>
++#include "common/mem.h"
++#include "labwc.h"
++#include "view.h"
++#include "xwayland-keyboard-grab-unstable-v1-protocol.h"
++
++struct lab_keyboard_grab {
++	struct wl_resource *resource;
++	struct view *view;
++	struct wl_listener on_view_destroy;
++};
++
++static void
++handle_view_destroy(struct wl_listener *listener, void *data)
++{
++	struct lab_keyboard_grab *grab =
++		wl_container_of(listener, grab, on_view_destroy);
++	wl_list_remove(&grab->on_view_destroy.link);
++	wl_list_init(&grab->on_view_destroy.link);
++	grab->view = NULL;
++}
++
++static void
++grab_handle_resource_destroy(struct wl_resource *resource)
++{
++	struct lab_keyboard_grab *grab = wl_resource_get_user_data(resource);
++
++	if (grab->view) {
++		grab->view->keybinds_inhibited_by_grab = false;
++	}
++	wl_list_remove(&grab->on_view_destroy.link);
++	free(grab);
++}
++
++static void
++grab_handle_destroy(struct wl_client *client, struct wl_resource *resource)
++{
++	wl_resource_destroy(resource);
++}
++
++static const struct zwp_xwayland_keyboard_grab_v1_interface grab_impl = {
++	.destroy = grab_handle_destroy,
++};
++
++static void
++manager_handle_grab_keyboard(struct wl_client *client,
++		struct wl_resource *manager_resource, uint32_t id,
++		struct wl_resource *surface_resource,
++		struct wl_resource *seat_resource)
++{
++	struct lab_keyboard_grab *grab = znew(*grab);
++
++	grab->resource = wl_resource_create(client,
++		&zwp_xwayland_keyboard_grab_v1_interface,
++		wl_resource_get_version(manager_resource), id);
++	if (!grab->resource) {
++		free(grab);
++		wl_client_post_no_memory(client);
++		return;
++	}
++	wl_resource_set_implementation(grab->resource, &grab_impl, grab,
++		grab_handle_resource_destroy);
++
++	wl_list_init(&grab->on_view_destroy.link);
++
++	struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
++	grab->view = surface ? view_from_wlr_surface(surface) : NULL;
++	if (grab->view) {
++		grab->on_view_destroy.notify = handle_view_destroy;
++		wl_signal_add(&grab->view->events.destroy,
++			&grab->on_view_destroy);
++		grab->view->keybinds_inhibited_by_grab = true;
++	}
++}
++
++static void
++manager_handle_destroy(struct wl_client *client, struct wl_resource *resource)
++{
++	wl_resource_destroy(resource);
++}
++
++static const struct zwp_xwayland_keyboard_grab_manager_v1_interface manager_impl = {
++	.destroy = manager_handle_destroy,
++	.grab_keyboard = manager_handle_grab_keyboard,
++};
++
++static void
++manager_bind(struct wl_client *client, void *data, uint32_t version,
++		uint32_t id)
++{
++	struct wl_resource *resource = wl_resource_create(client,
++		&zwp_xwayland_keyboard_grab_manager_v1_interface, version, id);
++	if (!resource) {
++		wl_client_post_no_memory(client);
++		return;
++	}
++	wl_resource_set_implementation(resource, &manager_impl, NULL, NULL);
++}
++
++void
++xwayland_keyboard_grab_manager_create(struct server *server)
++{
++	assert(server);
++	wl_global_create(server->wl_display,
++		&zwp_xwayland_keyboard_grab_manager_v1_interface, 1,
++		NULL, manager_bind);
++}
+diff --git a/src/server.c b/src/server.c
+index 9f271b1..674ee43 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -42,6 +42,7 @@
+ #if HAVE_XWAYLAND
+ #include <wlr/xwayland.h>
+ #include "xwayland-shell-v1-protocol.h"
++#include "xwayland-keyboard-grab-unstable-v1-protocol.h"
+ #endif
+ 
+ #include "action.h"
+@@ -312,6 +313,15 @@ server_global_filter(const struct wl_client *client, const struct wl_global *glo
+ 		/* Filter out the xwayland shell for usual clients */
+ 		return false;
+ 	}
++
++	if (client != xwayland_client && !strcmp(iface->name,
++			zwp_xwayland_keyboard_grab_manager_v1_interface.name)) {
++		/*
++		 * Only Xwayland may take keyboard grabs; for any other client
++		 * this would be a global keylogger.
++		 */
++		return false;
++	}
+ #endif
+ 
+ 	/* Do not allow security_context_manager_v1 to clients with a security context attached */
+@@ -707,6 +717,10 @@ server_init(struct server *server)
+ 	server->tearing_new_object.notify = handle_tearing_new_object;
+ 	wl_signal_add(&server->tearing_control->events.new_object, &server->tearing_new_object);
+ 
++#if HAVE_XWAYLAND
++	xwayland_keyboard_grab_manager_create(server);
++#endif
++
+ 	server->tablet_manager = wlr_tablet_v2_create(server->wl_display);
+ 
+ 	layers_init(server);
+diff --git a/src/view.c b/src/view.c
+index c439b44..d584834 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -2373,7 +2373,17 @@ view_toggle_keybinds(struct view *view)
+ bool
+ view_inhibits_actions(struct view *view, struct wl_list *actions)
+ {
+-	return view && view->inhibits_keybinds && !actions_contain_toggle_keybinds(actions);
++	if (!view) {
++		return false;
++	}
++	/*
++	 * dbrrg: a forwarded X11 grab takes everything, including
++	 * ToggleKeybinds - the client asked for every key.
++	 */
++	if (view->keybinds_inhibited_by_grab) {
++		return true;
++	}
++	return view->inhibits_keybinds && !actions_contain_toggle_keybinds(actions);
+ }
+ 
+ void

@@ -8,6 +8,37 @@
 # When this script returns, labwc terminates and the tty1 login starts a
 # fresh session. Leaving the compositor running would strand the user on a
 # bare desktop with no keybindings and no way to recover.
-/usr/local/bin/dbrrg-restore-home
+# NOTE: the home directory has ALREADY been restored, by
+# /etc/profile.d/10-dbrrg-session.sh before the compositor started. It has to
+# happen there so a user's ~/.dbrrg-environment (keyboard layout, cursor) is
+# on disk before labwc reads XKB_DEFAULT_* at startup. Do not add a
+# dbrrg-restore-home call here - it would overwrite the running session's home
+# with the on-disk copy midway through.
+
+# Per-device session customisation, sourced after the home restore so the
+# user's own saved copy wins.
+#
+# This is the Wayland replacement for ~/.xsessionrc, which the move off X11
+# removed. That file was how people configured individual machines - display
+# layout with xrandr, keyboard, netplan/WiFi - and because it lives in $HOME
+# it is captured by save-home and restored on every boot, so edits persist
+# without rebuilding an image.
+#
+# Displays: wlr-randr is the xrandr equivalent for this compositor, e.g.
+#   wlr-randr --output DP-1 --transform 90 --pos 1920,0
+# For layouts that must survive a monitor being switched on late or waking
+# from DPMS, run kanshi from here instead - it reapplies on hotplug, which a
+# one-shot wlr-randr does not.
+#
+# Sourced rather than executed, matching ~/.xsessionrc semantics: no execute
+# bit needed, and it can export variables into the session.
+#
+# It runs BEFORE tlclient because the ThinLinc client reads the monitor
+# layout once at startup - a rotation applied afterwards would leave the
+# client believing a portrait screen is still landscape.
+if [ -r "$HOME/.dbrrg-sessionrc" ]; then
+    . "$HOME/.dbrrg-sessionrc"
+fi
+
 /opt/thinlinc/bin/tlclient
 /opt/thinlinc/bin/save-home

@@ -87,6 +87,58 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
 - Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory)
 - Session startup: `overlay/usr/local/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
+- **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the ThinLinc client. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
+
+- **Per-machine user environment:** `overlay/home/tluser/.dbrrg-environment` — variables the compositor reads at **startup**: keyboard layout (`XKB_DEFAULT_*`) and cursor theme. Sourced by `overlay/etc/profile.d/10-dbrrg-session.sh` after `/etc/dbrrg/labwc/environment`, so the user's value wins. Also persisted via `save-home`.
+
+  | variable | default | effect |
+  | --- | --- | --- |
+  | `LABWC_FULLSCREEN_SPAN_OUTPUTS` | `1` | fullscreen Xwayland windows (the ThinLinc client) span every monitor |
+
+  A per-machine override in `~/.dbrrg-environment` **works**, including for
+  keys also set in `/etc/dbrrg/labwc/environment` - `LABWC_FULLSCREEN_SPAN_OUTPUTS`
+  above and the pre-existing `XKB_DEFAULT_*` / `XCURSOR_*` keyboard and cursor
+  overrides. This is not as simple as it looks: labwc's
+  `session_environment_init()` (`src/config/session.c:77`) calls
+  `setenv(key, value, 1)` - overwrite - and, run with `-C`, treats
+  `<config_dir>/environment` as the *only* environment file it reads
+  (`src/common/dir.c:153-157`, called from `src/main.c:211`). Pointing `-C`
+  straight at `/etc/dbrrg/labwc` therefore let labwc's own re-read reset any
+  key also present in the user's file back to the system value, silently
+  discarding what `10-dbrrg-session.sh` had just exported into the shell.
+  The fix, `overlay/usr/local/bin/dbrrg-compose-labwc-config`, composes a
+  merged config directory at session start - the system dir's files
+  symlinked in unchanged, plus an `environment` file that is the system
+  defaults followed by the user's file - and points `-C` at that instead, so
+  the file labwc re-reads already has the user's values last (and therefore
+  winning, since labwc's `setenv` on a later duplicate overwrites the
+  earlier one - `test/runtime/test-labwc-runtime.sh` asserts this against
+  the real parser). If `XDG_RUNTIME_DIR` is unset/unwritable or the merge
+  fails, the session falls back to the plain `/etc/dbrrg/labwc` (today's
+  behaviour) rather than failing to start. This is proven by
+  `test/integration/test-labwc-config-merge.sh` (the merge logic, offline)
+  and `test/runtime/test-labwc-runtime.sh` (the parser assumption, against
+  real labwc).
+
+  **Confirmed on hardware (2026-07-27):** an `XKB_DEFAULT_*` override in
+  `~/.dbrrg-environment` takes effect, which is what the merge exists to
+  make possible - before it, that documented feature had never worked. The
+  session also starts normally, i.e. the merged config dir is used without
+  needing its fallback. Not separately exercised: setting
+  `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` to get single-monitor fullscreen. It
+  travels through the same merge, so it is expected to work, but it has not
+  been observed.
+
+  **The two user files are split by timing, and it is not arbitrary:**
+
+  | file | sourced | for |
+  | --- | --- | --- |
+  | `~/.dbrrg-environment` | before the compositor starts | variables read at startup — keyboard, cursor |
+  | `~/.dbrrg-sessionrc` | inside the running session | commands needing a compositor — `wlr-randr`, `kanshi`, netplan |
+
+  This is why `dbrrg-restore-home` runs in `10-dbrrg-session.sh` **before** launching labwc, rather than from `dbrrg-session` as the X11 setup did: a user's saved `.dbrrg-environment` has to be on disk before the compositor reads `XKB_DEFAULT_*`. Restoring home inside the session would make a user keyboard change take effect only on the *next* boot. Do not move the restore back into `dbrrg-session`.
+
+  Note the deliberate split from system config: user-editable settings live in `$HOME`, but `overlay/etc/dbrrg/labwc/rc.xml` does **not** — see [Standing Constraints](#standing-constraints).
 - Autologin: `overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf`
 - User defaults: `overlay/home/tluser/`
 
@@ -148,8 +200,10 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Three rules in this repository look like ordinary configuration but are
-load-bearing. All three have caused shipped-image bugs.
+Four rules in this repository look like ordinary configuration but are
+load-bearing. The first three have each caused a real shipped-image bug; the
+fourth (patched labwc) is preventive - nothing has shipped broken from it yet,
+but reverting it silently would ship regressions in both patched behaviours.
 
 ### Firmware is selected by package, never by cleanup
 
@@ -206,16 +260,54 @@ directory lives at `/etc/dbrrg/labwc`, not under `$HOME` - see
 selected via `labwc -C /etc/dbrrg/labwc` in
 `overlay/etc/profile.d/10-dbrrg-session.sh`.
 
-labwc 0.9.3 does not implement `zwp_keyboard_shortcuts_inhibit_manager_v1`,
-even though Xwayland requests inhibition when an X11 client calls
-`XGrabKeyboard` and wlroots implements the server side. A client therefore
-cannot reclaim keys the compositor has bound, so every labwc keybinding is a
-key combination that can never reach the remote ThinLinc session.
+The reason is *not* the missing `zwp_keyboard_shortcuts_inhibit_manager_v1` -
+that was this repo's earlier explanation and it is wrong. Xwayland's only use
+of that protocol is `maybe_fake_grab_devices()`, which returns immediately
+when the server is rootless, and Xwayland is always rootless under labwc.
 
-If a future labwc gains this support, this constraint can be relaxed - check
-for `wlr_keyboard_shortcuts_inhibit_v1_create` in the labwc binary's
-undefined symbols. `test/integration/test-session-packages.sh` guards this -
-run via `make test`.
+Rootless Xwayland instead forwards X11 grabs via
+`zwp_xwayland_keyboard_grab_manager_v1`, which upstream labwc and every
+wlroots compositor lack. Our labwc carries a patch implementing it
+(`containers/ubuntu/patches/0002-xwayland-keyboard-grab.patch`), so a
+keybinding *would* now be suspended while the ThinLinc client holds the
+keyboard.
+
+Keybindings nonetheless stay at zero until that path has been confirmed on
+hardware with a real ThinLinc session. `vncviewer` calls `XGrabKeyboard`, but
+the headless test only proves Xwayland *binds* the manager global - the rig
+supplies no input devices, so `xwl_seat->keyboard` is never created and
+Xwayland never installs the hook that would send a `grab_keyboard` request in
+the first place (see the comment in `test/runtime/test-labwc-runtime.sh`).
+Whether a real grab actually suspends keybindings for the session's duration
+is therefore unverified and can only be confirmed on hardware with a keyboard
+attached. Adding a keybinding is now a config decision rather than an
+impossibility - make it deliberately, and re-run `make test-runtime` after.
+
+`test/integration/test-session-packages.sh` guards the zero-keybindings
+assertion on `rc.xml` itself - run via `make test`.
+
+### labwc is a local rebuild, not the archive package
+
+`containers/ubuntu/Dockerfile` builds `labwc_0.9.3-1+dbrrg1` from Ubuntu's
+source package with the patches in `containers/ubuntu/patches/`, applied as a
+quilt series. Two behaviours depend on it:
+
+- fullscreen Xwayland windows span every output
+  (`LABWC_FULLSCREEN_SPAN_OUTPUTS`), which is what makes the ThinLinc client
+  fill both monitors;
+- `zwp_xwayland_keyboard_grab_manager_v1` exists, so X11 keyboard grabs
+  suspend compositor keybindings.
+
+Reverting to the archive `labwc` silently loses both. On a labwc or wlroots
+version bump, expect to rebase the patches; `dpkg-buildpackage` fails loudly
+when a hunk no longer applies, and `make test` plus `make test-runtime` cover
+the rest. `_NET_WM_FULLSCREEN_MONITORS` was investigated and rejected - see
+the design spec for why it is unnecessary.
+
+`containers/ubuntu/patches/*.patch` are listed as prerequisites of the
+`.ubuntu-container` target (`PATCH_FILES` in the `Makefile`). Editing a patch
+without that dependency would not trigger a rebuild, leaving `make test` and
+`make test-runtime` validating a stale image while still reporting green.
 
 ## Known Limitations
 
