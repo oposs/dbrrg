@@ -119,8 +119,15 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
     chmod +x /usr/sbin/plymouth-set-default-theme
 
 # Remove SSH keys and enable services
+# ssh.service is enabled explicitly even though 26.04 ships sshd as
+# socket-activated (ssh.socket is enabled by the package). Socket activation
+# alone means sshd only starts on the first inbound connection, so a broken
+# sshd config or a missing host key shows up as a failed login rather than a
+# logged unit failure at boot. Starting it eagerly makes such problems visible
+# in `journalctl -b` on a machine whose graphical session may not be coming up.
 RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable regenerate_ssh_host_keys || true && \
+    systemctl enable ssh.service || true && \
     systemctl enable un-dockerize.service || true && \
     systemctl enable systemd-networkd && \
     systemctl enable systemd-resolved
