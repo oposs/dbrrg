@@ -10,7 +10,7 @@
 > not blank page. On merge into another branch, rewrite that branch's handoff
 > to the merged reality — do not merge or preserve this text.
 
-Handoff commit: 2cc54c9   Date: 2026-07-27   Reason: context budget
+Handoff commit: acf35ce   Date: 2026-07-27   Reason: context budget
 Worktree / branch: `/scratch/oetiker/claude-worktrees/dbrrg-feat-ubuntu-2604` @ `feat/session-diagnostics`
 Sibling worktrees: `/home/oetiker/checkouts/dbrrg` @ `main` — trunk, at `c3508ab`. **Live work is here, not there**: this branch is one commit ahead. `main` is 20 commits ahead of `origin/main` and unpushed.
 
@@ -41,11 +41,18 @@ selected declaratively by package, labwc/Wayland replacing nodm/xorg/wm2,
 PipeWire replacing PulseAudio, VA-API + `oxulnk-desktop` added. Squashfs
 537 MiB (from 498 MB).
 
-**On this branch, one commit above main (2cc54c9), building when this was
-written.** Adds user-controlled keyboard and display config. A build was
-in flight (`make rootfs && make image && make qemu-smoke`) — check
-`artifacts/images/dbrrg-usb.img.zst` mtime against `2cc54c9`'s commit time
-before assuming the image on disk contains it.
+**On this branch, three commits above main.** `2cc54c9` adds user-controlled
+keyboard and display config (`~/.dbrrg-environment`, `~/.dbrrg-sessionrc`,
+`wlr-randr`, `kanshi`); `acf35ce` fixes a smoke-checker race. The build
+completed and is **verified good**: firmware 6/6, session guard 11/11, smoke
+clean, both user templates and both tools present in the image, and
+`dbrrg-restore-home` invoked exactly once (from the profile hook).
+`artifacts/images/dbrrg-usb.img.zst` is current as of 11:23.
+
+That build initially reported a smoke FAILURE that was **not** real — see
+`acf35ce`. Worth knowing because it nearly sent a good image back for
+rework, and because it is the third time a tooling artefact rather than the
+product produced a false signal (§4).
 
 The user's stated next step: **deploy this build and test**. They have not
 yet reported results.
@@ -55,9 +62,9 @@ fullscreen, F8 to the client, PXE boot on a physical NIC.
 
 ## 3. Do this next
 
-1. **Confirm the build finished and is green** — `make test` plus
-   `scripts/check-boot-smoke.sh artifacts/images/qemu-smoke.log`. If the
-   session was rolled over mid-build, it may have died with the shell.
+1. **Nothing needs building.** The image at
+   `artifacts/images/dbrrg-usb.img.zst` is current and verified (§2). Do not
+   rebuild speculatively — it costs ~15 min on a shared machine.
 2. **Wait for the user's hardware result.** Do not start new work
    speculatively; the last several rounds were all driven by concrete NUC
    findings, and guessing ahead of them has been consistently wrong (§4).
@@ -110,11 +117,15 @@ before labwc launches — which is why `dbrrg-restore-home` now runs in
 must be applied before `tlclient` starts, because the client reads the
 monitor layout once.
 
-**My own tooling produced two false readings.** `pgrep -f "qemu…"` matched
-the watcher's own command line (always true); `pgrep -x qemu-system-x86_64`
-never matches because the name exceeds 15 chars (always false). Use `pidof`.
-And I reported a smoke failure that was actually my checker racing a log
-QEMU was still writing. **Judge the finished artifact, never process timing.**
+**My own tooling produced three false readings — more than the product did.**
+`pgrep -f "qemu…"` matched the watcher's own command line (always true);
+`pgrep -x qemu-system-x86_64` never matches because the name exceeds 15 chars
+(always false) — use `pidof`. I reported a smoke failure that was my checker
+racing a log QEMU was still writing. And the smoke checker itself asserted on
+a line that agetty's terminal reset can overwrite mid-write, producing a red
+result on a perfectly good image (`acf35ce`). **Judge the finished artifact,
+never process timing — and when a check disagrees with a boot that visibly
+completed, suspect the check.**
 
 **Subagents in this session completed good work and then went silent ~10
 times**, several times leaving everything uncommitted. The work was sound
@@ -193,8 +204,6 @@ Settled decisions, do not relitigate:
 
 ## 8. Staleness watch
 
-- **A build was running when this was written.** Its outcome is unknown here.
-  Check `artifacts/` mtimes and rerun `make test` before trusting any image.
 - **The user was about to deploy and test.** Any hardware finding they report
   supersedes §2 and probably §7. Expect the first message of the next session
   to invalidate part of this file.
