@@ -1,7 +1,10 @@
 # Patched labwc: multi-monitor fullscreen for X11 clients, and X keyboard grabs
 
 Date: 2026-07-27
-Status: design approved, not implemented
+Status: implemented (Patches A and B committed, built, and tested on this
+branch). Both behaviours are proven compositor-side in the headless rig;
+neither the fullscreen span nor the keyboard grab has been confirmed against
+a real ThinLinc session on dual-head hardware - see Known Limits.
 
 ## Problem
 
