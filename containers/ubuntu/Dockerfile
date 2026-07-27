@@ -1,3 +1,40 @@
+# Local labwc rebuild.
+#
+# Ubuntu's labwc 0.9.3 clamps fullscreen windows to a single output and does
+# not implement zwp_xwayland_keyboard_grab_manager_v1. Both are patched here;
+# see docs/superpowers/specs/2026-07-27-labwc-multimonitor-fullscreen-design.md.
+#
+# Patches live in containers/ubuntu/patches/ and are appended to the source
+# package's quilt series in filename order. dpkg-buildpackage applies them, so
+# a patch that no longer applies fails the build loudly instead of being
+# silently skipped.
+FROM ubuntu:26.04 AS labwc-build
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBEMAIL=dbrrg@localhost DEBFULLNAME=dbrrg
+
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' \
+        /etc/apt/sources.list.d/ubuntu.sources && \
+    apt-get update && \
+    apt-get install -yq --no-install-recommends \
+        build-essential devscripts dpkg-dev quilt ca-certificates && \
+    apt-get build-dep -yq labwc
+
+WORKDIR /build
+RUN apt-get source labwc
+
+COPY containers/ubuntu/patches/ /patches/
+RUN set -eu; \
+    cd /build/labwc-*/; \
+    for p in /patches/*.patch; do \
+        [ -e "$p" ] || continue; \
+        cp "$p" debian/patches/; \
+        basename "$p" >> debian/patches/series; \
+    done; \
+    dch --local +dbrrg --distribution unstable "dbrrg local patches"; \
+    dpkg-buildpackage -b -uc -us; \
+    mkdir -p /out; \
+    cp /build/labwc_*.deb /out/
+
 FROM ubuntu:26.04
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -40,7 +77,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     rsync \
     unzip \
     bluetooth \
-    labwc \
     xwayland \
     foot \
     foot-terminfo \
@@ -96,6 +132,13 @@ RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.20.0-4284_am
 COPY vendor/oxulnk-desktop.deb /tmp/oxulnk-desktop.deb
 RUN apt-get install -yq --no-install-recommends /tmp/oxulnk-desktop.deb && \
     rm -f /tmp/oxulnk-desktop.deb
+
+# labwc comes from the local rebuild above, not the archive. apt resolves its
+# dependencies from the .deb's own control fields. 0.9.3-1+dbrrg1 sorts above
+# 0.9.3-1, so a later apt-get upgrade will not replace it.
+COPY --from=labwc-build /out/ /tmp/labwc-deb/
+RUN apt-get install -yq --no-install-recommends /tmp/labwc-deb/labwc_*.deb && \
+    rm -rf /tmp/labwc-deb
 
 # Remove root password
 RUN passwd -d root

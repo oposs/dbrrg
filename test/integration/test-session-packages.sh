@@ -64,6 +64,24 @@ else
     fail=1
 fi
 
+# The labwc in the image must be our local rebuild, not the archive version.
+# Guards against the labwc-build stage silently dropping out of the image.
+DPKG_TMP=$(mktemp -d)
+trap 'chmod -R u+rwX "$RC" "$DPKG_TMP" 2>/dev/null; rm -f "$LIST"; rm -rf "$RC" "$DPKG_TMP"' EXIT
+if unsquashfs -no-xattrs -d "$DPKG_TMP/x" "$SQSH" var/lib/dpkg/status >/dev/null 2>&1; then
+    labwc_version=$(awk '/^Package: labwc$/{f=1} f&&/^Version:/{print $2; exit}' \
+        "$DPKG_TMP/x/var/lib/dpkg/status")
+    if [[ "$labwc_version" == *"+dbrrg1" ]]; then
+        echo "ok   - labwc is the local rebuild ($labwc_version)"
+    else
+        echo "FAIL - labwc is '$labwc_version', expected a +dbrrg1 rebuild"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract var/lib/dpkg/status from $SQSH"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"
