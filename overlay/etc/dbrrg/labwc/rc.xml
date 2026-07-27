@@ -21,6 +21,12 @@
     <repeatDelay>500</repeatDelay>
     <repeatRate>30</repeatRate>
   </keyboard>
-  <mouse>
-  </mouse>
+  <!--
+    No <mouse> section. An empty one made labwc log
+    "empty string is not allowed for mouse, ignoring" on every start.
+    Mouse bindings are not a passthrough concern the way keybindings are:
+    pointer events reach the focused client regardless, and the default
+    bindings act on titlebars and the desktop, neither of which a
+    fullscreen ThinLinc session presents.
+  -->
 </labwc_config>

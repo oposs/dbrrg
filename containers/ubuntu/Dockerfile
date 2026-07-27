@@ -125,6 +125,15 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
 # sshd config or a missing host key shows up as a failed login rather than a
 # logged unit failure at boot. Starting it eagerly makes such problems visible
 # in `journalctl -b` on a machine whose graphical session may not be coming up.
+# seatd is disabled deliberately. It arrives as a labwc dependency and enables
+# itself, but this image has systemd-logind, which is the correct seat manager
+# here: logind grants the active session ACL access to /dev/dri and /dev/input.
+# With seatd also running, wlroots' libseat tries the seatd backend first, hits
+# "could not access socket /run/seatd.sock: permission denied" because tluser is
+# in no seat group, and only then falls back to logind. That produced an alarming
+# error on every start and left DRM access depending on which backend won.
+RUN systemctl disable seatd.service || true
+
 RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable regenerate_ssh_host_keys || true && \
     systemctl enable ssh.service || true && \

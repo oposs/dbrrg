@@ -19,7 +19,35 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
    [ "$(tty)" = "/dev/tty1" ]; then
 
     export DBRRG_SESSION_ATTEMPTED=1
-    DBRRG_SESSION_LOG=/run/dbrrg-session.log
+
+    # The log MUST live somewhere tluser can write. /run is root-owned 0755,
+    # so redirecting there fails - and a failed redirection means the command
+    # is never executed at all. An earlier version of this hook pointed at
+    # /run and so prevented the session from starting, while presenting as
+    # "labwc exited with status 1". Starting labwc by hand worked, because
+    # there was no redirection involved. Do not move this back to /run.
+    DBRRG_SESSION_LOG="${XDG_RUNTIME_DIR:-/tmp}/dbrrg-session.log"
+    if ! : >>"$DBRRG_SESSION_LOG" 2>/dev/null; then
+        DBRRG_SESSION_LOG=/tmp/dbrrg-session.log
+    fi
+
+    # Put the session environment into OUR environment before launching, so
+    # the variables are present in labwc's process environment at exec time.
+    #
+    # labwc does read this file itself via -C, but relying on that leaves the
+    # XKB settings dependent on whether labwc applies the file before or after
+    # it initialises the keyboard - and in practice the ctrl:nocaps and compose
+    # options were not taking effect. Exporting them here removes the ordering
+    # question entirely.
+    #
+    # It also means a manual `labwc -C /etc/dbrrg/labwc ...` from the fallback
+    # console below inherits the same settings, so hand-debugging matches what
+    # the automatic start does.
+    if [ -r /etc/dbrrg/labwc/environment ]; then
+        set -a
+        . /etc/dbrrg/labwc/environment
+        set +a
+    fi
 
     # The compositor's stderr is the only record of why a session failed.
     # Without this redirection it lands on tty1 and is erased when getty

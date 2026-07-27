@@ -1,8 +1,13 @@
 # Keyboard configuration. Replaces the Xorg InputClass that used to live in
 # /etc/X11/xorg.conf.d/00-keyboard.conf.
+#
+# Compose is on right-Alt, not the Menu key. The old Xorg config said
+# compose:menu and the 26.04 migration carried that over verbatim; it was
+# changed here deliberately, so this is an intentional divergence from the
+# migration table in docs/superpowers/specs/, not an oversight.
 XKB_DEFAULT_MODEL=pc105
 XKB_DEFAULT_LAYOUT=us
-XKB_DEFAULT_OPTIONS=compose:menu,ctrl:nocaps
+XKB_DEFAULT_OPTIONS=compose:ralt,ctrl:nocaps
 
 # Cursor theme. Without this labwc finds no usable theme: the x-cursor-theme
 # alternative defaults to core.theme (priority 30), which inherits from "core"
