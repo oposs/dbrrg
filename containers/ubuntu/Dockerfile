@@ -137,7 +137,7 @@ RUN apt-get install -yq --no-install-recommends /tmp/oxulnk-desktop.deb && \
 # dependencies from the .deb's own control fields. 0.9.3-1+dbrrg1 sorts above
 # 0.9.3-1, so a later apt-get upgrade will not replace it.
 COPY --from=labwc-build /out/ /tmp/labwc-deb/
-RUN apt-get install -yq --no-install-recommends /tmp/labwc-deb/labwc_*.deb && \
+RUN apt-get install -yq --no-install-recommends --no-install-suggests /tmp/labwc-deb/labwc_*.deb && \
     rm -rf /tmp/labwc-deb
 
 # Remove root password
