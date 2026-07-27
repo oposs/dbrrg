@@ -186,16 +186,27 @@ prefix becomes part of the key and the variable is never set, with no error
 to flag it.
 
 `~/.dbrrg-environment` is sourced *after* the system file into the shell
-environment, but that ordering does not make the override effective: labwc's
-`session_environment_init()` (`src/config/session.c:77`) calls `setenv(key,
-value, 1)` while parsing `/etc/dbrrg/labwc/environment` via `-C`
-(`src/common/dir.c:153-157`, `src/main.c:211`), which runs *after*
-`10-dbrrg-session.sh` has exported the user's file and therefore overwrites
-it for any key present in both. So a machine that wants single-monitor
-fullscreen setting `LABWC_FULLSCREEN_SPAN_OUTPUTS=0` in
-`~/.dbrrg-environment` today has no effect; the system default of `1` always
-wins. `CLAUDE.md`'s `.dbrrg-environment` table notes this as not currently
-effective. A fix is out of scope for this change.
+environment, but that ordering alone does not make the override effective:
+labwc's `session_environment_init()` (`src/config/session.c:77`) calls
+`setenv(key, value, 1)` while parsing `<config_dir>/environment` via `-C`
+(`src/common/dir.c:153-157`, `src/main.c:211`) - and, pointed straight at
+`/etc/dbrrg/labwc`, that re-read overwrites any key also present in the
+user's file, regardless of what `10-dbrrg-session.sh` had already exported.
+So a machine wanting single-monitor fullscreen by setting
+`LABWC_FULLSCREEN_SPAN_OUTPUTS=0` in `~/.dbrrg-environment` needs the
+override to survive labwc's own re-read, not just the shell's.
+
+That fix - `overlay/usr/local/bin/dbrrg-compose-labwc-config`, wired into
+`10-dbrrg-session.sh` - is now in place: it composes a merged config
+directory (system files symlinked in, plus an `environment` file that is the
+system defaults followed by the user's, so the user's value is the later,
+winning `setenv` call) and points `-C` at that instead, falling back to
+`/etc/dbrrg/labwc` if `XDG_RUNTIME_DIR` is unusable or the merge fails.
+`CLAUDE.md`'s `.dbrrg-environment` section has the full writeup;
+`test/integration/test-labwc-config-merge.sh` and
+`test/runtime/test-labwc-runtime.sh` cover it. Per-machine overrides
+(including `LABWC_FULLSCREEN_SPAN_OUTPUTS=0`) are therefore effective,
+unconfirmed on real hardware like everything else on this branch.
 
 ### Build integration
 

@@ -40,9 +40,11 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # options were not taking effect. Exporting them here removes the ordering
     # question entirely.
     #
-    # It also means a manual `labwc -C /etc/dbrrg/labwc ...` from the fallback
-    # console below inherits the same settings, so hand-debugging matches what
-    # the automatic start does.
+    # It also means a manual `labwc -C ... ...` from the fallback console
+    # below inherits the same settings, so hand-debugging matches what the
+    # automatic start does. (The failure message further down prints the
+    # exact -C argument that was actually used, merged config dir or plain
+    # system one - see below.)
     if [ -r /etc/dbrrg/labwc/environment ]; then
         set -a
         . /etc/dbrrg/labwc/environment
@@ -77,10 +79,48 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
         set +a
     fi
 
+    # The export above puts the user's values in OUR environment, which is
+    # enough for dbrrg-session and tlclient - but not for labwc itself.
+    # Run with -C, labwc re-reads <config_dir>/environment on its own
+    # (session_environment_init(), src/config/session.c) and setenv()s
+    # every key it finds there with overwrite=1, ignoring what the shell
+    # already exported. Pointing -C straight at /etc/dbrrg/labwc therefore
+    # let the system file's value win back over the user's for any key
+    # present in both - LABWC_FULLSCREEN_SPAN_OUTPUTS and the XKB_DEFAULT_*/
+    # XCURSOR_* keys included. See CLAUDE.md's ".dbrrg-environment" section
+    # for the full writeup.
+    #
+    # dbrrg-compose-labwc-config builds a config directory whose merged
+    # environment file has the system defaults first and the user's
+    # overrides last, so the file labwc itself parses already has the
+    # user's values winning - see that script's header for why later wins.
+    # This has to run AFTER dbrrg-restore-home above: ~/.dbrrg-environment
+    # only exists once the home directory has been restored.
+    #
+    # A broken merge must degrade to today's behaviour (the plain system
+    # config, still correct for every machine that has no per-machine
+    # override) rather than to no session at all, so any failure here -
+    # XDG_RUNTIME_DIR unset/unwritable, or the helper itself failing -
+    # falls back to /etc/dbrrg/labwc and just logs it.
+    LABWC_CONFIG_DIR=/etc/dbrrg/labwc
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -w "${XDG_RUNTIME_DIR:-}" ]; then
+        if /usr/local/bin/dbrrg-compose-labwc-config \
+                /etc/dbrrg/labwc "$HOME/.dbrrg-environment" \
+                "$XDG_RUNTIME_DIR/dbrrg-labwc" >>"$DBRRG_SESSION_LOG" 2>&1; then
+            LABWC_CONFIG_DIR="$XDG_RUNTIME_DIR/dbrrg-labwc"
+        else
+            echo "dbrrg: config merge failed, falling back to /etc/dbrrg/labwc" \
+                >>"$DBRRG_SESSION_LOG"
+        fi
+    else
+        echo "dbrrg: XDG_RUNTIME_DIR unset or unwritable, falling back to /etc/dbrrg/labwc" \
+            >>"$DBRRG_SESSION_LOG"
+    fi
+
     # The compositor's stderr is the only record of why a session failed.
     # Without this redirection it lands on tty1 and is erased when getty
     # restarts the session seconds later.
-    labwc -C /etc/dbrrg/labwc -S /usr/local/bin/dbrrg-session \
+    labwc -C "$LABWC_CONFIG_DIR" -S /usr/local/bin/dbrrg-session \
         >>"$DBRRG_SESSION_LOG" 2>&1
     DBRRG_SESSION_RC=$?
 
@@ -116,7 +156,7 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     echo " Journal:     journalctl -b --no-pager"
     echo " DRM devices: ls -l /dev/dri/"
     echo " Seat/session: loginctl session-status"
-    echo " Retry byhand: labwc -C /etc/dbrrg/labwc -S /usr/local/bin/dbrrg-session"
+    echo " Retry byhand: labwc -C $LABWC_CONFIG_DIR -S /usr/local/bin/dbrrg-session"
     echo "=============================================================="
     echo ""
 fi

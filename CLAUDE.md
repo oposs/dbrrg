@@ -95,18 +95,31 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   | --- | --- | --- |
   | `LABWC_FULLSCREEN_SPAN_OUTPUTS` | `1` | fullscreen Xwayland windows (the ThinLinc client) span every monitor |
 
-  **A per-machine override in `~/.dbrrg-environment` is not currently
-  effective for any key also set in `/etc/dbrrg/labwc/environment` -
-  including `LABWC_FULLSCREEN_SPAN_OUTPUTS` above and the pre-existing
-  `XKB_DEFAULT_*` / `XCURSOR_*` keyboard and cursor overrides.** labwc's
+  A per-machine override in `~/.dbrrg-environment` **works**, including for
+  keys also set in `/etc/dbrrg/labwc/environment` - `LABWC_FULLSCREEN_SPAN_OUTPUTS`
+  above and the pre-existing `XKB_DEFAULT_*` / `XCURSOR_*` keyboard and cursor
+  overrides. This is not as simple as it looks: labwc's
   `session_environment_init()` (`src/config/session.c:77`) calls
   `setenv(key, value, 1)` - overwrite - and, run with `-C`, treats
-  `/etc/dbrrg/labwc/environment` as the *only* environment file it reads
-  (`src/common/dir.c:153-157`, called from `src/main.c:211`), which happens
-  after `10-dbrrg-session.sh` has already exported the user's file into the
-  process environment. So for any key present in both files, the system
-  file's value wins and the user's value is silently discarded. A fix is
-  needed; none is proposed here.
+  `<config_dir>/environment` as the *only* environment file it reads
+  (`src/common/dir.c:153-157`, called from `src/main.c:211`). Pointing `-C`
+  straight at `/etc/dbrrg/labwc` therefore let labwc's own re-read reset any
+  key also present in the user's file back to the system value, silently
+  discarding what `10-dbrrg-session.sh` had just exported into the shell.
+  The fix, `overlay/usr/local/bin/dbrrg-compose-labwc-config`, composes a
+  merged config directory at session start - the system dir's files
+  symlinked in unchanged, plus an `environment` file that is the system
+  defaults followed by the user's file - and points `-C` at that instead, so
+  the file labwc re-reads already has the user's values last (and therefore
+  winning, since labwc's `setenv` on a later duplicate overwrites the
+  earlier one - `test/runtime/test-labwc-runtime.sh` asserts this against
+  the real parser). If `XDG_RUNTIME_DIR` is unset/unwritable or the merge
+  fails, the session falls back to the plain `/etc/dbrrg/labwc` (today's
+  behaviour) rather than failing to start. This is proven by
+  `test/integration/test-labwc-config-merge.sh` (the merge logic, offline)
+  and `test/runtime/test-labwc-runtime.sh` (the parser assumption, against
+  real labwc); like everything else on this branch it remains unconfirmed on
+  real hardware.
 
   **The two user files are split by timing, and it is not arbitrary:**
 

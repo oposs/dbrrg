@@ -270,6 +270,7 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 test: rootfs
 	@test/integration/test-firmware.sh
 	@test/integration/test-session-packages.sh
+	@test/integration/test-labwc-config-merge.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of

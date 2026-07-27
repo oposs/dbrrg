@@ -1,6 +1,9 @@
 #!/bin/bash
 # Runs labwc headless with two 1280x720 outputs and asserts that a fullscreen
 # X11 client is given the union of both (2560x720), not a single output.
+# Also asserts that Xwayland binds the keyboard-grab manager, and that
+# labwc's environment-file parser lets a later duplicate assignment win
+# (the assumption dbrrg-compose-labwc-config's merge depends on).
 #
 # Not part of 'make test': it needs network (python3-xlib) and runs a
 # compositor. Use 'make test-runtime'.
@@ -111,6 +114,56 @@ else
     echo "FAIL - labwc is not advertising the manager to Xwayland"
     echo "--- compositor output ---"
     echo "$grab_out"
+    fail=1
+fi
+
+
+# The whole ~/.dbrrg-environment override fix (dbrrg-compose-labwc-config)
+# rests on one assumption about labwc's own parser: that a LATER duplicate
+# assignment in the environment file wins. If labwc kept the FIRST value
+# instead, the merge would silently do nothing - the same class of bug as
+# the "export" prefix issue documented in
+# overlay/etc/dbrrg/labwc/environment. This is tested here, against the
+# real labwc binary, rather than assumed.
+#
+# Build a config dir containing the shipped rc.xml (labwc needs one to
+# start, but its contents are not what's under test here) and an
+# environment file with LABWC_FULLSCREEN_SPAN_OUTPUTS=1 followed by
+# LABWC_FULLSCREEN_SPAN_OUTPUTS=0. If the later '0' wins, a fullscreen
+# probe window on this two-output rig gets a single output (1280x720)
+# instead of the spanned union (2560x720) that the first assertion above
+# proved '1' produces.
+DUP_CONTAINER_NAME="dbrrg-runtime-test-dup-$$"
+
+dup_out=$(timeout --kill-after=10 "$RUNTIME_TIMEOUT" podman run --rm --name "$DUP_CONTAINER_NAME" \
+    -e WLR_BACKENDS=headless \
+    -e WLR_HEADLESS_OUTPUTS=2 \
+    -e WLR_RENDERER=pixman \
+    -e XDG_RUNTIME_DIR=/tmp/xdg \
+    "$IMAGE" \
+    sh -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg &&
+           mkdir -p /tmp/dup-config &&
+           cp /etc/dbrrg/labwc/rc.xml /tmp/dup-config/rc.xml &&
+           printf "LABWC_FULLSCREEN_SPAN_OUTPUTS=1\nLABWC_FULLSCREEN_SPAN_OUTPUTS=0\n" >/tmp/dup-config/environment &&
+           labwc -C /tmp/dup-config -S "python3 /usr/local/bin/x11-probe.py"' 2>&1)
+dup_rc=$?
+
+if [[ $dup_rc -eq 124 || $dup_rc -eq 137 ]]; then
+    echo "FAIL - podman run timed out after ${RUNTIME_TIMEOUT}s (labwc/Xwayland hang during startup)"
+    echo "--- compositor output so far ---"
+    echo "$dup_out"
+    podman rm -f "$DUP_CONTAINER_NAME" >/dev/null 2>&1
+    exit 1
+fi
+
+dup_geom=$(echo "$dup_out" | grep -o 'GEOMETRY [0-9]*x[0-9]*' | tail -1 | cut -d' ' -f2)
+
+if [[ "$dup_geom" == "1280x720" ]]; then
+    echo "ok   - labwc's environment parser lets a later duplicate assignment win ($dup_geom)"
+else
+    echo "FAIL - a later duplicate assignment did not win (got $dup_geom, expected 1280x720)"
+    echo "--- compositor output ---"
+    echo "$dup_out"
     fail=1
 fi
 
