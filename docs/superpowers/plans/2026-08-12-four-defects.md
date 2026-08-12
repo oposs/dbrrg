@@ -2022,3 +2022,143 @@ into each, full verification Task 10.
 
 **Deliberate ordering:** Task 1 gates only Task 6. Tasks 2–5 and 7–9 can
 proceed even if the ordering-cycle diagnosis turns out wrong.
+
+---
+
+## Task 11: Remove the un-dockerize / systemd-hwdb-update ordering cycle
+
+Added 2026-08-12, after the Task 1 QEMU boot surfaced a second ordering cycle
+alongside the one being fixed in Task 6. See the design spec's section
+"e) A second ordering cycle skips systemd-hwdb-update every boot".
+
+**Files:**
+- Modify: `overlay/etc/systemd/system/un-dockerize.service`
+- Modify: `test/integration/test-session-packages.sh`
+- Modify: `scripts/check-boot-smoke.sh`
+- Modify: `CLAUDE.md`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: nothing consumed downstream.
+
+- [ ] **Step 1: Reproduce the cycle in the current smoke log**
+
+```bash
+grep -a "ordering cycle" artifacts/images/qemu-smoke.log | sed 's/\x1b\[[0-9;:]*m//g'
+```
+
+Expected: a line naming `systemd-hwdb-update.service` after
+`un-dockerize.service` after `basic.target` after `sysinit.target`.
+
+- [ ] **Step 2: Establish whether hwdb.bin ships prebuilt**
+
+This decides the fix and must be checked, not assumed:
+
+```bash
+unsquashfs -l artifacts/rootfs/ramroot.sqsh | grep -E 'hwdb\.bin$'
+```
+
+Record the actual output in the report. If `usr/lib/udev/hwdb.bin` is
+present, take branch A below; if only `etc/udev/hwdb.bin` or nothing is
+present, take branch B.
+
+- [ ] **Step 3: Remove the cycle**
+
+In `overlay/etc/systemd/system/un-dockerize.service`, delete the line:
+
+```ini
+Before=systemd-hwdb-update.service
+```
+
+and replace it with a comment recording why it is absent:
+
+```ini
+# Deliberately NO Before=systemd-hwdb-update.service. That unit belongs to
+# sysinit.target, while this one is WantedBy=multi-user.target and so is
+# implicitly ordered After=basic.target -> After=sysinit.target. Declaring
+# Before= on it made this unit both before and after the same target, and
+# systemd broke the resulting cycle by deleting the hwdb update job on every
+# single boot. Nothing this service does - resolv.conf, /etc/hosts,
+# systemd-resolved - relates to the hardware database; the ordering was
+# vestigial, left over from the depmod/modprobe lines commented out below.
+```
+
+- [ ] **Step 4 (branch A only): mask the unit if hwdb.bin ships prebuilt**
+
+Only if Step 2 found `usr/lib/udev/hwdb.bin`. In
+`containers/ubuntu/Dockerfile`, alongside the other `systemctl mask` calls:
+
+```dockerfile
+    systemctl mask systemd-hwdb-update.service || true && \
+```
+
+with a comment stating that the package ships a prebuilt `hwdb.bin` and that
+regenerating it at boot would write megabytes into the ZRAM overlay for no
+benefit. If Step 2 took branch B, skip this step entirely and note in the
+report that the unit now runs at boot where it previously never did.
+
+- [ ] **Step 5: Guard it**
+
+In `test/integration/test-session-packages.sh`, before the final
+`if [[ $fail -ne 0 ]]` block:
+
+```bash
+# un-dockerize.service must not be ordered before a sysinit unit - that made
+# systemd delete the hwdb update job on every boot. See CLAUDE.md.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/ud" "$SQSH" \
+        etc/systemd/system/un-dockerize.service >/dev/null 2>&1; then
+    if grep -q '^Before=systemd-hwdb-update' \
+            "$DPKG_TMP/ud/etc/systemd/system/un-dockerize.service"; then
+        echo "FAIL - un-dockerize.service reintroduces the hwdb ordering cycle"
+        fail=1
+    else
+        echo "ok   - un-dockerize.service has no hwdb ordering cycle"
+    fi
+else
+    echo "FAIL - could not extract un-dockerize.service"
+    fail=1
+fi
+```
+
+In `scripts/check-boot-smoke.sh`, alongside the other `unwant` calls:
+
+```bash
+unwant "no systemd ordering cycle" 'Found ordering cycle'
+```
+
+This is the assertion that would have caught both cycles years ago. Expect it
+to fail until Task 6 has also landed, since that removes the other one — run
+this task after Task 6, or accept a known-failing smoke assertion until then.
+
+- [ ] **Step 6: Rebuild and verify both cycles are gone**
+
+```bash
+make OXULNK_DEB=<path> rootfs
+make OXULNK_DEB=<path> qemu-smoke
+grep -a "ordering cycle" artifacts/images/qemu-smoke.log | sed 's/\x1b\[[0-9;:]*m//g'
+```
+
+Expected: no output from the grep, and `check-boot-smoke.sh` passes including
+the new assertion.
+
+- [ ] **Step 7: Document**
+
+In CLAUDE.md's Standing Constraints, extend the `ssh.socket` subsection (added
+in Task 6) to cover this second instance, or add a short sibling subsection:
+a unit wanted by `multi-user.target` must never declare `Before=` a
+`sysinit.target` unit, with both real examples named.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add overlay/etc/systemd/system/un-dockerize.service \
+        containers/ubuntu/Dockerfile \
+        test/integration/test-session-packages.sh \
+        scripts/check-boot-smoke.sh CLAUDE.md
+git commit -m "fix: remove the un-dockerize/hwdb ordering cycle
+
+un-dockerize.service is WantedBy=multi-user.target and so implicitly ordered
+after sysinit.target, but declared Before=systemd-hwdb-update.service, which
+belongs to sysinit.target. systemd broke the cycle by deleting the hwdb
+update job on every boot. The smoke test now fails on any ordering cycle."
+```

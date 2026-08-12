@@ -335,19 +335,74 @@ Two things this evidence does **not** support, and they must not be claimed:
    any kind.
 
 So the reported symptom — sshd not autostarting for want of a host key — is
-**not reproduced under QEMU**. The cycle is real, latent, and worth removing
-(which job systemd deletes to break a cycle is not contractual and can differ
-between boots and between machines), but this run does not establish it as
-the cause of what was seen in the field.
+**not reproduced under QEMU**, even though the cycle that causes it is
+present.
 
-The remedy is unchanged: the keys still regenerate on every boot, which is a
-genuine defect on its own, and the fix removes the cycle as a side effect.
-What changes is the claim — this work must not be described as "fixes sshd
-not starting" until that has actually been observed and tied to a cause.
+### What the field report adds
 
-A second, unrelated cycle is visible in the same log
-(`systemd-hwdb-update.service` ↔ `un-dockerize.service`) and is out of scope
-here.
+On real hardware the observed sequence was: no host keys existed at all, none
+were generated, sshd did not start, and running `ssh-keygen -A` by hand fixed
+it immediately.
+
+That is the same cycle resolving differently. systemd names
+`regenerate_ssh_host_keys.service` as the cycle's starting point in both
+cases; on hardware it deleted **that service's** job, under QEMU it deleted
+`sockets.target`'s. Delete the service and no keys exist, so `sshd -t` fails
+its precondition and sshd never comes up — precisely the field symptom.
+Delete the target instead and everything happens to work.
+
+**Which job systemd deletes to break a cycle is not contractual.** It falls
+out of transaction order, so it can differ between boots and between
+machines. That makes this a latent, intermittent fault, and it is why the fix
+must *remove* the cycle rather than reorder around it — a re-timed cycle is
+still a coin flip.
+
+This also disposes of the "the image does not do firstboot" theory. The unit
+is enabled in the image and is not first-boot-gated in any way that matters:
+its `ExecStartPost` self-disable writes into the volatile ZRAM overlay and is
+gone by the next boot. It did not run because its job was deleted.
+
+## e) A second ordering cycle skips systemd-hwdb-update every boot
+
+Found in the same QEMU log while confirming (d), and added to this spec's
+scope on 2026-08-12:
+
+```
+sysinit.target: Found ordering cycle: systemd-hwdb-update.service/start after
+  un-dockerize.service/start after basic.target/start after sysinit.target/start
+  - after systemd-hwdb-update.service
+[ SKIP ] Ordering cycle found, skipping systemd-hwdb-update.service
+```
+
+Same shape as (d). `overlay/etc/systemd/system/un-dockerize.service` declares
+`Before=systemd-hwdb-update.service` while being `WantedBy=multi-user.target`.
+`systemd-hwdb-update.service` belongs to `sysinit.target`, and a
+`DefaultDependencies=yes` unit wanted by `multi-user.target` is implicitly
+ordered after `basic.target` and therefore after `sysinit.target` — so the
+unit is ordered both before and after the same target.
+
+The `Before=` appears vestigial. Nothing `un-dockerize.service` still does —
+stopping `systemd-resolved`, rewriting `resolv.conf` and `/etc/hosts`,
+restarting it — has any relationship to the hardware database. The only
+plausible original reason is the `depmod`/`modprobe` lines that sit commented
+out in the same file.
+
+**Fix:** drop `Before=systemd-hwdb-update.service` from
+`un-dockerize.service`.
+
+**Then decide what `systemd-hwdb-update` should do here, and verify rather
+than assume.** On a read-only squashfs with a ZRAM overlay, regenerating
+`hwdb.bin` at every boot writes a multi-megabyte file into the RAM overlay
+for no benefit if the package already ships a prebuilt one. If
+`/usr/lib/udev/hwdb.bin` is present in the image, mask the unit and say so;
+if it is not, let it run. Check the built image before choosing — this is
+exactly the kind of assumption that has bitten this repo before.
+
+Note the current behaviour is not "hwdb is broken": the job has been deleted
+on every boot for as long as this cycle has existed, and nothing has been
+reported. The reason to fix it is that a silently skipped unit and an
+intermittently resolved cycle are both hazards, not that anything is
+observably wrong today.
 
 ### Accepted limitation: keys persist from the first clean logout
 
