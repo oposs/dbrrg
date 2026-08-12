@@ -134,12 +134,27 @@ fi
 # is still present, ssh.service fails outright with "Unit ssh.socket is
 # masked" - a mask-only check would pass on a broken image. ssh.socket must
 # be *disabled* (which removes this symlink) before it is masked.
-if unsquashfs -no-xattrs -d "$DPKG_TMP/sshreq" "$SQSH" \
-        etc/systemd/system/ssh.service.requires/ssh.socket >/dev/null 2>&1; then
-    echo "FAIL - ssh.service.requires/ssh.socket still present - ssh.service would fail to start"
+# Anchored to etc/systemd/system deliberately. An unanchored check also
+# matches var/lib/systemd/deb-systemd-helper-enabled/ssh.service.requires/
+# ssh.socket, which is dpkg's own record of what it once enabled - not live
+# systemd config. It survives `systemctl disable` by design and must not
+# fail this test. (An earlier version of this check extracted the live path
+# with `unsquashfs -d`, which is just as wrong a different way: extracting a
+# single nonexistent path still exits 0, so the check always "passed"
+# extraction and reported FAIL regardless of whether the file existed.)
+#
+# What this asserts is the thing that decides whether sshd can start at all:
+# ssh.socket declares RequiredBy=ssh.service, so if enabling it left
+# etc/systemd/system/ssh.service.requires/ssh.socket behind, masking the
+# socket makes ssh.service fail with "Unit ssh.socket is masked" and the
+# image has no sshd. Checking only that the mask exists would pass on
+# exactly that broken image.
+if unsquashfs -l "$SQSH" 2>/dev/null | \
+        grep -qE '^squashfs-root/etc/systemd/system/ssh\.service\.requires/ssh\.socket$'; then
+    echo "FAIL - etc/systemd/system/ssh.service.requires/ssh.socket survives; ssh.service cannot start"
     fail=1
 else
-    echo "ok   - ssh.service no longer requires the masked ssh.socket"
+    echo "ok   - ssh.service has no Requires on the masked ssh.socket"
 fi
 
 # sshd-keygen.service ships Wants=-enabled from BOTH ssh.socket.wants/ and
