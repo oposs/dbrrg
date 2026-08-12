@@ -310,6 +310,45 @@ different ordering, which is what produced the cycle in the first place.
 CLAUDE.md records the reason so the mask is not later removed as an apparent
 oversight.
 
+### Observed 2026-08-12 (QEMU): the cycle is real, the symptom is not reproduced
+
+`make qemu-smoke` against the pre-fix image confirms the ordering cycle
+exactly as predicted:
+
+```
+regenerate_ssh_host_keys.service: Found ordering cycle: basic.target/start
+  after sockets.target/start after ssh.socket/start after
+  regenerate_ssh_host_keys.service/start - after basic.target
+regenerate_ssh_host_keys.service: Job sockets.target/start deleted to break
+  ordering cycle starting with regenerate_ssh_host_keys.service/start
+[ SKIP ] Ordering cycle found, skipping sockets.target
+```
+
+Two things this evidence does **not** support, and they must not be claimed:
+
+1. **The deleted job was `sockets.target`, not an ssh unit.** The prediction
+   in this spec said systemd would drop "no keys, or no socket". It dropped
+   the synchronisation target instead.
+2. **sshd started anyway.** In the same boot,
+   `regenerate_ssh_host_keys.service` ran to completion, `ssh.socket` reached
+   Listening, and `ssh.service` started. The log contains no ssh failure of
+   any kind.
+
+So the reported symptom — sshd not autostarting for want of a host key — is
+**not reproduced under QEMU**. The cycle is real, latent, and worth removing
+(which job systemd deletes to break a cycle is not contractual and can differ
+between boots and between machines), but this run does not establish it as
+the cause of what was seen in the field.
+
+The remedy is unchanged: the keys still regenerate on every boot, which is a
+genuine defect on its own, and the fix removes the cycle as a side effect.
+What changes is the claim — this work must not be described as "fixes sshd
+not starting" until that has actually been observed and tied to a cause.
+
+A second, unrelated cycle is visible in the same log
+(`systemd-hwdb-update.service` ↔ `un-dockerize.service`) and is out of scope
+here.
+
 ### Accepted limitation: keys persist from the first clean logout
 
 `dbrrg-save-home` runs when the ThinLinc client exits, so a machine that is
