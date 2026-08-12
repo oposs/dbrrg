@@ -408,6 +408,20 @@ XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 foot
 Do not add a keybinding to launch it - that would violate the
 zero-keybindings constraint.
 
+Screenshots use `grim`, with `slurp` for region selection and `wl-copy` to
+put the result on the clipboard. Same constraint as `foot`: with zero
+keybindings there is no in-session trigger, so take them from a VT or over
+SSH.
+
+```bash
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim /tmp/shot.png
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 \
+    sh -c 'grim -g "$(slurp)" - | wl-copy'
+```
+
+Do not add a keybinding for this - that would violate the
+zero-keybindings constraint.
+
 ## Potential Enhancements
 
 Future improvements to consider:

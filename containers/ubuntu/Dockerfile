@@ -82,6 +82,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     xwayland \
     foot \
     foot-terminfo \
+    grim \
+    slurp \
+    wl-clipboard \
     kanshi \
     wlr-randr \
     xfonts-base \
