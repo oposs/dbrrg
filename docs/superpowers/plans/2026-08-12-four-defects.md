@@ -627,6 +627,25 @@ else
     bad "restore_home returned non-zero with no boot MAC"
 fi
 
+# The base the URL was built from must be recorded, so dbrrg-save-home posts
+# to the same place instead of re-deriving it with a greedy sed over the whole
+# /proc/cmdline. That sed backtracks to the last slash ANYWHERE in the command
+# line, so a later parameter containing "/" (root=/dev/sda1, init=/sbin/init)
+# silently produces a different base and orphans the client's home.
+if [[ "$(cat "$WORK/net/state/boot-home-base" 2>/dev/null)" == "http://boot.example.org/tl" ]]; then
+    ok "restore_home records boot-home-base for the save side to reuse"
+else
+    bad "restore_home did not record boot-home-base (got: $(cat "$WORK/net/state/boot-home-base" 2>/dev/null))"
+fi
+
+# USB boot never builds a URL, so there is nothing to record and its absence
+# must not be treated as a fault.
+if [[ ! -e "$WORK/usb/state/boot-home-base" ]]; then
+    ok "no boot-home-base recorded on USB boot"
+else
+    bad "boot-home-base was recorded on USB boot, where it has no meaning"
+fi
+
 # Every failure mode must still return 0: restore_home is called from
 # setup-overlay.sh, where a non-zero return would abort the boot.
 mkdir -p "$WORK/fail/efi" "$WORK/fail/state" "$WORK/fail/newroot/home/tluser"
@@ -693,6 +712,22 @@ restore_home() {
         fi
 
         _rh_url=$(dbrrg_home_url "$_rh_ramroot" "$_rh_mac") || return 0
+
+        # Record the base the URL was built from, for the same reason the MAC
+        # is recorded: so dbrrg-save-home posts to the identical location
+        # rather than re-deriving it.
+        #
+        # save-home derives the base with a greedy sed over the whole
+        # /proc/cmdline (s/.*ramroot=\(.*\)\/.*$/\1/). That backtracks to the
+        # LAST slash anywhere in the command line, so any kernel parameter
+        # appearing after ramroot= that contains a "/" - root=/dev/sda1,
+        # init=/sbin/init - silently yields a wrong base. Today's
+        # configs/syslinux.cfg happens to have no such parameter, so the bug
+        # is latent rather than live; recording the resolved value here
+        # removes the whole class instead of relying on that staying true.
+        echo "${_rh_ramroot%/*}" > "$_rh_state/boot-home-base" 2>/dev/null || \
+            warn "dbrrg: could not record boot-home-base"
+
         dbrrg_log "dbrrg: restoring home from $_rh_url"
         dbrrg_restore_home_from_url "$_rh_url" "$_rh_home" 120 || true
     else
@@ -714,7 +749,7 @@ dbrrg_log() { :; }
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `test/integration/test-initramfs-home.sh`
-Expected: PASS, 20 `ok` lines.
+Expected: PASS, 22 `ok` lines.
 
 - [ ] **Step 5: Commit**
 
@@ -1371,9 +1406,34 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable ssh.service || true && \
 ```
 
-- [ ] **Step 8: Stage the keys from `dbrrg-save-home`, and use the recorded MAC**
+- [ ] **Step 8: Stage the keys from `dbrrg-save-home`, and use the recorded MAC and base path**
 
-In `overlay/opt/thinlinc/bin/save-home`, replace the `MAC_ADDR=` line:
+In `overlay/opt/thinlinc/bin/save-home`, replace the `BASE_PATH=` line:
+
+```sh
+BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+```
+
+with:
+
+```sh
+# Prefer the base the initramfs actually built the fetch URL from.
+#
+# The sed below is kept only as a fallback, and it is wrong in a way worth
+# naming: the greedy .* backtracks to the LAST slash anywhere in
+# /proc/cmdline, so any kernel parameter appearing after ramroot= that
+# contains a "/" - root=/dev/sda1, init=/sbin/init - yields a base with that
+# parameter's text glued on. Today's configs/syslinux.cfg has no such
+# parameter after ramroot=, so this has never fired, but adding one would
+# silently orphan every netboot client's home. Reading the recorded value
+# removes the whole class.
+BASE_PATH=$(cat /run/dbrrg/state/boot-home-base 2>/dev/null)
+if [ -z "$BASE_PATH" ]; then
+  BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+fi
+```
+
+Then replace the `MAC_ADDR=` line:
 
 ```sh
 MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
