@@ -102,7 +102,7 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # falls back to /etc/dbrrg/labwc and just logs it.
     LABWC_CONFIG_DIR=/etc/dbrrg/labwc
     if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -w "${XDG_RUNTIME_DIR:-}" ]; then
-        if /usr/local/bin/dbrrg-compose-labwc-config \
+        if /usr/bin/dbrrg-compose-labwc-config \
                 /etc/dbrrg/labwc "$HOME/.dbrrg-environment" \
                 "$XDG_RUNTIME_DIR/dbrrg-labwc" >>"$DBRRG_SESSION_LOG" 2>&1; then
             LABWC_CONFIG_DIR="$XDG_RUNTIME_DIR/dbrrg-labwc"
@@ -118,7 +118,7 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # The compositor's stderr is the only record of why a session failed.
     # Without this redirection it lands on tty1 and is erased when getty
     # restarts the session seconds later.
-    labwc -C "$LABWC_CONFIG_DIR" -S /usr/local/bin/dbrrg-session \
+    labwc -C "$LABWC_CONFIG_DIR" -S /usr/bin/dbrrg-session \
         >>"$DBRRG_SESSION_LOG" 2>&1
     DBRRG_SESSION_RC=$?
 
@@ -154,7 +154,7 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     echo " Journal:     journalctl -b --no-pager"
     echo " DRM devices: ls -l /dev/dri/"
     echo " Seat/session: loginctl session-status"
-    echo " Retry byhand: labwc -C $LABWC_CONFIG_DIR -S /usr/local/bin/dbrrg-session"
+    echo " Retry byhand: labwc -C $LABWC_CONFIG_DIR -S /usr/bin/dbrrg-session"
     echo "=============================================================="
     echo ""
 fi

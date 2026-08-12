@@ -41,4 +41,4 @@ if [ -r "$HOME/.dbrrg-sessionrc" ]; then
 fi
 
 /opt/thinlinc/bin/tlclient
-/opt/thinlinc/bin/save-home
+/usr/bin/dbrrg-save-home

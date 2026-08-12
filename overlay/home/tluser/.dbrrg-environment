@@ -4,7 +4,7 @@
 # /etc/dbrrg/labwc/environment - so anything you set here overrides them.
 #
 # This file lives in your home directory, so it is saved by
-# /opt/thinlinc/bin/save-home and restored on the next boot. Quit the ThinLinc
+# /usr/bin/dbrrg-save-home and restored on the next boot. Quit the ThinLinc
 # client once after editing, or the change is lost at reboot.
 #
 # VARIABLE ASSIGNMENTS ONLY. This is sourced before there is a compositor to

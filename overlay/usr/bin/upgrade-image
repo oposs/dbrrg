@@ -647,7 +647,7 @@ def main() -> int:
 
         # Try to save home before potential reboot
         try:
-            subprocess.run(["save-home"], capture_output=True, timeout=60)
+            subprocess.run(["dbrrg-save-home"], capture_output=True, timeout=60)
         except Exception:
             pass
 

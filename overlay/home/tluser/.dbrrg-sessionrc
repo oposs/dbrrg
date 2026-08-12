@@ -2,7 +2,7 @@
 #
 # Sourced at the start of every graphical session, after your home directory
 # has been restored and before the ThinLinc client starts. Because this file
-# lives in your home directory it is saved by /opt/thinlinc/bin/save-home and
+# lives in your home directory it is saved by /usr/bin/dbrrg-save-home and
 # restored on the next boot, so changes persist without rebuilding the image.
 #
 # After editing, quit the ThinLinc client once to save your home - otherwise

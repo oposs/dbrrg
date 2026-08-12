@@ -21,7 +21,7 @@
 
 set -uo pipefail
 
-HELPER="$(cd "$(dirname "$0")/../.." && pwd)/overlay/usr/local/bin/dbrrg-compose-labwc-config"
+HELPER="$(cd "$(dirname "$0")/../.." && pwd)/overlay/usr/bin/dbrrg-compose-labwc-config"
 
 if [[ ! -x "$HELPER" ]]; then
     echo "FAIL: $HELPER not found or not executable" >&2
