@@ -59,16 +59,20 @@ absent  "lxterminal"       'usr/bin/lxterminal$'
 # have zero keybindings".
 RC=$(mktemp -d)
 trap 'chmod -R u+rwX "$RC" 2>/dev/null; rm -rf "$LIST" "$RC"' EXIT
-if unsquashfs -q -f -d "$RC" "$SQSH" 'etc/dbrrg/labwc/rc.xml' >/dev/null 2>&1; then
-    if grep -qE '<keybind|<default */>' "$RC/etc/dbrrg/labwc/rc.xml"; then
-        echo "FAIL - rc.xml registers keybindings (breaks remote key passthrough)"
-        fail=1
-    else
-        echo "ok   - rc.xml registers no keybindings"
-    fi
-else
-    echo "FAIL - could not extract rc.xml from image"
+unsquashfs -q -f -d "$RC" "$SQSH" 'etc/dbrrg/labwc/rc.xml' >/dev/null 2>&1
+# Test for the extracted FILE, not unsquashfs's exit code: extracting a path
+# that does not exist in the image still exits 0 (it simply extracts nothing).
+# Trusting that exit code made this guard pass vacuously - grep on a missing
+# file exits 2, the inner test went false, and the suite printed
+# "rc.xml registers no keybindings" for an image that had no rc.xml at all.
+if [[ ! -f "$RC/etc/dbrrg/labwc/rc.xml" ]]; then
+    echo "FAIL - rc.xml is not present in the image at all"
     fail=1
+elif grep -qE '<keybind|<default */>' "$RC/etc/dbrrg/labwc/rc.xml"; then
+    echo "FAIL - rc.xml registers keybindings (breaks remote key passthrough)"
+    fail=1
+else
+    echo "ok   - rc.xml registers no keybindings"
 fi
 
 # The labwc in the image must be our local rebuild, not the archive version.
