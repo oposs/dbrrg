@@ -185,6 +185,17 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
 # error on every start and left DRM access depending on which backend won.
 RUN systemctl disable seatd.service || true
 
+# waybar is started by dbrrg-session, not by systemd. The package ships a user
+# unit enabled into graphical-session.target whose ExecStart is a bare
+# `/usr/bin/waybar` with no -c/-s, so if that target ever became active it
+# would run waybar with its DEFAULT config - a full desktop panel over the
+# ThinLinc client - and Restart=on-failure would keep bringing it back.
+# It is dormant today only because Requisite=graphical-session.target fails
+# when nothing activates that target, and labwc has no systemd session
+# integration. Disabling it removes the ambiguity: dbrrg-session owns waybar's
+# lifetime, and the trap in that script is what stops it.
+RUN systemctl --global disable waybar.service || true
+
 # ssh.socket is disabled AND masked, in that order, on purpose.
 #
 # sshd had two entry points with different ordering - the socket from
