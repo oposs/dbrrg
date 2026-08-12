@@ -108,6 +108,64 @@ is_remote_url() {
     esac
 }
 
+# dbrrg_home_url <ramroot-url> <mac>
+#
+# Build the URL the home archive lives at on the boot server, from the same
+# ramroot URL the squashfs came from: .../tl/ramroot.sqsh -> .../tl/home.pkg
+#
+# dbrrg-save-home derives the identical base with a greedy sed over
+# /proc/cmdline. Both reduce to "the directory the ramroot URL sits in", and
+# they must not be allowed to diverge - a mismatch means the client posts its
+# home somewhere it will never look for it again.
+dbrrg_home_url() {
+    _dhu_ramroot="$1"
+    _dhu_mac="$2"
+
+    [ -n "$_dhu_ramroot" ] || return 1
+    [ -n "$_dhu_mac" ] || return 1
+
+    echo "${_dhu_ramroot%/*}/home.pkg?mac=${_dhu_mac}"
+}
+
+# dbrrg_record_boot_mac <address-file> <state-dir>
+#
+# Persist the MAC of the interface the initramfs actually brought up, so
+# dbrrg-save-home posts the home archive back under the same key the restore
+# fetched it with.
+#
+# Before this, both halves derived the MAC independently from kernel ifindex
+# 2 - which agreed only because both ran in the booted system. ifindex
+# follows driver registration order, the initramfs loads a deliberately small
+# driver set, and mount-squashfs.sh picks its interface by /sys/class/net
+# glob order instead; on a machine with two NICs those can name different
+# devices. Recording what was actually used makes the two halves agree by
+# construction. It is also the better identity: on netboot it is the
+# interface that demonstrably worked, having taken a DHCP lease and served
+# ramroot.sqsh.
+dbrrg_record_boot_mac() {
+    _drbm_addr_file="$1"
+    _drbm_state_dir="$2"
+
+    if [ ! -r "$_drbm_addr_file" ]; then
+        warn "dbrrg: cannot read MAC from $_drbm_addr_file"
+        return 1
+    fi
+
+    _drbm_mac=$(cat "$_drbm_addr_file" 2>/dev/null | tr -d '\012')
+    if [ -z "$_drbm_mac" ]; then
+        warn "dbrrg: empty MAC in $_drbm_addr_file"
+        return 1
+    fi
+
+    mkdir -p "$_drbm_state_dir" 2>/dev/null || true
+    if ! echo "$_drbm_mac" > "$_drbm_state_dir/boot-mac" 2>/dev/null; then
+        warn "dbrrg: could not write $_drbm_state_dir/boot-mac"
+        return 1
+    fi
+
+    return 0
+}
+
 verify_squashfs() {
     local sqsh_path="$1"
 
