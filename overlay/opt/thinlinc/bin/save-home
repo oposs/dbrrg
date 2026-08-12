@@ -1,7 +1,31 @@
 #!/bin/sh
 set -e
-BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
-MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
+# Prefer the base the initramfs actually built the fetch URL from.
+#
+# The sed below is kept only as a fallback, and it is wrong in a way worth
+# naming: the greedy .* backtracks to the LAST slash anywhere in
+# /proc/cmdline, so any kernel parameter appearing after ramroot= that
+# contains a "/" - root=/dev/sda1, init=/sbin/init - yields a base with that
+# parameter's text glued on. Today's configs/syslinux.cfg has no such
+# parameter after ramroot=, so this has never fired, but adding one would
+# silently orphan every netboot client's home. Reading the recorded value
+# removes the whole class.
+BASE_PATH=$(cat /run/dbrrg/state/boot-home-base 2>/dev/null)
+if [ -z "$BASE_PATH" ]; then
+  BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+fi
+
+# Prefer the MAC the initramfs actually used to fetch this machine's home.
+# Re-deriving it here (kernel ifindex 2) agreed with the restore only while
+# both ran in the booted system; the restore now runs in the initramfs,
+# which loads a smaller driver set and can therefore see a different ifindex
+# order. Posting the archive under a different MAC than it was fetched with
+# would silently orphan it. The old expression stays as a fallback for a
+# boot where nothing was recorded.
+MAC_ADDR=$(cat /run/dbrrg/state/boot-mac 2>/dev/null)
+if [ -z "$MAC_ADDR" ]; then
+  MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
+fi
 BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
 # wait for dns to come up
 #systemctl --user stop pulseaudio.service
@@ -9,6 +33,10 @@ BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
 #systemctl --user disable pulseaudio.service
 #systemctl --user disable pulseaudio.socket
 cd $HOME
+# Capture the live SSH host keys into the home directory so they travel with
+# the archive. This is the ONLY place they are persisted - see
+# /usr/bin/dbrrg-ssh-hostkeys and CLAUDE.md.
+sudo /usr/bin/dbrrg-ssh-hostkeys --stage || true
 if [ "" != "$BOOT_SRV" ]; then
   while true; do
     ping -nc 1 $BOOT_SRV 2>&1 >/dev/null && break

@@ -41,6 +41,9 @@ present "session script"   'usr/local/bin/dbrrg-session$'
 absent  "restore-home script" 'usr/local/bin/dbrrg-restore-home$'
 present "labwc rc.xml"     'etc/dbrrg/labwc/rc\.xml$'
 present "tty1 autologin"   'getty@tty1\.service\.d/autologin\.conf$'
+present "ssh host key helper" 'usr/bin/dbrrg-ssh-hostkeys$'
+present "ssh host key unit"   'dbrrg-ssh-hostkeys\.service$'
+absent  "old regenerate unit" 'regenerate_ssh_host_keys\.service$'
 
 absent  "Xorg server"      'usr/lib/xorg/Xorg$'
 absent  "nodm"             'usr/sbin/nodm$'
@@ -111,6 +114,18 @@ if unsquashfs -no-xattrs -d "$DPKG_TMP/bin" "$SQSH" usr/bin/labwc >/dev/null 2>&
     echo "ok   - labwc implements zwp_xwayland_keyboard_grab_manager_v1"
 else
     echo "FAIL - shipped labwc has no xwayland keyboard grab support"
+    fail=1
+fi
+
+# ssh.socket must stay masked: two entry points into sshd with different
+# ordering is what produced the ordering cycle that stopped it starting.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/ssh" "$SQSH" \
+        etc/systemd/system/ssh.socket >/dev/null 2>&1 &&
+   [[ -L "$DPKG_TMP/ssh/etc/systemd/system/ssh.socket" ]] &&
+   [[ "$(readlink "$DPKG_TMP/ssh/etc/systemd/system/ssh.socket")" == "/dev/null" ]]; then
+    echo "ok   - ssh.socket is masked"
+else
+    echo "FAIL - ssh.socket is not masked (see CLAUDE.md on the ordering cycle)"
     fail=1
 fi
 

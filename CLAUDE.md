@@ -186,7 +186,13 @@ Both modes execute identical code paths after SquashFS mount.
 
 The containers/ubuntu/Dockerfile follows several important patterns:
 
-1. **SSH Host Keys**: Host keys are removed before building initramfs and regenerated on first boot via `regenerate_ssh_host_keys.service`. This ensures each deployed instance has unique SSH keys.
+1. **SSH Host Keys**: Host keys are removed at build time. On first boot
+   `dbrrg-ssh-hostkeys.service` generates them and stages them into
+   `~tluser/.dbrrg-ssh-host-keys`, from where `dbrrg-save-home` captures them
+   into the home archive at logout; the initramfs restores them on every
+   subsequent boot. `ssh.socket` is **masked** — see Standing Constraints.
+   Keys do not persist until the first clean logout: a machine hard-powered
+   off before then generates fresh keys next boot.
 
 2. **Initramfs Generation**: The build uses Dracut (`dracut --force --no-hostonly --add "dbrrg plymouth"`) to create initramfs. The `--no-hostonly` flag is mandatory - see [Standing Constraints](#standing-constraints). The custom module in `overlay/usr/lib/dracut/modules.d/90dbrrg/` is automatically included. This must run AFTER overlay files are applied and SSH keys are removed.
 
@@ -305,6 +311,22 @@ impossibility - make it deliberately, and re-run `make test-runtime` after.
 
 `test/integration/test-session-packages.sh` guards the zero-keybindings
 assertion on `rc.xml` itself - run via `make test`.
+
+### ssh.socket must stay masked
+
+`containers/ubuntu/Dockerfile` runs `systemctl mask ssh.socket` and enables
+`ssh.service` alone. Re-enabling the socket reintroduces an ordering cycle.
+
+`dbrrg-ssh-hostkeys.service` must run before sshd. With the socket active,
+sshd has two entry points with different ordering — the socket from
+`sockets.target`, the service from `multi-user.target` — so the key unit had
+to be ordered `Before=ssh.socket`. But a `DefaultDependencies=yes` unit is
+implicitly ordered `After=basic.target`, and `basic.target` comes after
+`sockets.target`, which comes after `ssh.socket`. Before and after the same
+unit is a cycle, and systemd resolves a cycle by deleting a job: the machine
+came up with either no host keys or no listening socket.
+
+`test/integration/test-session-packages.sh` guards this — run via `make test`.
 
 ### labwc is a local rebuild, not the archive package
 

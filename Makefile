@@ -272,6 +272,7 @@ test: rootfs
 	@test/integration/test-session-packages.sh
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh
+	@test/integration/test-ssh-hostkeys.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of

@@ -181,8 +181,18 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
 # error on every start and left DRM access depending on which backend won.
 RUN systemctl disable seatd.service || true
 
+# ssh.socket is masked on purpose. sshd had two entry points with different
+# ordering - the socket from sockets.target and the service from
+# multi-user.target - and the host key unit had to be ordered before both.
+# Since a DefaultDependencies=yes unit is implicitly ordered after
+# basic.target, and basic.target comes after sockets.target and therefore
+# after ssh.socket, "Before=ssh.socket" made the unit both before and after
+# the same target. systemd breaks such a cycle by deleting a job, which left
+# the machine with either no host keys or no listening socket. One entry
+# point removes the cycle. Do not re-enable it.
 RUN rm -f /etc/ssh/ssh_host_*_key* && \
-    systemctl enable regenerate_ssh_host_keys || true && \
+    systemctl mask ssh.socket || true && \
+    systemctl enable dbrrg-ssh-hostkeys.service || true && \
     systemctl enable ssh.service || true && \
     systemctl enable un-dockerize.service || true && \
     systemctl enable systemd-networkd && \
