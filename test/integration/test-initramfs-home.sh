@@ -88,6 +88,132 @@ else
     ok "dbrrg_record_boot_mac fails on a missing address file"
 fi
 
+# --- dbrrg_restore_home_from_file ---------------------------------------
+
+# Build a home archive the way dbrrg-save-home does: tar czf from inside
+# $HOME, so members are stored as ./relative paths.
+mkdir -p "$WORK/src-home/.thinlinc"
+echo "layout=ch" >"$WORK/src-home/.dbrrg-environment"
+echo "tlconf" >"$WORK/src-home/.thinlinc/tlclient.conf"
+( cd "$WORK/src-home" && tar czf "$WORK/home.tar.gz" . )
+
+TARGET="$WORK/newroot/home/tluser"
+mkdir -p "$TARGET"
+
+if dbrrg_restore_home_from_file "$WORK/home.tar.gz" "$TARGET" &&
+   [[ -f "$TARGET/.dbrrg-environment" ]] &&
+   [[ -f "$TARGET/.thinlinc/tlclient.conf" ]]; then
+    ok "restore_home_from_file extracts the archive into the target home"
+else
+    bad "restore_home_from_file did not extract the archive"
+fi
+
+# An absent archive is the normal first-boot case, not an error condition -
+# it must not be fatal and must leave the default home alone.
+mkdir -p "$WORK/newroot2/home/tluser"
+echo "shipped-default" >"$WORK/newroot2/home/tluser/.bashrc"
+if dbrrg_restore_home_from_file "$WORK/nope.tar.gz" "$WORK/newroot2/home/tluser" 2>/dev/null; then
+    bad "restore_home_from_file reported success on a missing archive"
+else
+    ok "restore_home_from_file fails quietly on a missing archive"
+fi
+if [[ "$(cat "$WORK/newroot2/home/tluser/.bashrc")" == "shipped-default" ]]; then
+    ok "missing archive leaves the shipped default home intact"
+else
+    bad "missing archive damaged the default home"
+fi
+
+# A corrupt archive must warn and return non-zero, never abort the boot.
+echo "this is not a tarball" >"$WORK/corrupt.tar.gz"
+mkdir -p "$WORK/newroot3/home/tluser"
+if dbrrg_restore_home_from_file "$WORK/corrupt.tar.gz" "$WORK/newroot3/home/tluser" 2>/dev/null; then
+    bad "restore_home_from_file reported success on a corrupt archive"
+else
+    ok "restore_home_from_file fails on a corrupt archive"
+fi
+if [[ ! -s "$WORK/deaths" ]]; then
+    ok "no die() was called on any failure path"
+else
+    bad "a failure path called die(): $(cat "$WORK/deaths")"
+fi
+
+# --- dbrrg_restore_home_from_url ----------------------------------------
+
+# Stub curl. $DBRRG_TEST_CURL_MODE selects the behaviour under test.
+STUBS="$WORK/stubs"
+mkdir -p "$STUBS"
+cat >"$STUBS/curl" <<'STUB'
+#!/bin/bash
+# Minimal curl stand-in: find the -o target, act per DBRRG_TEST_CURL_MODE.
+out=""
+prev=""
+for a in "$@"; do
+    [[ "$prev" == "-o" ]] && out="$a"
+    prev="$a"
+done
+case "${DBRRG_TEST_CURL_MODE:-ok}" in
+    ok)      cp "$DBRRG_TEST_CURL_PAYLOAD" "$out"; exit 0 ;;
+    notfound) exit 22 ;;   # curl -f exit code for an HTTP 4xx
+    timeout)  exit 28 ;;   # curl exit code for a timeout
+esac
+STUB
+chmod +x "$STUBS/curl"
+PATH="$STUBS:$PATH"
+export DBRRG_TEST_CURL_PAYLOAD="$WORK/home.tar.gz"
+
+mkdir -p "$WORK/newroot4/home/tluser"
+DBRRG_TEST_CURL_MODE=ok
+export DBRRG_TEST_CURL_MODE
+if dbrrg_restore_home_from_url "http://boot/tl/home.pkg?mac=x" \
+        "$WORK/newroot4/home/tluser" 5 "$WORK/dl.pkg" &&
+   [[ -f "$WORK/newroot4/home/tluser/.dbrrg-environment" ]]; then
+    ok "restore_home_from_url extracts a fetched archive"
+else
+    bad "restore_home_from_url did not extract a fetched archive"
+fi
+if [[ ! -e "$WORK/dl.pkg" ]]; then
+    ok "restore_home_from_url removes its temporary download"
+else
+    bad "restore_home_from_url left $WORK/dl.pkg behind"
+fi
+
+# First netboot of a machine the server has never seen: a 404 is expected,
+# not a fault.
+mkdir -p "$WORK/newroot5/home/tluser"
+DBRRG_TEST_CURL_MODE=notfound
+if dbrrg_restore_home_from_url "http://boot/tl/home.pkg?mac=x" \
+        "$WORK/newroot5/home/tluser" 5 "$WORK/dl5.pkg" 2>/dev/null; then
+    bad "restore_home_from_url reported success on a 404"
+else
+    ok "restore_home_from_url fails quietly on a 404"
+fi
+
+# A hanging boot server must not hang the boot.
+mkdir -p "$WORK/newroot6/home/tluser"
+DBRRG_TEST_CURL_MODE=timeout
+if dbrrg_restore_home_from_url "http://boot/tl/home.pkg?mac=x" \
+        "$WORK/newroot6/home/tluser" 5 "$WORK/dl6.pkg" 2>/dev/null; then
+    bad "restore_home_from_url reported success on a timeout"
+else
+    ok "restore_home_from_url fails quietly on a timeout"
+fi
+
+# The bounded wait is the whole point: the login-time script this replaces
+# looped on ping forever, which in an initramfs is a machine that never boots
+# and has no console to interrupt it.
+if grep -q -- '--max-time' \
+        "$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/dbrrg-lib.sh"; then
+    ok "the fetch is bounded by --max-time"
+else
+    bad "no --max-time in the fetch - an unbounded wait would hang the boot"
+fi
+
+if [[ ! -s "$WORK/deaths" ]]; then
+    ok "still no die() on any failure path"
+else
+    bad "a failure path called die(): $(cat "$WORK/deaths")"
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - initramfs home helpers"

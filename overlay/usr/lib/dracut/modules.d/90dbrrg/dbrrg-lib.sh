@@ -166,6 +166,78 @@ dbrrg_record_boot_mac() {
     return 0
 }
 
+# dbrrg_restore_home_from_file <archive> <target-home>
+#
+# Extract a home archive over the target home directory. Returns non-zero on
+# a missing or unreadable archive; both are normal (first boot, or a machine
+# whose home was never saved) and must leave the shipped default home in
+# place rather than aborting the boot.
+dbrrg_restore_home_from_file() {
+    _drhf_archive="$1"
+    _drhf_home="$2"
+
+    if [ ! -f "$_drhf_archive" ]; then
+        warn "dbrrg: no home archive at $_drhf_archive"
+        return 1
+    fi
+
+    if ! mkdir -p "$_drhf_home" 2>/dev/null; then
+        warn "dbrrg: cannot create $_drhf_home"
+        return 1
+    fi
+
+    # tar's default as root is --same-owner, and that is REQUIRED here, not
+    # incidental. dbrrg-save-home writes the archive as tluser, so members
+    # carry uid/gid 1000 numerically; preserving them is what makes the
+    # restored home belong to tluser. Do NOT add --no-same-owner.
+    #
+    # Note this is the exact OPPOSITE of what dbrrg-ssh-hostkeys must do a
+    # few files away: host keys come out of this same archive tluser-owned
+    # and have to be forced to root:root before sshd will touch them. Two
+    # different problems; do not "make them consistent".
+    if ! tar -xzf "$_drhf_archive" -C "$_drhf_home" 2>/dev/null; then
+        warn "dbrrg: home archive $_drhf_archive did not extract cleanly"
+        return 1
+    fi
+
+    return 0
+}
+
+# dbrrg_restore_home_from_url <url> <target-home> [timeout] [tmp-file]
+#
+# Fetch a home archive from the boot server and extract it. Downloads to a
+# temporary file first: piping curl straight into tar would extract a
+# half-written archive over the home directory if the transfer died midway.
+dbrrg_restore_home_from_url() {
+    _drhu_url="$1"
+    _drhu_home="$2"
+    _drhu_timeout="${3:-120}"
+    _drhu_tmp="${4:-/tmp/dbrrg-home.pkg}"
+
+    rm -f "$_drhu_tmp" 2>/dev/null || true
+
+    # -f makes an HTTP 404 a failure rather than a saved error page. A 404
+    # is the ordinary first-netboot case for a machine the server has not
+    # seen before, so it is warned about and not treated as a fault.
+    #
+    # --connect-timeout and --max-time are mandatory. The login-time script
+    # this replaces waited on `while true; do ping ...; done`; unbounded at
+    # login is a session recoverable from a VT, but unbounded here is a
+    # machine that never finishes booting.
+    if ! curl -f -s -S \
+            --connect-timeout 10 --max-time "$_drhu_timeout" \
+            -o "$_drhu_tmp" "$_drhu_url" 2>/dev/null; then
+        warn "dbrrg: could not fetch home archive from $_drhu_url"
+        rm -f "$_drhu_tmp" 2>/dev/null || true
+        return 1
+    fi
+
+    dbrrg_restore_home_from_file "$_drhu_tmp" "$_drhu_home"
+    _drhu_rc=$?
+    rm -f "$_drhu_tmp" 2>/dev/null || true
+    return $_drhu_rc
+}
+
 verify_squashfs() {
     local sqsh_path="$1"
 
