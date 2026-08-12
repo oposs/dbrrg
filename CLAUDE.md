@@ -235,10 +235,11 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Four rules in this repository look like ordinary configuration but are
-load-bearing. The first three have each caused a real shipped-image bug; the
-fourth (patched labwc) is preventive - nothing has shipped broken from it yet,
-but reverting it silently would ship regressions in both patched behaviours.
+Six rules in this repository look like ordinary configuration but are
+load-bearing. All but the last (patched labwc) have each caused a real
+shipped-image bug; that one is preventive - nothing has shipped broken from
+it yet, but reverting it silently would ship regressions in both patched
+behaviours.
 
 ### Firmware is selected by package, never by cleanup
 
@@ -377,9 +378,11 @@ single boot, not just the first.
 
 Two real instances of this bug have shipped in this repo:
 
-- `dbrrg-ssh-hostkeys.service` was ordered `Before=ssh.socket` (which pulls
-  in `sockets.target`, itself before `basic.target`) — see "ssh.socket must
-  stay masked" above for the full cycle and its fix.
+- The predecessor `regenerate_ssh_host_keys.service` (deleted on this
+  branch, replaced by `dbrrg-ssh-hostkeys.service`) was ordered
+  `Before=ssh.socket` (which pulls in `sockets.target`, itself before
+  `basic.target`) — see "ssh.socket must stay masked" above for the full
+  cycle and its fix.
 - `un-dockerize.service` was ordered `Before=systemd-hwdb-update.service`
   (part of `sysinit.target`). systemd broke the cycle by deleting the hwdb
   update job on every boot; nothing `un-dockerize.service` does (resolv.conf,

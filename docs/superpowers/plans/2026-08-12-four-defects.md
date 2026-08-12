@@ -507,10 +507,11 @@ dbrrg_restore_home_from_file() {
     # A payload that is valid gzip but not a tar decompresses cleanly, lists
     # zero members, and makes GNU tar exit 0 - measured on this host, not
     # assumed. Trusting that exit code would report a successful restore
-    # having restored nothing, and the damage compounds: dbrrg-ssh-hostkeys
-    # would then treat the machine as keyless and generate fresh host keys,
-    # and dbrrg-save-home would overwrite the user's good archive with the
-    # empty one at logout. A boot server answering 200 with a gzip-encoded
+    # having restored nothing, and dbrrg-ssh-hostkeys would then treat the
+    # machine as keyless and generate fresh host keys into that empty home.
+    # (It does NOT put the user's good archive at risk on its own -
+    # restore_home's "failed" marker is what stops dbrrg-save-home from
+    # uploading over it.) A boot server answering 200 with a gzip-encoded
     # error page is enough to trigger it, and curl -f does not catch a 200.
     #
     # sed, not head: module-setup.sh installs sed into the initramfs and does

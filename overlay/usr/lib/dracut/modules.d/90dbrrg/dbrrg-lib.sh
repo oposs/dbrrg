@@ -168,10 +168,18 @@ dbrrg_record_boot_mac() {
 
 # dbrrg_restore_home_from_file <archive> <target-home>
 #
-# Extract a home archive over the target home directory. Returns non-zero on
-# a missing or unreadable archive; both are normal (first boot, or a machine
-# whose home was never saved) and must leave the shipped default home in
-# place rather than aborting the boot.
+# Extract a home archive over the target home directory.
+#
+# Return codes distinguish "nothing to restore" from "something was there
+# and it did not restore" - restore_home records this distinction (see
+# below) so dbrrg-save-home can refuse to save over a home it never
+# actually restored:
+#   0 = restored
+#   1 = nothing to restore - a missing archive. Normal: first boot, or a
+#       machine whose home was never saved. Must leave the shipped default
+#       home in place rather than aborting the boot.
+#   2 = there WAS something and it did not restore - unusable tar, failed
+#       extraction, or the target directory could not even be created.
 dbrrg_restore_home_from_file() {
     _drhf_archive="$1"
     _drhf_home="$2"
@@ -183,21 +191,22 @@ dbrrg_restore_home_from_file() {
 
     if ! mkdir -p "$_drhf_home" 2>/dev/null; then
         warn "dbrrg: cannot create $_drhf_home"
-        return 1
+        return 2
     fi
 
     # A payload that is valid gzip but not a tar decompresses cleanly, lists
     # zero members, and makes GNU tar exit 0 - measured, not assumed. Trusting
     # that exit code would report a successful restore having restored
-    # nothing, and the damage compounds: dbrrg-ssh-hostkeys would then treat
-    # the machine as keyless and generate fresh host keys, and
-    # dbrrg-save-home would overwrite the user's good archive with the empty
-    # one at logout. A boot server answering 200 with a gzip-encoded error
-    # page is enough, and curl -f does not catch a 200. So require the
-    # archive to contain at least one member before trusting it.
+    # nothing, and dbrrg-ssh-hostkeys would then treat the machine as keyless
+    # and generate fresh host keys into that empty home. (It does NOT put the
+    # user's good archive at risk on its own - restore_home's "failed" marker
+    # is what stops dbrrg-save-home from uploading over it; see restore_home
+    # below.) A boot server answering 200 with a gzip-encoded error page is
+    # enough, and curl -f does not catch a 200. So require the archive to
+    # contain at least one member before trusting it.
     if [ -z "$(tar -tzf "$_drhf_archive" 2>/dev/null | sed -n '1p;q')" ]; then
         warn "dbrrg: $_drhf_archive is not a usable tar archive"
-        return 1
+        return 2
     fi
 
     # tar's default as root is --same-owner, and that is REQUIRED here, not
@@ -211,7 +220,7 @@ dbrrg_restore_home_from_file() {
     # different problems; do not "make them consistent".
     if ! tar -xzf "$_drhf_archive" -C "$_drhf_home" 2>/dev/null; then
         warn "dbrrg: home archive $_drhf_archive did not extract cleanly"
-        return 1
+        return 2
     fi
 
     return 0
@@ -222,6 +231,12 @@ dbrrg_restore_home_from_file() {
 # Fetch a home archive from the boot server and extract it. Downloads to a
 # temporary file first: piping curl straight into tar would extract a
 # half-written archive over the home directory if the transfer died midway.
+#
+# Same return-code contract as dbrrg_restore_home_from_file (0 restored,
+# 1 nothing to restore, 2 something was there and it did not restore) -
+# see that function. A 404 (curl -f exit 22) is the ordinary first-netboot
+# case and maps to 1; every other curl failure, including a timeout, means
+# the server had something and it could not be fetched, so that maps to 2.
 dbrrg_restore_home_from_url() {
     _drhu_url="$1"
     _drhu_home="$2"
@@ -238,12 +253,25 @@ dbrrg_restore_home_from_url() {
     # this replaces waited on `while true; do ping ...; done`; unbounded at
     # login is a session recoverable from a VT, but unbounded here is a
     # machine that never finishes booting.
-    if ! curl -f -s -S \
+    #
+    # The exit status is captured explicitly into _drhu_curl_rc rather than
+    # tested with `if ! curl ...`, which would discard it - and the
+    # distinction matters: exit 22 (404) is normal, anything else (a
+    # timeout, exit 28, included) means the server had something and it
+    # could not be retrieved.
+    curl -f -s -S \
             --connect-timeout 10 --max-time "$_drhu_timeout" \
-            -o "$_drhu_tmp" "$_drhu_url" 2>/dev/null; then
-        warn "dbrrg: could not fetch home archive from $_drhu_url"
+            -o "$_drhu_tmp" "$_drhu_url" 2>/dev/null
+    _drhu_curl_rc=$?
+
+    if [ "$_drhu_curl_rc" -ne 0 ]; then
         rm -f "$_drhu_tmp" 2>/dev/null || true
-        return 1
+        if [ "$_drhu_curl_rc" -eq 22 ]; then
+            warn "dbrrg: no home archive at $_drhu_url"
+            return 1
+        fi
+        warn "dbrrg: could not fetch home archive from $_drhu_url (curl exit $_drhu_curl_rc)"
+        return 2
     fi
 
     dbrrg_restore_home_from_file "$_drhu_tmp" "$_drhu_home"
@@ -270,6 +298,20 @@ dbrrg_restore_home_from_url() {
 # ALWAYS returns 0. It is called from setup-overlay.sh, where a non-zero
 # return aborts the boot. A client that cannot restore its home must still
 # come up with the shipped default one.
+#
+# Because it can never fail the boot, it cannot signal a bad restore through
+# its return value - so it writes the outcome to <state-dir>/home-restore
+# instead, one word:
+#   ok     - restored successfully
+#   absent - nothing to restore (first boot, or a home never saved); saving
+#            at logout is correct
+#   failed - something was there and did not restore (corrupt/truncated
+#            archive, fetch failure, or no boot MAC recorded on netboot)
+# overlay/usr/bin/dbrrg-save-home reads this marker and refuses to save when
+# it says "failed", so a boot that could not retrieve the real home does not
+# get uploaded over it, taking the user's data and the machine's persisted
+# SSH host keys (staged by dbrrg-ssh-hostkeys into this same default home)
+# down with it.
 restore_home() {
     _rh_newroot="$1"
     _rh_efi="$2"
@@ -283,12 +325,21 @@ restore_home() {
         if [ -z "$_rh_mac" ]; then
             # Deliberately do not fall back to guessing an interface. A
             # wrong MAC means fetching one machine's home onto another, or
-            # saving to a key nothing will ever read back.
+            # saving to a key nothing will ever read back. Unlike a normal
+            # "nothing to restore", this is a fault in the boot itself, so
+            # it is "failed" rather than "absent" - dbrrg-save-home must not
+            # save over whatever this default home ends up holding.
             warn "dbrrg: no boot MAC recorded, skipping home restore"
+            echo failed > "$_rh_state/home-restore" 2>/dev/null || true
             return 0
         fi
 
-        _rh_url=$(dbrrg_home_url "$_rh_ramroot" "$_rh_mac") || return 0
+        _rh_url=$(dbrrg_home_url "$_rh_ramroot" "$_rh_mac")
+        if [ -z "$_rh_url" ]; then
+            warn "dbrrg: could not build home archive URL, skipping home restore"
+            echo failed > "$_rh_state/home-restore" 2>/dev/null || true
+            return 0
+        fi
 
         # Record the base the URL was built from, for the same reason the MAC
         # is recorded: so dbrrg-save-home posts to the identical location
@@ -306,11 +357,19 @@ restore_home() {
             warn "dbrrg: could not record boot-home-base"
 
         dbrrg_log "dbrrg: restoring home from $_rh_url"
-        dbrrg_restore_home_from_url "$_rh_url" "$_rh_home" 120 || true
+        dbrrg_restore_home_from_url "$_rh_url" "$_rh_home" 120
+        _rh_rc=$?
     else
         dbrrg_log "dbrrg: restoring home from $_rh_efi/home.tar.gz"
-        dbrrg_restore_home_from_file "$_rh_efi/home.tar.gz" "$_rh_home" || true
+        dbrrg_restore_home_from_file "$_rh_efi/home.tar.gz" "$_rh_home"
+        _rh_rc=$?
     fi
+
+    case "$_rh_rc" in
+        0) echo ok > "$_rh_state/home-restore" 2>/dev/null || true ;;
+        1) echo absent > "$_rh_state/home-restore" 2>/dev/null || true ;;
+        *) echo failed > "$_rh_state/home-restore" 2>/dev/null || true ;;
+    esac
 
     return 0
 }

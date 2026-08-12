@@ -191,6 +191,12 @@ overlay is mounted at `$NEWROOT` and the EFI partition is already mounted at
 | USB | `$efi_mount/home.tar.gz` |
 | netboot | `curl $BASE_PATH/home.pkg?mac=$MAC` |
 
+On netboot the archive lands in initramfs RAM (the download target) and is
+then extracted into the ZRAM overlay, so peak memory use during the restore
+is roughly twice the archive size plus the decompressed tree, all before the
+pivot frees the initramfs. Fine for today's homes; a very large one could
+OOM rather than warn.
+
 `overlay/usr/local/bin/dbrrg-restore-home` is deleted; the
 `/usr/local/bin/dbrrg-restore-home` call in `10-dbrrg-session.sh` goes with
 it. That file keeps sourcing `~/.dbrrg-environment` and keeps the labwc

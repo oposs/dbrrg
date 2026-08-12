@@ -230,7 +230,7 @@ RUN systemctl --global disable waybar.service || true
 # (soft) dependency of ssh.service, so masking it cannot break sshd startup
 # the way masking ssh.socket alone would have.
 #
-# systemd-hwdb-update.service is masked because linux-firmware/udev already
+# systemd-hwdb-update.service is masked because systemd/udev itself already
 # ships a prebuilt usr/lib/udev/hwdb.bin in this image (confirmed via
 # `unsquashfs -l ramroot.sqsh | grep hwdb.bin`); regenerating it at boot
 # would only write megabytes into the ZRAM overlay for no benefit. This is

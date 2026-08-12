@@ -246,6 +246,29 @@ if restore_home "$WORK/usb/newroot" "$WORK/usb/efi" "$WORK/usb/state" \
 else
     bad "restore_home did not restore from the EFI partition"
 fi
+if [[ "$(cat "$WORK/usb/state/home-restore" 2>/dev/null)" == "ok" ]]; then
+    ok "restore_home records 'ok' after a successful USB restore"
+else
+    bad "restore_home did not record 'ok' after a successful USB restore (got: $(cat "$WORK/usb/state/home-restore" 2>/dev/null))"
+fi
+
+# USB boot, corrupt archive: dbrrg-save-home must NOT be allowed to save
+# over the good archive with this default home, so the marker is "failed",
+# not "absent" - there WAS something at the archive path, it just did not
+# restore.
+mkdir -p "$WORK/usbcorrupt/efi" "$WORK/usbcorrupt/state" "$WORK/usbcorrupt/newroot/home/tluser"
+echo "this is not a tarball" >"$WORK/usbcorrupt/efi/home.tar.gz"
+if restore_home "$WORK/usbcorrupt/newroot" "$WORK/usbcorrupt/efi" \
+        "$WORK/usbcorrupt/state" "tl/ramroot.sqsh"; then
+    ok "restore_home returns 0 on a corrupt USB archive"
+else
+    bad "restore_home returned non-zero on a corrupt USB archive"
+fi
+if [[ "$(cat "$WORK/usbcorrupt/state/home-restore" 2>/dev/null)" == "failed" ]]; then
+    ok "restore_home records 'failed' for a corrupt USB archive"
+else
+    bad "restore_home did not record 'failed' for a corrupt USB archive (got: $(cat "$WORK/usbcorrupt/state/home-restore" 2>/dev/null))"
+fi
 
 # Netboot: uses the recorded boot MAC to build the URL.
 mkdir -p "$WORK/net/efi" "$WORK/net/state" "$WORK/net/newroot/home/tluser"
@@ -258,16 +281,63 @@ if restore_home "$WORK/net/newroot" "$WORK/net/efi" "$WORK/net/state" \
 else
     bad "restore_home did not fetch from the boot server"
 fi
+if [[ "$(cat "$WORK/net/state/home-restore" 2>/dev/null)" == "ok" ]]; then
+    ok "restore_home records 'ok' after a successful netboot restore"
+else
+    bad "restore_home did not record 'ok' after a successful netboot restore (got: $(cat "$WORK/net/state/home-restore" 2>/dev/null))"
+fi
+
+# Netboot, server 404s: the ordinary first-netboot case for a machine the
+# server has never seen, not a fault - "absent", and saving at logout is
+# correct.
+mkdir -p "$WORK/net404/efi" "$WORK/net404/state" "$WORK/net404/newroot/home/tluser"
+echo "de:ad:be:ef:00:02" >"$WORK/net404/state/boot-mac"
+DBRRG_TEST_CURL_MODE=notfound
+if restore_home "$WORK/net404/newroot" "$WORK/net404/efi" "$WORK/net404/state" \
+        "http://boot.example.org/tl/ramroot.sqsh"; then
+    ok "restore_home returns 0 on a netboot 404"
+else
+    bad "restore_home returned non-zero on a netboot 404"
+fi
+if [[ "$(cat "$WORK/net404/state/home-restore" 2>/dev/null)" == "absent" ]]; then
+    ok "restore_home records 'absent' for a netboot 404"
+else
+    bad "restore_home did not record 'absent' for a netboot 404 (got: $(cat "$WORK/net404/state/home-restore" 2>/dev/null))"
+fi
+
+# Netboot, server times out: something was presumably there and it could not
+# be fetched - "failed", so dbrrg-save-home must not overwrite it.
+mkdir -p "$WORK/nettimeout/efi" "$WORK/nettimeout/state" "$WORK/nettimeout/newroot/home/tluser"
+echo "de:ad:be:ef:00:03" >"$WORK/nettimeout/state/boot-mac"
+DBRRG_TEST_CURL_MODE=timeout
+if restore_home "$WORK/nettimeout/newroot" "$WORK/nettimeout/efi" \
+        "$WORK/nettimeout/state" "http://boot.example.org/tl/ramroot.sqsh"; then
+    ok "restore_home returns 0 on a netboot timeout"
+else
+    bad "restore_home returned non-zero on a netboot timeout"
+fi
+if [[ "$(cat "$WORK/nettimeout/state/home-restore" 2>/dev/null)" == "failed" ]]; then
+    ok "restore_home records 'failed' for a netboot timeout"
+else
+    bad "restore_home did not record 'failed' for a netboot timeout (got: $(cat "$WORK/nettimeout/state/home-restore" 2>/dev/null))"
+fi
+DBRRG_TEST_CURL_MODE=ok
 
 # Netboot with no recorded MAC: skip, do not guess. Guessing is exactly the
 # failure this design removed - a wrong key means the home is posted where
-# it will never be found again.
+# it will never be found again. No boot MAC is a fault in the boot itself,
+# not a normal "nothing to restore", so the marker is "failed".
 mkdir -p "$WORK/nomac/efi" "$WORK/nomac/state" "$WORK/nomac/newroot/home/tluser"
 if restore_home "$WORK/nomac/newroot" "$WORK/nomac/efi" "$WORK/nomac/state" \
         "http://boot.example.org/tl/ramroot.sqsh"; then
     ok "restore_home returns 0 when no boot MAC was recorded"
 else
     bad "restore_home returned non-zero with no boot MAC"
+fi
+if [[ "$(cat "$WORK/nomac/state/home-restore" 2>/dev/null)" == "failed" ]]; then
+    ok "restore_home records 'failed' when no boot MAC was recorded"
+else
+    bad "restore_home did not record 'failed' with no boot MAC (got: $(cat "$WORK/nomac/state/home-restore" 2>/dev/null))"
 fi
 
 # The base the URL was built from must be recorded, so dbrrg-save-home posts
@@ -298,6 +368,11 @@ if restore_home "$WORK/fail/newroot" "$WORK/fail/efi" "$WORK/fail/state" \
     ok "restore_home returns 0 when the USB archive is absent"
 else
     bad "restore_home returned non-zero on a missing USB archive"
+fi
+if [[ "$(cat "$WORK/fail/state/home-restore" 2>/dev/null)" == "absent" ]]; then
+    ok "restore_home records 'absent' when the USB archive is absent"
+else
+    bad "restore_home did not record 'absent' for a missing USB archive (got: $(cat "$WORK/fail/state/home-restore" 2>/dev/null))"
 fi
 DBRRG_TEST_CURL_MODE=ok
 
