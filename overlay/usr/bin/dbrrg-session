@@ -40,5 +40,18 @@ if [ -r "$HOME/.dbrrg-sessionrc" ]; then
     . "$HOME/.dbrrg-sessionrc"
 fi
 
+# The taskbar. Without it a window minimized via labwc's iconify button is
+# gone for the rest of the session - there are no keybindings and no menu to
+# get it back. See /etc/dbrrg/waybar/config.jsonc.
+#
+# It must die with the session: labwc terminates when this script returns,
+# and an orphaned waybar would linger against the next session's compositor.
+if command -v waybar >/dev/null 2>&1; then
+    waybar -c /etc/dbrrg/waybar/config.jsonc \
+           -s /etc/dbrrg/waybar/style.css &
+    WAYBAR_PID=$!
+    trap 'kill "$WAYBAR_PID" 2>/dev/null' EXIT INT TERM
+fi
+
 /opt/thinlinc/bin/tlclient
 /usr/bin/dbrrg-save-home

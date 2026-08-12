@@ -87,6 +87,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     wl-clipboard \
     kanshi \
     wlr-randr \
+    waybar \
     xfonts-base \
     fonts-dejavu-core \
     xcursor-themes \

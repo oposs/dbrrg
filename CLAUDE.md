@@ -92,6 +92,15 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - Network configuration: `overlay/etc/netplan/`
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
 - Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory)
+- Taskbar: `overlay/etc/dbrrg/waybar/` (`config.jsonc`, `style.css`) - a
+  single `wlr/taskbar` module, launched by `dbrrg-session`. It exists
+  because labwc draws an iconify button and, with zero keybindings and no
+  menu, a minimized window would otherwise be unreachable for the rest of
+  the session. Kept outside `$HOME` for the same reason `rc.xml` is.
+  Note a fullscreen ThinLinc client covers the bar - wlroots puts
+  fullscreen surfaces above the layer-shell top layer and ignores exclusive
+  zones - so it is visible exactly when no window is fullscreen, which is
+  when a window can go missing.
 - Session startup: `overlay/usr/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
 - **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the ThinLinc client. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
 

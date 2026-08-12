@@ -40,6 +40,9 @@ present "foot"             'usr/bin/foot$'
 present "grim"             'usr/bin/grim$'
 present "slurp"            'usr/bin/slurp$'
 present "wl-copy"          'usr/bin/wl-copy$'
+present "waybar"           'usr/bin/waybar$'
+present "waybar config"    'etc/dbrrg/waybar/config\.jsonc$'
+present "waybar style"     'etc/dbrrg/waybar/style\.css$'
 present "session script"    'usr/bin/dbrrg-session$'
 present "save-home"         'usr/bin/dbrrg-save-home$'
 present "labwc config merge" 'usr/bin/dbrrg-compose-labwc-config$'
@@ -178,6 +181,31 @@ if unsquashfs -no-xattrs -d "$DPKG_TMP/keygen" "$SQSH" \
     echo "ok   - sshd-keygen.service is masked"
 else
     echo "FAIL - sshd-keygen.service is not masked - it can race dbrrg-ssh-hostkeys.service on first boot"
+    fail=1
+fi
+
+# The taskbar is the ONLY way back to a minimized window: labwc draws an
+# iconify button, and with zero keybindings and no menu there is no other
+# route. If the config ever loses the taskbar module, minimized windows
+# become unreachable again.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/wb" "$SQSH" \
+        etc/dbrrg/waybar/config.jsonc >/dev/null 2>&1 &&
+   grep -q 'wlr/taskbar' "$DPKG_TMP/wb/etc/dbrrg/waybar/config.jsonc"; then
+    echo "ok   - waybar config declares the wlr/taskbar module"
+else
+    echo "FAIL - waybar config has no wlr/taskbar module"
+    fail=1
+fi
+
+# dbrrg-session must both start waybar and kill it: labwc terminates when
+# its -S command returns, and a surviving waybar would be orphaned.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/sess" "$SQSH" \
+        usr/bin/dbrrg-session >/dev/null 2>&1 &&
+   grep -q 'waybar' "$DPKG_TMP/sess/usr/bin/dbrrg-session" &&
+   grep -q 'trap .*kill' "$DPKG_TMP/sess/usr/bin/dbrrg-session"; then
+    echo "ok   - dbrrg-session starts waybar and kills it on exit"
+else
+    echo "FAIL - dbrrg-session does not start and clean up waybar"
     fail=1
 fi
 
