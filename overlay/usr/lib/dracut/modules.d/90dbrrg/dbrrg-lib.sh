@@ -252,6 +252,69 @@ dbrrg_restore_home_from_url() {
     return $_drhu_rc
 }
 
+# restore_home <newroot> <efi-mount> <state-dir> <ramroot>
+#
+# Populate /home/tluser in the new root before the pivot.
+#
+# This used to run at login, from /etc/profile.d/10-dbrrg-session.sh. It runs
+# here now so the home directory exists before multi-user.target, which is
+# what lets the SSH host keys persist inside it - see
+# overlay/usr/bin/dbrrg-ssh-hostkeys.
+#
+# Moving it EARLIER does not violate the standing rule recorded in
+# 10-dbrrg-session.sh. That rule forbids moving the restore back INTO
+# dbrrg-session, because ~/.dbrrg-environment must be on disk before labwc
+# reads XKB_DEFAULT_* at startup. The initramfs is earlier still, so the
+# ordering constraint holds a fortiori.
+#
+# ALWAYS returns 0. It is called from setup-overlay.sh, where a non-zero
+# return aborts the boot. A client that cannot restore its home must still
+# come up with the shipped default one.
+restore_home() {
+    _rh_newroot="$1"
+    _rh_efi="$2"
+    _rh_state="$3"
+    _rh_ramroot="$4"
+
+    _rh_home="$_rh_newroot/home/tluser"
+
+    if is_remote_url "$_rh_ramroot"; then
+        _rh_mac=$(cat "$_rh_state/boot-mac" 2>/dev/null | tr -d '\012')
+        if [ -z "$_rh_mac" ]; then
+            # Deliberately do not fall back to guessing an interface. A
+            # wrong MAC means fetching one machine's home onto another, or
+            # saving to a key nothing will ever read back.
+            warn "dbrrg: no boot MAC recorded, skipping home restore"
+            return 0
+        fi
+
+        _rh_url=$(dbrrg_home_url "$_rh_ramroot" "$_rh_mac") || return 0
+
+        # Record the base the URL was built from, for the same reason the MAC
+        # is recorded: so dbrrg-save-home posts to the identical location
+        # rather than re-deriving it.
+        #
+        # save-home derives the base with a greedy sed over the whole
+        # /proc/cmdline (s/.*ramroot=\(.*\)\/.*$/\1/). That backtracks to the
+        # LAST slash anywhere in the command line, so any kernel parameter
+        # appearing after ramroot= that contains a "/" - root=/dev/sda1,
+        # init=/sbin/init - silently yields a wrong base. Today's
+        # configs/syslinux.cfg happens to have no such parameter, so the bug
+        # is latent rather than live; recording the resolved value here
+        # removes the whole class instead of relying on that staying true.
+        echo "${_rh_ramroot%/*}" > "$_rh_state/boot-home-base" 2>/dev/null || \
+            warn "dbrrg: could not record boot-home-base"
+
+        dbrrg_log "dbrrg: restoring home from $_rh_url"
+        dbrrg_restore_home_from_url "$_rh_url" "$_rh_home" 120 || true
+    else
+        dbrrg_log "dbrrg: restoring home from $_rh_efi/home.tar.gz"
+        dbrrg_restore_home_from_file "$_rh_efi/home.tar.gz" "$_rh_home" || true
+    fi
+
+    return 0
+}
+
 verify_squashfs() {
     local sqsh_path="$1"
 

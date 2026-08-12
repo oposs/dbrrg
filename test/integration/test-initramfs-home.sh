@@ -37,6 +37,7 @@ bad() { echo "FAIL - $1"; fail=1; }
 info() { :; }
 warn() { echo "warn: $*" >>"$WORK/warnings"; }
 dinfo() { :; }
+dbrrg_log() { :; }
 die()  { echo "die: $*" >>"$WORK/deaths"; return 1; }
 : >"$WORK/warnings"
 : >"$WORK/deaths"
@@ -231,6 +232,79 @@ if [[ ! -s "$WORK/deaths" ]]; then
     ok "still no die() on any failure path"
 else
     bad "a failure path called die(): $(cat "$WORK/deaths")"
+fi
+
+# --- restore_home (orchestrator) ----------------------------------------
+
+# USB boot: ramroot is a relative path, archive sits at the EFI mount root.
+mkdir -p "$WORK/usb/efi" "$WORK/usb/state" "$WORK/usb/newroot/home/tluser"
+cp "$WORK/home.tar.gz" "$WORK/usb/efi/home.tar.gz"
+if restore_home "$WORK/usb/newroot" "$WORK/usb/efi" "$WORK/usb/state" \
+        "tl/ramroot.sqsh" &&
+   [[ -f "$WORK/usb/newroot/home/tluser/.dbrrg-environment" ]]; then
+    ok "restore_home restores from the EFI partition on USB boot"
+else
+    bad "restore_home did not restore from the EFI partition"
+fi
+
+# Netboot: uses the recorded boot MAC to build the URL.
+mkdir -p "$WORK/net/efi" "$WORK/net/state" "$WORK/net/newroot/home/tluser"
+echo "de:ad:be:ef:00:01" >"$WORK/net/state/boot-mac"
+DBRRG_TEST_CURL_MODE=ok
+if restore_home "$WORK/net/newroot" "$WORK/net/efi" "$WORK/net/state" \
+        "http://boot.example.org/tl/ramroot.sqsh" &&
+   [[ -f "$WORK/net/newroot/home/tluser/.dbrrg-environment" ]]; then
+    ok "restore_home fetches from the boot server on netboot"
+else
+    bad "restore_home did not fetch from the boot server"
+fi
+
+# Netboot with no recorded MAC: skip, do not guess. Guessing is exactly the
+# failure this design removed - a wrong key means the home is posted where
+# it will never be found again.
+mkdir -p "$WORK/nomac/efi" "$WORK/nomac/state" "$WORK/nomac/newroot/home/tluser"
+if restore_home "$WORK/nomac/newroot" "$WORK/nomac/efi" "$WORK/nomac/state" \
+        "http://boot.example.org/tl/ramroot.sqsh"; then
+    ok "restore_home returns 0 when no boot MAC was recorded"
+else
+    bad "restore_home returned non-zero with no boot MAC"
+fi
+
+# The base the URL was built from must be recorded, so dbrrg-save-home posts
+# to the same place instead of re-deriving it with a greedy sed over the whole
+# /proc/cmdline. That sed backtracks to the last slash ANYWHERE in the command
+# line, so a later parameter containing "/" (root=/dev/sda1, init=/sbin/init)
+# silently produces a different base and orphans the client's home.
+if [[ "$(cat "$WORK/net/state/boot-home-base" 2>/dev/null)" == "http://boot.example.org/tl" ]]; then
+    ok "restore_home records boot-home-base for the save side to reuse"
+else
+    bad "restore_home did not record boot-home-base (got: $(cat "$WORK/net/state/boot-home-base" 2>/dev/null))"
+fi
+
+# USB boot never builds a URL, so there is nothing to record and its absence
+# must not be treated as a fault.
+if [[ ! -e "$WORK/usb/state/boot-home-base" ]]; then
+    ok "no boot-home-base recorded on USB boot"
+else
+    bad "boot-home-base was recorded on USB boot, where it has no meaning"
+fi
+
+# Every failure mode must still return 0: restore_home is called from
+# setup-overlay.sh, where a non-zero return would abort the boot.
+mkdir -p "$WORK/fail/efi" "$WORK/fail/state" "$WORK/fail/newroot/home/tluser"
+DBRRG_TEST_CURL_MODE=timeout
+if restore_home "$WORK/fail/newroot" "$WORK/fail/efi" "$WORK/fail/state" \
+        "tl/ramroot.sqsh"; then
+    ok "restore_home returns 0 when the USB archive is absent"
+else
+    bad "restore_home returned non-zero on a missing USB archive"
+fi
+DBRRG_TEST_CURL_MODE=ok
+
+if [[ ! -s "$WORK/deaths" ]]; then
+    ok "restore_home never calls die()"
+else
+    bad "restore_home called die(): $(cat "$WORK/deaths")"
 fi
 
 if [[ $fail -ne 0 ]]; then
