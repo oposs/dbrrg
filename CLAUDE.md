@@ -365,6 +365,39 @@ sshd startup the way masking `ssh.socket` alone would have.
 `ssh.socket` mask, the absence of `ssh.service.requires/ssh.socket`, and the
 `sshd-keygen.service` mask — run via `make test`.
 
+### A multi-user.target unit must never declare Before= on a sysinit.target unit
+
+A unit that is only `WantedBy=multi-user.target` (no explicit
+`DefaultDependencies=` or `Before=`/`After=` of its own) is implicitly
+ordered `After=basic.target`, which is itself ordered after
+`sysinit.target`. Giving such a unit `Before=<something in sysinit.target>`
+therefore orders it both before and after the same target, and systemd
+resolves the resulting cycle by silently deleting one of the jobs — on every
+single boot, not just the first.
+
+Two real instances of this bug have shipped in this repo:
+
+- `dbrrg-ssh-hostkeys.service` was ordered `Before=ssh.socket` (which pulls
+  in `sockets.target`, itself before `basic.target`) — see "ssh.socket must
+  stay masked" above for the full cycle and its fix.
+- `un-dockerize.service` was ordered `Before=systemd-hwdb-update.service`
+  (part of `sysinit.target`). systemd broke the cycle by deleting the hwdb
+  update job on every boot; nothing `un-dockerize.service` does (resolv.conf,
+  `/etc/hosts`, `systemd-resolved`) has anything to do with the hardware
+  database — the `Before=` was vestigial, left over from commented-out
+  `depmod`/`modprobe` lines. It has been removed. Because this image's
+  `usr/lib/udev/hwdb.bin` ships prebuilt (confirmed via `unsquashfs -l
+  ramroot.sqsh | grep hwdb.bin`), `systemd-hwdb-update.service` is now also
+  masked in `containers/ubuntu/Dockerfile` alongside the other `systemctl
+  mask` calls, so removing the ordering cycle doesn't newly spend a boot
+  regenerating a database the image already has.
+
+`scripts/check-boot-smoke.sh` guards this class of bug directly: it fails
+the smoke test on any `Found ordering cycle` line in the boot log, not just
+on the two known instances. `test/integration/test-session-packages.sh`
+additionally asserts `un-dockerize.service` has no
+`Before=systemd-hwdb-update` line — both run via `make test`.
+
 ### labwc is a local rebuild, not the archive package
 
 `containers/ubuntu/Dockerfile` builds `labwc_0.9.3-1+dbrrg1` from Ubuntu's

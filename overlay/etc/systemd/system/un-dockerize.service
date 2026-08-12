@@ -1,6 +1,13 @@
 [Unit]
 Description=Undockerize this Image
-Before=systemd-hwdb-update.service
+# Deliberately NO Before=systemd-hwdb-update.service. That unit belongs to
+# sysinit.target, while this one is WantedBy=multi-user.target and so is
+# implicitly ordered After=basic.target -> After=sysinit.target. Declaring
+# Before= on it made this unit both before and after the same target, and
+# systemd broke the resulting cycle by deleting the hwdb update job on every
+# single boot. Nothing this service does - resolv.conf, /etc/hosts,
+# systemd-resolved - relates to the hardware database; the ordering was
+# vestigial, left over from the depmod/modprobe lines commented out below.
 
 [Service]
 Type=oneshot

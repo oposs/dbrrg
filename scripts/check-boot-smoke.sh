@@ -60,6 +60,7 @@ unwant "no GuC firmware error"       'GuC firmware.*fetch failed'
 unwant "GPU not wedged"              'declaring it wedged'
 unwant "no dracut emergency shell"   'Entering emergency mode|dracut: FATAL'
 unwant "no kernel panic"             'Kernel panic'
+unwant "no systemd ordering cycle"   'Found ordering cycle'
 
 if [[ $fail -ne 0 ]]; then
     echo ""

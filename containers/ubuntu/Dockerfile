@@ -229,6 +229,15 @@ RUN systemctl --global disable waybar.service || true
 # regenerate-every-boot bug this unit exists to fix. It is only a Wants=
 # (soft) dependency of ssh.service, so masking it cannot break sshd startup
 # the way masking ssh.socket alone would have.
+#
+# systemd-hwdb-update.service is masked because linux-firmware/udev already
+# ships a prebuilt usr/lib/udev/hwdb.bin in this image (confirmed via
+# `unsquashfs -l ramroot.sqsh | grep hwdb.bin`); regenerating it at boot
+# would only write megabytes into the ZRAM overlay for no benefit. This is
+# unrelated to the un-dockerize.service ordering-cycle fix above - that
+# service no longer declares Before=systemd-hwdb-update.service at all - but
+# masking it here still avoids the pointless regeneration now that nothing
+# stops the unit from actually running.
 RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl disable ssh.socket || true && \
     systemctl mask ssh.socket || true && \
@@ -237,7 +246,8 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable ssh.service || true && \
     systemctl enable un-dockerize.service || true && \
     systemctl enable systemd-networkd && \
-    systemctl enable systemd-resolved
+    systemctl enable systemd-resolved && \
+    systemctl mask systemd-hwdb-update.service || true
 
 # Build initramfs with dracut
 # Keep it generic but omit unnecessary modules.

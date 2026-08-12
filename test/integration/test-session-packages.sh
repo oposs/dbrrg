@@ -210,6 +210,22 @@ else
     fail=1
 fi
 
+# un-dockerize.service must not be ordered before a sysinit unit - that made
+# systemd delete the hwdb update job on every boot. See CLAUDE.md.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/ud" "$SQSH" \
+        etc/systemd/system/un-dockerize.service >/dev/null 2>&1; then
+    if grep -q '^Before=systemd-hwdb-update' \
+            "$DPKG_TMP/ud/etc/systemd/system/un-dockerize.service"; then
+        echo "FAIL - un-dockerize.service reintroduces the hwdb ordering cycle"
+        fail=1
+    else
+        echo "ok   - un-dockerize.service has no hwdb ordering cycle"
+    fi
+else
+    echo "FAIL - could not extract un-dockerize.service"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"
