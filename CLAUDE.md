@@ -314,8 +314,9 @@ assertion on `rc.xml` itself - run via `make test`.
 
 ### ssh.socket must stay masked
 
-`containers/ubuntu/Dockerfile` runs `systemctl mask ssh.socket` and enables
-`ssh.service` alone. Re-enabling the socket reintroduces an ordering cycle.
+`containers/ubuntu/Dockerfile` runs `systemctl disable ssh.socket` then
+`systemctl mask ssh.socket`, and enables `ssh.service` alone. Re-enabling the
+socket reintroduces an ordering cycle.
 
 `dbrrg-ssh-hostkeys.service` must run before sshd. With the socket active,
 sshd has two entry points with different ordering — the socket from
@@ -323,10 +324,37 @@ sshd has two entry points with different ordering — the socket from
 to be ordered `Before=ssh.socket`. But a `DefaultDependencies=yes` unit is
 implicitly ordered `After=basic.target`, and `basic.target` comes after
 `sockets.target`, which comes after `ssh.socket`. Before and after the same
-unit is a cycle, and systemd resolves a cycle by deleting a job: the machine
-came up with either no host keys or no listening socket.
+unit is a cycle, and systemd resolves a cycle by deleting a job — which job
+is not contractual: under QEMU it deleted `sockets.target` and sshd came up
+fine, while on real hardware it deleted the key-generation service, leaving
+no host keys and no sshd.
 
-`test/integration/test-session-packages.sh` guards this — run via `make test`.
+`disable` before `mask` is required, not stylistic. Ubuntu's `ssh.socket`
+declares `RequiredBy=ssh.service` in its `[Install]` section, so once it is
+enabled, `/etc/systemd/system/ssh.service.requires/ssh.socket` exists.
+Masking the socket while that symlink is still there makes `ssh.service`
+fail outright with "Unit ssh.socket is masked" — `disable` removes the
+symlink (and the `sockets.target.wants` one) first; `mask` then stops
+anything from re-enabling it. Doing `mask` first would leave the requires
+symlink in place, since `disable` is a no-op on an already-masked unit.
+
+`sshd-keygen.service` must ALSO be masked, for a reason that's easy to
+miss: it ships enabled via `Wants=` from **both** `ssh.socket.wants/` and
+`ssh.service.wants/`, so disabling `ssh.socket` only removes the first of
+those two symlinks — the second survives on its own. Left alone, it races
+`dbrrg-ssh-hostkeys.service` on a genuine first boot: its
+`ConditionFirstBoot=yes`, and neither unit is ordered against the other,
+both only declaring `Before=ssh.service`. If `sshd-keygen.service` wins, it
+writes keys straight into `/etc/ssh`; `dbrrg-ssh-hostkeys.service` then
+finds live keys already present and skips generation, so those keys are
+never staged into the keystore and are lost on the next boot — reproducing
+the regenerate-every-boot bug this whole mechanism exists to fix. It is only
+a `Wants=` (soft) dependency of `ssh.service`, so masking it cannot break
+sshd startup the way masking `ssh.socket` alone would have.
+
+`test/integration/test-session-packages.sh` guards all three — the
+`ssh.socket` mask, the absence of `ssh.service.requires/ssh.socket`, and the
+`sshd-keygen.service` mask — run via `make test`.
 
 ### labwc is a local rebuild, not the archive package
 

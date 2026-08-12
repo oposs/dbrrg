@@ -129,6 +129,33 @@ else
     fail=1
 fi
 
+# Masking alone is not enough to prove sshd can still start: Ubuntu's
+# ssh.socket declares RequiredBy=ssh.service, so if that requires-symlink
+# is still present, ssh.service fails outright with "Unit ssh.socket is
+# masked" - a mask-only check would pass on a broken image. ssh.socket must
+# be *disabled* (which removes this symlink) before it is masked.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/sshreq" "$SQSH" \
+        etc/systemd/system/ssh.service.requires/ssh.socket >/dev/null 2>&1; then
+    echo "FAIL - ssh.service.requires/ssh.socket still present - ssh.service would fail to start"
+    fail=1
+else
+    echo "ok   - ssh.service no longer requires the masked ssh.socket"
+fi
+
+# sshd-keygen.service ships Wants=-enabled from BOTH ssh.socket.wants/ and
+# ssh.service.wants/; disabling ssh.socket only removes the first symlink.
+# Left unmasked it races dbrrg-ssh-hostkeys.service on a genuine first boot
+# and can win, leaving generated keys unstaged and lost on the next reboot.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/keygen" "$SQSH" \
+        etc/systemd/system/sshd-keygen.service >/dev/null 2>&1 &&
+   [[ -L "$DPKG_TMP/keygen/etc/systemd/system/sshd-keygen.service" ]] &&
+   [[ "$(readlink "$DPKG_TMP/keygen/etc/systemd/system/sshd-keygen.service")" == "/dev/null" ]]; then
+    echo "ok   - sshd-keygen.service is masked"
+else
+    echo "FAIL - sshd-keygen.service is not masked - it can race dbrrg-ssh-hostkeys.service on first boot"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"

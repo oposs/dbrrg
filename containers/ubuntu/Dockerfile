@@ -181,17 +181,43 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
 # error on every start and left DRM access depending on which backend won.
 RUN systemctl disable seatd.service || true
 
-# ssh.socket is masked on purpose. sshd had two entry points with different
-# ordering - the socket from sockets.target and the service from
-# multi-user.target - and the host key unit had to be ordered before both.
-# Since a DefaultDependencies=yes unit is implicitly ordered after
-# basic.target, and basic.target comes after sockets.target and therefore
-# after ssh.socket, "Before=ssh.socket" made the unit both before and after
-# the same target. systemd breaks such a cycle by deleting a job, which left
-# the machine with either no host keys or no listening socket. One entry
-# point removes the cycle. Do not re-enable it.
+# ssh.socket is disabled AND masked, in that order, on purpose.
+#
+# sshd had two entry points with different ordering - the socket from
+# sockets.target and the service from multi-user.target - and the host key
+# unit has to run before sshd. Since a DefaultDependencies=yes unit is
+# implicitly ordered after basic.target, and basic.target comes after
+# sockets.target and therefore after ssh.socket, "Before=ssh.socket" made
+# that unit both before and after the same target. systemd breaks such a
+# cycle by deleting a job, and which job it picks is not contractual: under
+# QEMU it deleted sockets.target and sshd came up fine, while on hardware it
+# deleted the key generation service, leaving no host keys and no sshd.
+#
+# disable BEFORE mask is required, not stylistic. Ubuntu's ssh.socket
+# declares "RequiredBy=ssh.service" in its [Install] section, so enabling it
+# creates /etc/systemd/system/ssh.service.requires/ssh.socket. Masking the
+# socket while that symlink exists makes ssh.service fail outright with
+# "Unit ssh.socket is masked". systemctl disable removes both that symlink
+# and the sockets.target.wants one; the mask then stops anything re-enabling
+# it. Masking first would leave the requires symlink in place, because
+# disable is a no-op on an already-masked unit.
+#
+# sshd-keygen.service must ALSO be masked. It ships enabled via Wants= in
+# BOTH ssh.socket.wants/ and ssh.service.wants/ - disabling ssh.socket only
+# removes the first symlink, and the second survives independently. Left
+# alone, it races dbrrg-ssh-hostkeys.service on a genuine first boot (its
+# ConditionFirstBoot=yes; neither unit orders itself against the other, both
+# only declare Before=ssh.service). If sshd-keygen.service wins that race it
+# writes keys straight into /etc/ssh, dbrrg-ssh-hostkeys.service then finds
+# live keys already present and skips generation - so those keys never get
+# staged into the keystore and are lost on the next boot, reproducing the
+# regenerate-every-boot bug this unit exists to fix. It is only a Wants=
+# (soft) dependency of ssh.service, so masking it cannot break sshd startup
+# the way masking ssh.socket alone would have.
 RUN rm -f /etc/ssh/ssh_host_*_key* && \
+    systemctl disable ssh.socket || true && \
     systemctl mask ssh.socket || true && \
+    systemctl mask sshd-keygen.service || true && \
     systemctl enable dbrrg-ssh-hostkeys.service || true && \
     systemctl enable ssh.service || true && \
     systemctl enable un-dockerize.service || true && \
