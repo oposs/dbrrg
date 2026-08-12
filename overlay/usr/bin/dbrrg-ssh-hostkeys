@@ -95,6 +95,25 @@ esac
 
 if install_from_keystore; then
     echo "dbrrg-ssh-hostkeys: installed persistent host keys from $KEYSTORE"
+
+    # Top up any key type the keystore did not carry. has_keys above only
+    # proves at least ONE key was present, so a partial keystore - a
+    # truncated home archive, a hand-edited directory, or simply a keystore
+    # written before a new key type existed - would otherwise leave sshd
+    # running with fewer host key types than the image expects, silently and
+    # with a log line identical to a full install.
+    #
+    # ssh-keygen -A only creates types that are missing and leaves existing
+    # keys untouched, so this is safe to run unconditionally here. Anything
+    # it generates is staged back so the keystore converges on the full set.
+    if ssh-keygen -A; then
+        chown root:root "$SSH_DIR"/ssh_host_* 2>/dev/null || true
+        chmod 600 "$SSH_DIR"/ssh_host_*_key 2>/dev/null || true
+        chmod 644 "$SSH_DIR"/ssh_host_*_key.pub 2>/dev/null || true
+        stage_to_keystore || \
+            echo "dbrrg-ssh-hostkeys: WARNING could not restage topped-up keys" >&2
+    fi
+
     exit 0
 fi
 

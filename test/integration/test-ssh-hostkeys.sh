@@ -43,10 +43,14 @@ STUB
 chmod +x "$STUBS/chown"
 
 # ssh-keygen -A normally writes into /etc/ssh; honour DBRRG_SSH_DIR instead.
+# Real ssh-keygen -A only creates key types that are missing and leaves any
+# existing key alone - skip existing files here too, so the stub can stand
+# in for the top-up path without clobbering a key it should be preserving.
 cat >"$STUBS/ssh-keygen" <<'STUB'
 #!/bin/bash
 echo "ssh-keygen $*" >>"$DBRRG_TEST_KEYGEN_LOG"
 for t in rsa ecdsa ed25519; do
+    [ -e "$DBRRG_SSH_DIR/ssh_host_${t}_key" ] && continue
     echo "PRIVATE-$t" >"$DBRRG_SSH_DIR/ssh_host_${t}_key"
     echo "PUBLIC-$t"  >"$DBRRG_SSH_DIR/ssh_host_${t}_key.pub"
 done
@@ -69,6 +73,13 @@ fresh_case() {
 }
 
 # --- keys present in the home keystore -> installed into /etc/ssh --------
+#
+# This keystore deliberately carries only ed25519 - a PARTIAL keystore, the
+# same shape as a truncated home archive, a hand-edited keystore, or one
+# written before a new key type existed. It doubles as the top-up test: the
+# install path now always runs ssh-keygen -A afterwards (see
+# dbrrg-ssh-hostkeys), so this case proves both that the missing types get
+# generated and that the type which WAS present is left untouched.
 
 fresh_case restore
 mkdir -p "$DBRRG_HOME_DIR/.dbrrg-ssh-host-keys"
@@ -84,10 +95,30 @@ else
     bad "keystore keys were not installed"
 fi
 
-if [[ ! -s "$DBRRG_TEST_KEYGEN_LOG" ]]; then
-    ok "no regeneration when the keystore already has keys"
+# The top-up call must not clobber the key that was already there - this is
+# what proves ssh-keygen -A "only creates missing types" isn't just assumed.
+if [[ "$(cat "$DBRRG_SSH_DIR/ssh_host_ed25519_key" 2>/dev/null)" == "PRIVATE-ed25519" ]]; then
+    ok "installed key keeps its original keystore content after top-up"
 else
-    bad "ssh-keygen ran even though the keystore had keys"
+    bad "installed ed25519 key content changed - top-up must have overwritten it"
+fi
+
+if grep -q -- "-A" "$DBRRG_TEST_KEYGEN_LOG"; then
+    ok "ssh-keygen -A runs to top up a partial keystore"
+else
+    bad "ssh-keygen -A did not run to top up the partial keystore"
+fi
+
+if [[ -f "$DBRRG_SSH_DIR/ssh_host_rsa_key" && -f "$DBRRG_SSH_DIR/ssh_host_ecdsa_key" ]]; then
+    ok "missing key types (rsa, ecdsa) are topped up in the ssh dir"
+else
+    bad "missing key types were not topped up - sshd would run with fewer key types"
+fi
+
+if [[ -f "$DBRRG_HOME_DIR/.dbrrg-ssh-host-keys/ssh_host_rsa_key" ]]; then
+    ok "topped-up key types are restaged into the keystore"
+else
+    bad "topped-up key types were not restaged - they would not persist"
 fi
 
 # sshd refuses to start on a private key that is not 0600.
