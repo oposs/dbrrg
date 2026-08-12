@@ -23,6 +23,10 @@ install() {
     # Network tools
     inst_multiple curl ip dhclient
 
+    # Archive tools for the home restore in restore_home(). GNU tar runs
+    # gzip as a separate process for -z, so both are required.
+    inst_multiple tar gzip
+
     # Filesystem tools
     inst_multiple zramctl blockdev losetup mountpoint
     inst_multiple mkfs.ext4 fsck.fat

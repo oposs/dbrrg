@@ -5,11 +5,11 @@
 #
 # -C points labwc at a config directory outside $HOME. $HOME is captured
 # wholesale into home.tar.gz by save-home and restored wholesale by
-# dbrrg-restore-home on every login, with no excludes. A config file kept
-# under $HOME would therefore be pinned forever on an already-deployed
-# machine - including the rc.xml that enforces the zero-keybindings
-# constraint - and a corrected file shipped in a future image would never
-# reach it.
+# restore_home() (in the initramfs) on every boot, with no excludes. A
+# config file kept under $HOME would therefore be pinned forever on an
+# already-deployed machine - including the rc.xml that enforces the
+# zero-keybindings constraint - and a corrected file shipped in a future
+# image would never reach it.
 # DBRRG_SESSION_ATTEMPTED guards against recursion: the failure path below
 # leaves a login shell on tty1, and a login shell re-sources this file. The
 # marker is exported, so the guard survives into that shell and stops it
@@ -51,18 +51,15 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
         set +a
     fi
 
-    # Restore the home directory HERE, before the compositor starts - not from
-    # inside the session as the X11 setup did.
+    # The home directory is ALREADY restored - the initramfs did it, in
+    # restore_home() (dbrrg-lib.sh), before the pivot.
     #
-    # The reason is the user-controlled keyboard layout below. XKB_DEFAULT_*
-    # is read by the compositor when it starts, so a user override has to be
-    # on disk and sourced before that. Restoring home inside the session (the
-    # obvious place, and where dbrrg-restore-home used to run) would make any
-    # user keyboard setting take effect only on the NEXT boot.
-    #
-    # The user sees the plymouth splash during this, exactly as before; only
-    # the ordering relative to the compositor changed.
-    /usr/local/bin/dbrrg-restore-home >>"$DBRRG_SESSION_LOG" 2>&1 || true
+    # Do not add a restore call here or in dbrrg-session. The constraint that
+    # forced it out of dbrrg-session still stands: ~/.dbrrg-environment must
+    # be on disk before labwc reads XKB_DEFAULT_* at startup, or a user's
+    # keyboard change takes effect only on the NEXT boot. The initramfs
+    # satisfies that; a restore at this point would merely re-satisfy it,
+    # and a restore any later would break it.
 
     # User overrides, sourced AFTER the system defaults so the user wins.
     # This file is for variables the compositor reads at STARTUP - keyboard
@@ -94,8 +91,9 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # environment file has the system defaults first and the user's
     # overrides last, so the file labwc itself parses already has the
     # user's values winning - see that script's header for why later wins.
-    # This has to run AFTER dbrrg-restore-home above: ~/.dbrrg-environment
-    # only exists once the home directory has been restored.
+    # This relies on the home directory already being restored: it is, by
+    # the initramfs (restore_home() in dbrrg-lib.sh), before this script
+    # ever runs, so ~/.dbrrg-environment already exists here.
     #
     # A broken merge must degrade to today's behaviour (the plain system
     # config, still correct for every machine that has no per-machine

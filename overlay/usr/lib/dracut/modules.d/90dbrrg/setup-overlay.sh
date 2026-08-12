@@ -53,6 +53,17 @@ echo "$machine_id" > "$NEWROOT/etc/machine-id" || \
 
 info "Machine-id set: $machine_id"
 
+# Restore the home directory here, in the initramfs, rather than at login.
+#
+# It has to be in place before multi-user.target so dbrrg-ssh-hostkeys can
+# take the persistent SSH host keys out of it before sshd starts. Doing it
+# at login - where it used to happen - is far too late for that.
+#
+# restore_home always returns 0; a client that cannot reach its home archive
+# still boots with the shipped default home.
+restore_home "$NEWROOT" "$DBRRG_STORAGE/efi" "$DBRRG_STATE" \
+    "$(cat /tmp/dbrrg-ramroot 2>/dev/null)"
+
 echo "$zram_dev" > "$DBRRG_STATE/zram-device"
 
 return 0

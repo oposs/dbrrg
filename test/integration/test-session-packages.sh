@@ -38,7 +38,7 @@ present "labwc"            'usr/bin/labwc$'
 present "Xwayland"         'usr/bin/Xwayland$'
 present "foot"             'usr/bin/foot$'
 present "session script"   'usr/local/bin/dbrrg-session$'
-present "restore-home"     'usr/local/bin/dbrrg-restore-home$'
+absent  "restore-home script" 'usr/local/bin/dbrrg-restore-home$'
 present "labwc rc.xml"     'etc/dbrrg/labwc/rc\.xml$'
 present "tty1 autologin"   'getty@tty1\.service\.d/autologin\.conf$'
 

@@ -60,10 +60,16 @@ The boot process involves several interconnected components:
    - **ZRAM Setup**: Creates compressed RAM device for writable overlay
    - **OverlayFS**: Combines read-only SquashFS with writable ZRAM layer
    - **machine-id Persistence**: Reads/generates machine-id and stores it in /config/machine-id on EFI partition
+   - **Home Restore**: Restores `/home/tluser` from the boot medium
+     (`home.tar.gz` on the EFI partition, or `home.pkg` from the boot server)
+     before the pivot, so the home directory is in place before
+     `multi-user.target`
 
 4. **Un-dockerization** (overlay/etc/systemd/system/un-dockerize.service) - First-boot service removes Docker artifacts, fixes /etc/hosts, reconfigures systemd-resolved
 
-5. **Home Persistence** - `overlay/usr/local/bin/dbrrg-session` (run by labwc via `labwc -S`) restores the home directory at login (`dbrrg-restore-home`) and saves it on logout, after the ThinLinc client exits (`save-home`)
+5. **Home Persistence** - the initramfs restores the home directory before
+   the pivot (`restore_home()` in the dracut module); `dbrrg-session` saves
+   it on logout, after the ThinLinc client exits (`dbrrg-save-home`)
 
 ## Key Configuration Files
 
@@ -136,7 +142,13 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   | `~/.dbrrg-environment` | before the compositor starts | variables read at startup — keyboard, cursor |
   | `~/.dbrrg-sessionrc` | inside the running session | commands needing a compositor — `wlr-randr`, `kanshi`, netplan |
 
-  This is why `dbrrg-restore-home` runs in `10-dbrrg-session.sh` **before** launching labwc, rather than from `dbrrg-session` as the X11 setup did: a user's saved `.dbrrg-environment` has to be on disk before the compositor reads `XKB_DEFAULT_*`. Restoring home inside the session would make a user keyboard change take effect only on the *next* boot. Do not move the restore back into `dbrrg-session`.
+  This is why the home restore happens in the **initramfs** rather than
+  inside the session: a user's saved `.dbrrg-environment` has to be on disk
+  before the compositor reads `XKB_DEFAULT_*`. Restoring home inside the
+  session would make a user keyboard change take effect only on the *next*
+  boot. Do not move the restore into `dbrrg-session`, and do not move it
+  back into `10-dbrrg-session.sh` either — `dbrrg-ssh-hostkeys` now needs
+  the home directory before `multi-user.target`.
 
   Note the deliberate split from system config: user-editable settings live in `$HOME`, but `overlay/etc/dbrrg/labwc/rc.xml` does **not** — see [Standing Constraints](#standing-constraints).
 - Autologin: `overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf`
@@ -148,7 +160,15 @@ After modifying overlay files, rebuild with `make image`.
 
 The system implements home directory persistence across reboots:
 
-- On boot: If booting from USB (EFI-SYSTEM partition detected) or network server, restores `/home/tluser` from `home.tar.gz`
+- On boot: the initramfs restores `/home/tluser` — from `home.tar.gz` on the
+  EFI partition when booting from USB, or from `home.pkg` on the boot server
+  when netbooting. This happens in `restore_home()`
+  (`overlay/usr/lib/dracut/modules.d/90dbrrg/dbrrg-lib.sh`), called from
+  `setup-overlay.sh`, **not** at login. It moved there so the SSH host keys
+  stored inside the home directory are available before sshd starts.
+  Netboot identifies the machine by the MAC recorded at
+  `/run/dbrrg/state/boot-mac` — the interface the initramfs actually used —
+  rather than by re-deriving it, so restore and save cannot disagree.
 - On logout: ThinLinc client shutdown triggers `/opt/thinlinc/bin/save-home` which saves home directory back to USB or uploads to boot server via HTTP POST
 
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.

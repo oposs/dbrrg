@@ -35,6 +35,12 @@ if is_remote_url "$ramroot"; then
         info "Bringing up interface $iface_name"
         ip link set "$iface_name" up
         dhclient -v "$iface_name" || true
+        # Record which interface this actually was, so dbrrg-save-home posts
+        # the home archive back under the same MAC restore_home fetched it
+        # with. See dbrrg_record_boot_mac() for why both halves must not
+        # derive it independently.
+        dbrrg_record_boot_mac "/sys/class/net/$iface_name/address" \
+            "$DBRRG_STATE" || true
         break
     done
 
