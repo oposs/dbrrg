@@ -137,6 +137,25 @@ else
     bad "a failure path called die(): $(cat "$WORK/deaths")"
 fi
 
+# Valid gzip that is not a tar: decompresses cleanly, lists no members, and
+# GNU tar exits 0 on it. Without an explicit member check this reports a
+# successful restore having restored nothing - see the comment in
+# dbrrg_restore_home_from_file for why that is worse than it sounds.
+printf 'gzipped, but not a tar archive' | gzip > "$WORK/gz-not-tar.tar.gz"
+mkdir -p "$WORK/newroot7/home/tluser"
+echo "shipped-default" >"$WORK/newroot7/home/tluser/.bashrc"
+if dbrrg_restore_home_from_file "$WORK/gz-not-tar.tar.gz" \
+        "$WORK/newroot7/home/tluser" 2>/dev/null; then
+    bad "restore_home_from_file reported success on a valid-gzip non-tar payload"
+else
+    ok "restore_home_from_file rejects a valid-gzip non-tar payload"
+fi
+if [[ "$(cat "$WORK/newroot7/home/tluser/.bashrc")" == "shipped-default" ]]; then
+    ok "valid-gzip non-tar payload leaves the default home intact"
+else
+    bad "valid-gzip non-tar payload damaged the default home"
+fi
+
 # --- dbrrg_restore_home_from_url ----------------------------------------
 
 # Stub curl. $DBRRG_TEST_CURL_MODE selects the behaviour under test.
