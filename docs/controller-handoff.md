@@ -119,6 +119,39 @@ oxulnk build.** Costs one full container rebuild.
 `artifacts/` is a symlink to `/scratch/oetiker/dbrrg-artifacts`, **shared with the
 main checkout**. Do not build in both concurrently.
 
+## STATUS: all 11 tasks complete; only the hardware pass remains
+
+Final state, verified against built artifacts rather than exit codes:
+- 6 test suites, **106 assertions, 0 failures**
+- QEMU boot clean, **0 systemd ordering cycles** (both were removed)
+- `restore_home` observed running in the dracut mount phase
+- `dbrrg-ssh-hostkeys.service` completes, then `ssh.service` starts
+- whole-branch review closed: 1 Critical + 2 Important + 4 Minor, all fixed and
+  re-reviewed
+
+**The Critical is worth knowing about even after the fix**, because it shows the
+shape of risk in this design. `restore_home` cannot fail loudly — a non-zero
+return from `setup-overlay.sh` aborts the boot — so it swallowed errors and
+recorded nothing, while `dbrrg-save-home` saved unconditionally at logout. A boot
+where the archive was unreachable or corrupt therefore came up with the default
+home, `dbrrg-ssh-hostkeys` generated fresh keys into it, and logout uploaded that
+default over the user's real home: their data AND the machine's SSH identity
+destroyed in one step, silently.
+
+It was a regression THIS branch introduced: the old login-time restore looped
+forever on `ping`, so a client that could not reach its server never reached a
+session and never overwrote anything. Bounding that wait (right for boot safety)
+removed an accidental guard, and defect (d) added host-key identity to the payload.
+
+Closed by `<state-dir>/home-restore` recording `ok`/`absent`/`failed`, with
+`dbrrg-save-home` refusing to save on `failed` only. **`absent` must keep
+saving** — it is the first-boot case — and a missing marker must fall through to
+saving. If anyone touches that gate, those are the two properties to preserve.
+
+Eleven per-task reviews and 96 passing assertions all missed it, because each
+piece is correct alone and the bug lives only in the composition. That is the
+argument for the whole-branch pass existing at all.
+
 ## What remains
 
 - **Task 7** — build + `make test` running as this was written. Then review.
