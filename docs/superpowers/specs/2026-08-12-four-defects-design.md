@@ -1,11 +1,14 @@
-# Four field defects: screenshots, minimized windows, save-home location, SSH host keys
+# Four field defects: screenshots, minimized windows, script locations, SSH host keys
 
 Date: 2026-08-12
 
-Four independent defects reported from the field. They share no code, so
-they can be implemented and reviewed in any order — except that (c) renames
-scripts that (b) and (d) both touch, so (c) should land first to avoid
-rewriting the same call sites twice.
+Four defects reported from the field. Three are small and self-contained.
+The fourth turned out to be a symptom of where the home restore happens, so
+fixing it properly moves the restore into the initramfs — which in turn
+simplifies the other fixes rather than complicating them.
+
+Implementation order matters: (d) relocates a script that (c) renames, so
+(d)'s shape should be settled before (c)'s mechanical moves are applied.
 
 ## a) `grim` is missing — no way to take a screenshot
 
@@ -20,14 +23,14 @@ Add to the package list in `containers/ubuntu/Dockerfile`:
 
 - `grim` — the Wayland screenshot tool
 - `slurp` — interactive region selection, `grim -g "$(slurp)"`
-- `wl-clipboard` — `wl-copy` so a screenshot can be pasted into the ThinLinc
-  session rather than only written to a file
+- `wl-clipboard` — `wl-copy`, so a screenshot can be pasted into the
+  ThinLinc session rather than only written to a file
 
 Roughly 1 MB installed.
 
 ### How it is invoked
 
-The zero-keybindings constraint (see CLAUDE.md, "labwc must have zero
+The zero-keybindings constraint (CLAUDE.md, "labwc must have zero
 keybindings") means there is no in-session trigger and none may be added.
 The supported path is from a VT or over SSH, mirroring the existing `foot`
 recipe in CLAUDE.md's Debugging section:
@@ -36,9 +39,8 @@ recipe in CLAUDE.md's Debugging section:
 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim /tmp/shot.png
 ```
 
-This is a deliberate limitation, not an oversight: it is documented in
-CLAUDE.md alongside the `foot` recipe so the next person does not "fix" it
-by adding a keybinding.
+This limitation is deliberate and gets documented next to the `foot` recipe,
+so the next person does not "fix" it by adding a keybinding.
 
 ## b) Minimized windows vanish permanently
 
@@ -49,32 +51,32 @@ removes the window from the screen, and with no taskbar, no menu and no
 keybindings there is no way to bring it back. The window is unreachable for
 the rest of the session.
 
-The windows this affects in practice are the ThinLinc client's
-non-fullscreen ones — the connect dialog, error popups — because a
-fullscreen window has no visible titlebar to click.
+In practice this hits the ThinLinc client's non-fullscreen windows — the
+connect dialog, error popups — because a fullscreen window shows no
+titlebar to click.
 
 ### Design
 
 Install `waybar` and configure a taskbar.
 
-Config lives at **`/etc/dbrrg/waybar/`**, not under `$HOME`. This follows
-the same rule as `rc.xml`: `$HOME` is captured wholesale by
-`dbrrg-save-home` and restored wholesale on every boot, so a config file
-there would be pinned forever on an already-deployed machine and a
-corrected file in a future image would never reach it.
+Config lives at **`/etc/dbrrg/waybar/`**, not under `$HOME`. Same rule as
+`rc.xml`: `$HOME` is captured wholesale by `dbrrg-save-home` and restored
+wholesale on every boot, so a config file there would be pinned forever on
+an already-deployed machine, and a corrected file shipped in a later image
+would never reach it.
 
 Two files:
 
 - `overlay/etc/dbrrg/waybar/config.jsonc` — a single `wlr/taskbar` module,
   `all-outputs: true`, `on-click: activate`. No clock, no tray, no
-  workspaces: the bar exists to recover lost windows, nothing else.
+  workspaces: the bar exists to recover lost windows and nothing else.
 - `overlay/etc/dbrrg/waybar/style.css` — minimal styling, sized so the bar
   does not dominate a small panel.
 
 Launched from `dbrrg-session` before `tlclient` and killed when the session
 body returns, so the compositor-lifetime rule in that script's header still
-holds (labwc terminates when `-S` returns; a surviving waybar would be
-orphaned):
+holds — labwc terminates when its `-S` command returns, and a surviving
+waybar would be orphaned:
 
 ```sh
 waybar -c /etc/dbrrg/waybar/config.jsonc -s /etc/dbrrg/waybar/style.css &
@@ -87,52 +89,53 @@ trap 'kill $WAYBAR_PID 2>/dev/null' EXIT
 
 With `LABWC_FULLSCREEN_SPAN_OUTPUTS=1`, a fullscreen ThinLinc client covers
 the bar. wlroots places fullscreen surfaces above the layer-shell top layer
-and ignores exclusive zones, so waybar does not reserve space from a
-fullscreen window.
+and ignores exclusive zones, so waybar reserves no space from a fullscreen
+window.
 
-This is accepted, not a bug to chase. The taskbar is visible exactly when no
-window is fullscreen, which is the situation in which a window can go
-missing. Documenting it here so it is not later misread as a waybar
+This is accepted, not a defect to chase. The taskbar is visible exactly when
+no window is fullscreen, which is the situation in which a window can go
+missing. Recorded here so it is not later misread as a waybar
 misconfiguration.
 
-## c) `save-home` lives in `/opt/thinlinc/bin`
+## c) Scripts scattered across three directories
 
 ### Problem
 
 `save-home` sits in `/opt/thinlinc/bin`, a directory owned by the ThinLinc
-package, and is named as though ThinLinc provided it. It does not — dbrrg
-ships it. Meanwhile its counterpart `dbrrg-restore-home` is in
-`/usr/local/bin`, so the two halves of one mechanism live in two places
-under two naming conventions.
+package, named as though ThinLinc provided it. It does not — dbrrg ships it.
+Its counterpart lives in `/usr/local/bin`. Two halves of one mechanism, two
+directories, two naming conventions.
 
 ### Design
 
-Move all four dbrrg scripts to `/usr/bin` under a single `dbrrg-` prefix:
+Consolidate under `/usr/bin` with a single `dbrrg-` prefix:
 
 | from | to |
 | --- | --- |
 | `overlay/opt/thinlinc/bin/save-home` | `overlay/usr/bin/dbrrg-save-home` |
-| `overlay/usr/local/bin/dbrrg-restore-home` | `overlay/usr/bin/dbrrg-restore-home` |
 | `overlay/usr/local/bin/dbrrg-session` | `overlay/usr/bin/dbrrg-session` |
 | `overlay/usr/local/bin/dbrrg-compose-labwc-config` | `overlay/usr/bin/dbrrg-compose-labwc-config` |
+
+`dbrrg-restore-home` is **not** in this table. Section (d) turns it into a
+library function inside the initramfs, so the script ceases to exist rather
+than moving.
 
 Call sites to update:
 
 - `overlay/usr/bin/dbrrg-session` — the `save-home` call
-- `overlay/etc/profile.d/10-dbrrg-session.sh` — `dbrrg-restore-home`,
-  `dbrrg-compose-labwc-config`, and the `labwc -S` argument (which also
-  appears in the failure-message "Retry by hand" line)
+- `overlay/etc/profile.d/10-dbrrg-session.sh` —
+  `dbrrg-compose-labwc-config`, the `labwc -S` argument, and the "Retry by
+  hand" line in the failure message that repeats it
 - `test/integration/test-labwc-config-merge.sh`
-- `CLAUDE.md` — the boot-flow and persistence sections
+- `CLAUDE.md` — boot-flow and persistence sections
 
-No compatibility symlink is left behind. Nothing outside this repo calls
-these scripts.
+No compatibility symlinks. Nothing outside this repository calls these.
 
 **Verify during implementation:** that ThinLinc itself does not invoke
 `/opt/thinlinc/bin/save-home` by name. Today only `dbrrg-session` calls it,
 but the original path placement suggests it may once have been intended as
-a ThinLinc-side hook. Grep `/opt/thinlinc/` in a built image before
-deleting the old path.
+a ThinLinc-side hook. Grep `/opt/thinlinc/` in a built image before deleting
+the old path.
 
 ## d) sshd does not start, and host keys do not persist
 
@@ -140,16 +143,15 @@ deleting the old path.
 
 `regenerate_ssh_host_keys.service` declares `Before=ssh.service ssh.socket`
 but is pulled in only by `multi-user.target`. With `DefaultDependencies=yes`
-it therefore also carries an implicit `After=basic.target`, and
-`basic.target` is ordered after `sockets.target`, which is ordered after
-`ssh.socket`. The unit is thus ordered both before and after `ssh.socket`.
+it also carries an implicit `After=basic.target`; `basic.target` is ordered
+after `sockets.target`, which is ordered after `ssh.socket`. The unit is
+therefore ordered both before and after `ssh.socket`.
 
-systemd resolves an ordering cycle by deleting one of the jobs. Whichever it
-picks, the outcome is bad: either the keys are never generated, or the
-socket never starts.
+systemd resolves an ordering cycle by deleting one of the jobs. Either
+outcome is bad: no keys, or no socket.
 
-**This diagnosis must be confirmed before it is built on.** On a booted
-machine:
+**This diagnosis must be confirmed before anything is built on it.** On a
+booted machine:
 
 ```bash
 journalctl -b | grep -i "ordering cycle"
@@ -161,63 +163,120 @@ than applying the fix below and assuming it worked.
 
 ### Problem, part 2: no persistence
 
-Even when key generation does run, the root filesystem is a read-only
-squashfs with a ZRAM overlay. `/etc/ssh` is writable but volatile, so keys
-are regenerated on every boot and every SSH client reports a changed host
-key each time. The existing service comment already acknowledges this and
-names the fix: persist under `/config` on the EFI partition, as `machine-id`
-already is.
+The root filesystem is a read-only squashfs with a ZRAM overlay, so
+`/etc/ssh` is writable but volatile. Keys are regenerated on every boot and
+every SSH client reports a changed host key each time. The existing service
+comment already acknowledges this.
 
-### Design: restore in the initramfs, generate in the running system
+### Design: the home directory is the persistence channel
 
-Split by capability. The initramfs has `curl` and `tar` and the EFI
-partition mounted; it does not have `ssh-keygen`, and adding it would drag
-`libcrypto.so.3` in for roughly 5 MB. So the initramfs restores existing
-keys and the running system generates missing ones.
+Host keys ride inside the home directory, which is already persisted to the
+EFI partition (USB) or the boot server (netboot). No new file format, no new
+server endpoint, no second mechanism to keep working.
 
-#### Initramfs: restore only
+For that to be usable by sshd, the home directory has to be in place before
+`multi-user.target` — which it is not today. So the home restore moves into
+the initramfs.
 
-New `restore_ssh_host_keys()` in
+#### The home restore moves into the initramfs
+
+`restore_home()` joins
 `overlay/usr/lib/dracut/modules.d/90dbrrg/dbrrg-lib.sh`, called from
-`setup-overlay.sh` immediately after the `machine-id` block, where the EFI
-partition is already mounted and `$NEWROOT` already exists.
+`setup-overlay.sh` immediately after the `machine-id` block, where the
+overlay is mounted at `$NEWROOT` and the EFI partition is already mounted at
+`$DBRRG_STORAGE/efi`.
 
-| boot mode | restore |
+| boot mode | source |
 | --- | --- |
-| USB | untar `$efi_mount/config/ssh-host-keys.tgz` into `$NEWROOT/etc/ssh` |
-| netboot | `curl -f $BASE_PATH/hostkeys.pkg?mac=$MAC` piped into `tar -zx` |
+| USB | `$efi_mount/home.tar.gz` |
+| netboot | `curl $BASE_PATH/home.pkg?mac=$MAC` |
 
-No new tools: `module-setup.sh` already installs `curl`, `tar` is present.
+`overlay/usr/local/bin/dbrrg-restore-home` is deleted; the
+`/usr/local/bin/dbrrg-restore-home` call in `10-dbrrg-session.sh` goes with
+it. That file keeps sourcing `~/.dbrrg-environment` and keeps the labwc
+config merge — only the restore call leaves.
 
-Every failure path calls `warn`, never `die`. A machine that cannot restore
-its keys must still boot — it simply generates fresh ones in the next step.
-On netboot the first boot is a 404, which is the expected case and not an
-error.
+This does **not** violate the standing rule in that script's header. The
+rule forbids moving the restore back *into* `dbrrg-session`, because
+`~/.dbrrg-environment` must be on disk before labwc reads `XKB_DEFAULT_*`.
+The initramfs is earlier still, so the ordering constraint is satisfied more
+robustly than it is now. CLAUDE.md's explanation is updated accordingly
+rather than deleted.
 
-#### Running system: `dbrrg-ssh-hostkeys`
+Three things this also fixes in passing:
 
-New `overlay/usr/bin/dbrrg-ssh-hostkeys`:
+- `dbrrg-restore-home` currently runs `sudo mount /dev/disk/by-partlabel/EFI-SYSTEM
+  /boot/efi` even though the initramfs already left that partition mounted.
+  In the initramfs it is just a path.
+- One fewer use of tluser's NOPASSWD sudo.
+- On netboot the archive is fetched once, on the interface the initramfs
+  already brought up for `ramroot.sqsh`.
 
-1. If `/etc/ssh/ssh_host_*_key` already exist, exit 0. This is the normal
-   case on every boot after the first — the initramfs restored them.
-2. Otherwise `ssh-keygen -A`.
-3. Persist:
-   - USB: tar the keys to `config/ssh-host-keys.tgz` on the EFI partition.
-     `dbrrg-cleanup.sh` deliberately leaves it mounted at
-     `/run/dbrrg/storage/efi`, so no mount is needed; the script falls back
-     to mounting `EFI-SYSTEM` itself only if that mountpoint is gone.
-   - Netboot: `curl -F data=@...` to `$BASE_PATH/hostkeys.pkg?mac=$MAC`.
+#### Requirements on `restore_home()`
 
-Boot-mode detection reuses the `/proc/cmdline` parsing already used by
-`dbrrg-save-home` and `dbrrg-restore-home`.
+**Bounded waits, never fatal.** The current script contains
+`while true; do ping -nc 1 $BOOT_SRV && break; sleep 1; done`. Unbounded at
+login is a hung session recoverable from a VT; unbounded in the initramfs is
+a machine that never boots. It needs a timeout in the style of
+`dbrrg_wait_for_efi()`, and every failure path must `warn` and continue — a
+client that cannot fetch its home must still come up with a default one.
 
-New `overlay/etc/systemd/system/dbrrg-ssh-hostkeys.service`:
+**Ownership.** The archive is written by `tar zcf` running as tluser, so it
+stores uid/gid 1000 numerically. Extracting as root in the initramfs with
+tar's default `--same-owner` restores that correctly. It must **not** be
+given `--no-same-owner`. Note this is the opposite of what the key install
+below requires, a few lines away in the same feature — comment both.
+
+**Record the boot MAC.** `mount-squashfs.sh` writes the MAC of the interface
+it brought up to `$DBRRG_STATE/boot-mac` at the point it brings it up.
+`restore_home()` and `dbrrg-save-home` both read it.
+
+Today both `save-home` and `dbrrg-restore-home` run in the booted system and
+both derive the MAC from kernel ifindex 2, so they always agree — nothing is
+broken now. Moving the restore into the initramfs would introduce the
+disagreement: ifindex follows driver registration order, the initramfs loads
+a deliberately small driver set, and `mount-squashfs.sh` picks interfaces by
+`/sys/class/net/*` glob order instead. On a two-NIC machine those can name
+different devices, and the client would then save its home under one MAC and
+fetch it under another. Recording the MAC makes the two halves agree by
+construction.
+
+The recorded interface is also the better identity: on netboot it is the one
+that demonstrably worked, having obtained a DHCP lease and served
+`ramroot.sqsh`.
+
+The current fleet is single-NIC, so no deployed client can be stranded by
+the change and no migration fallback is included. `/run` survives the pivot,
+so `/run/dbrrg/state/boot-mac` is readable in the booted system;
+`dbrrg-cleanup.sh` already copies the state directory to `/var/log/dbrrg/`
+as a second source. On USB boot the file is simply unused — that path keys
+off the EFI partition, not a MAC — so its absence is normal, not an error.
+
+#### Host keys inside the home directory
+
+`overlay/usr/bin/dbrrg-ssh-hostkeys`, run by a new
+`dbrrg-ssh-hostkeys.service`:
+
+1. If `~tluser/.dbrrg-ssh-host-keys/` holds keys (the normal case — the
+   initramfs restored them), install them into `/etc/ssh`, then
+   `chown root:root` and `chmod 600` the private keys, `644` the public
+   ones. sshd refuses to start on a group- or world-readable private key,
+   and inside the archive these are tluser-owned.
+2. Otherwise, if `/etc/ssh/ssh_host_*_key` already exist, do nothing.
+3. Otherwise `ssh-keygen -A`, then copy the result into
+   `~tluser/.dbrrg-ssh-host-keys/`, tluser-owned, so the next
+   `dbrrg-save-home` captures it.
+
+`dbrrg-save-home` additionally refreshes `~/.dbrrg-ssh-host-keys/` from
+`/etc/ssh` immediately before tarring, so the archive always carries the
+keys that were actually live in the session.
+
+The unit needs no network and touches no EFI partition:
 
 ```ini
 [Unit]
-Description=Restore or generate persistent SSH host keys
-Wants=network-online.target
-After=network-online.target
+Description=Install or generate persistent SSH host keys
+After=local-fs.target
 Before=ssh.service
 
 [Service]
@@ -229,61 +288,48 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 ```
 
-`regenerate_ssh_host_keys.service` is deleted, along with its
-self-disabling `ExecStartPost` and the comment describing per-boot
-regeneration.
+`regenerate_ssh_host_keys.service` is deleted, along with its self-disabling
+`ExecStartPost` and the comment describing per-boot regeneration.
 
-#### Masking `ssh.socket` is required, not incidental
+#### `ssh.socket` is masked
 
-Persisting on netboot needs the network, so the unit must be
-`After=network-online.target`. But `ssh.socket` is ordered before
-`sockets.target`, which precedes `basic.target`, which precedes
-`network.target`. `Before=ssh.socket` combined with
-`After=network-online.target` reproduces exactly the cycle described above.
-
-The way out is to stop having two entry points into sshd. In
-`containers/ubuntu/Dockerfile`:
+In `containers/ubuntu/Dockerfile`:
 
 ```
 systemctl mask ssh.socket
 systemctl enable ssh.service    # already present
 ```
 
-This completes an intent the Dockerfile already records: `ssh.service` is
-enabled eagerly there precisely because socket activation hides a broken
-config or a missing host key behind a failed login instead of a logged unit
-failure. Masking the socket makes that intent whole rather than
-half-applied.
+With the unit above carrying no network dependency, masking is no longer
+strictly *required* to avoid the cycle — but it is kept deliberately. It
+completes an intent the Dockerfile already records: `ssh.service` is enabled
+eagerly there precisely because socket activation hides a broken config or a
+missing host key behind a failed login instead of a logged unit failure.
+Leaving both entry points active means sshd can be reached by two paths with
+different ordering, which is what produced the cycle in the first place.
+CLAUDE.md records the reason so the mask is not later removed as an apparent
+oversight.
 
-**Consequence:** sshd starts after `network-online.target` rather than at
-`sockets.target`. Nothing can connect before the network is up, so the
-practical cost is nil — but the boot ordering does change, and that is
-stated here rather than discovered later.
+### Accepted limitation: keys persist from the first clean logout
 
-### Risk accepted: host keys traverse plain HTTP on netboot
+`dbrrg-save-home` runs when the ThinLinc client exits, so a machine that is
+hard-powered-off before anyone logs out has not persisted its freshly
+generated keys and will generate new ones next boot. From the first clean
+logout onward the keys are stable.
 
-Netboot clients have no EFI partition, so persistence means uploading the
-key tarball to the boot server, keyed by MAC, alongside the existing
-`home.pkg` mechanism.
+This is accepted rather than mitigated. Adding a first-boot copy to the EFI
+partition would restore a second persistence mechanism — exactly what this
+design removed — for a window that closes the first time anyone uses the
+machine normally.
 
-This puts **private** SSH host keys on the network and at rest on the boot
-server. Over plain HTTP, anyone able to observe or intercept the boot
-traffic can impersonate that client's sshd. The same exposure already
-applies to `home.pkg`, which carries WiFi credentials and ThinLinc settings,
-so this does not open a new channel — but it does raise what is on it.
+### Security note carried over
 
-This was chosen deliberately over the alternative (netboot keeps
-regenerating keys every boot, accepting host-key churn there). Revisit if
-the boot transport is ever expected to carry untrusted networks; serving the
-boot path over HTTPS would close it.
-
-### Server-side requirement
-
-The boot server needs a `hostkeys.pkg` endpoint mirroring `home.pkg`: GET
-returns the stored tarball for a MAC (404 when absent), POST stores it. This
-is outside this repository and must be deployed before netboot clients gain
-key persistence. USB boot has no such dependency and works as soon as the
-image ships.
+`home.pkg` already traverses plain HTTP on netboot, carrying WiFi
+credentials and ThinLinc settings. It now also carries private SSH host
+keys, so anyone able to observe or intercept boot traffic can impersonate
+that client's sshd. This raises what is on an already-exposed channel rather
+than opening a new one. Serving the boot path over HTTPS would close it and
+is out of scope here.
 
 ## Testing
 
@@ -291,63 +337,77 @@ image ships.
 
 - `grim`, `slurp`, `wl-clipboard`, `waybar` are installed
 - `/etc/dbrrg/waybar/config.jsonc` exists and parses as JSON
-- `/usr/bin/dbrrg-save-home`, `dbrrg-restore-home`, `dbrrg-session` and
-  `dbrrg-compose-labwc-config` exist and are executable
+- `/usr/bin/dbrrg-save-home`, `dbrrg-session`, `dbrrg-compose-labwc-config`
+  and `dbrrg-ssh-hostkeys` exist and are executable
 - `/opt/thinlinc/bin/save-home` and `/usr/local/bin/dbrrg-*` are gone
 - no file in the image references the old paths
-- `ssh.socket` is masked and `ssh.service` is enabled
+- `ssh.socket` is masked, `ssh.service` is enabled
 - `regenerate_ssh_host_keys.service` is absent
+
+### `test/integration/test-initramfs-home.sh` (new)
+
+Offline, in the style of `test-labwc-config-merge.sh`: source the functions
+directly, stub `curl`, assert behaviour rather than inspecting a built
+image.
+
+1. USB, `home.tar.gz` present → home restored under uid/gid 1000
+2. USB, archive absent → default home intact, no failure
+3. USB, corrupt archive → `warn`, boot continues
+4. netboot, endpoint returns an archive → home restored
+5. netboot, endpoint 404s → default home intact, no failure
+6. netboot, endpoint hangs → bounded wait, `warn`, boot continues
+7. `boot-mac` written by `mount-squashfs.sh` is the MAC used for the fetch
+8. `dbrrg-save-home` reads the same `boot-mac` back
 
 ### `test/integration/test-ssh-hostkeys.sh` (new)
 
-Offline, in the style of `test-labwc-config-merge.sh`: source the functions
-directly, stub `curl` and `ssh-keygen`, assert behaviour rather than
-inspecting the image.
+1. keys present in home → installed to `/etc/ssh`, root-owned, private 600
+2. no keys anywhere → `ssh-keygen -A` runs, result copied into home
+   tluser-owned
+3. keys already in `/etc/ssh`, none in home → no regeneration
+4. `dbrrg-save-home` refreshes `~/.dbrrg-ssh-host-keys` before tarring
+5. group-readable private key in the archive → corrected on install
 
-Cases:
-
-1. USB, tarball present → keys land in `$NEWROOT/etc/ssh`
-2. USB, tarball absent → nothing written, no failure
-3. USB, no keys after restore → generate, tarball written to EFI
-4. netboot, endpoint returns a tarball → keys restored
-5. netboot, endpoint 404s → nothing written, no failure
-6. netboot, no keys after restore → generate, POST issued with the right MAC
-7. keys already present → script exits 0 without calling `ssh-keygen`
-8. corrupt tarball / EFI unwritable / `curl` failing → `warn`, exit non-fatal
-
-Wired into `make test`.
+Both new scripts are wired into `make test`.
 
 ### `make qemu-smoke`
 
-Should show sshd listening. The smoke log check in
-`scripts/check-boot-smoke.sh` gains an assertion that no ordering cycle was
-reported.
+sshd listening after boot. `scripts/check-boot-smoke.sh` gains an assertion
+that no ordering cycle was reported.
 
-### Documentation
+### Hardware confirmation required
+
+Two claims here can only be settled on a real machine:
+
+- that the ordering cycle is in fact why sshd does not start
+- that the same host key survives a reboot after one clean logout
+
+## Documentation
 
 CLAUDE.md updates:
 
-- Debugging section: the `grim` recipe next to the existing `foot` one, and
-  a note that the absence of a screenshot keybinding is intentional
-- A waybar subsection under session configuration, including the
-  covered-while-fullscreen behaviour
-- Boot-flow and persistence sections: the new script paths
-- The `/config` description gains `ssh-host-keys.tgz` alongside `machine-id`
-- A note that `ssh.socket` is masked on purpose, with the cycle as the
-  reason, so it is not re-enabled as an apparent oversight
+- Debugging: the `grim` recipe beside the existing `foot` one, and a note
+  that the absence of a screenshot keybinding is intentional
+- A waybar subsection, including the covered-while-fullscreen behaviour
+- Boot flow: the home restore now happens in the initramfs, with the
+  `~/.dbrrg-environment` ordering rationale rewritten rather than dropped
+- Persistent Home Directory: the new script paths, `.dbrrg-ssh-host-keys`,
+  and the first-clean-logout limitation
+- A note that `ssh.socket` is masked on purpose
 
 ## Implementation order
 
-1. (c) — the moves, first, so later work edits final paths
-2. (a) — packages only
-3. (b) — waybar config plus the `dbrrg-session` change
-4. (d) — largest, and the only one needing hardware confirmation of the
-   diagnosis before it starts
+1. (d) first — it decides whether `dbrrg-restore-home` moves or disappears
+2. (c) — the mechanical moves, once (d) has settled the file list
+3. (a) — packages only
+4. (b) — waybar config plus the `dbrrg-session` change
 
 ## Out of scope
 
-- Adding any labwc keybinding, for screenshots or window switching. The
+- Any labwc keybinding, for screenshots or window switching. The
   zero-keybindings constraint holds.
-- Reworking `home.pkg`/`hostkeys.pkg` onto HTTPS.
-- Simplifying `dbrrg-save-home`'s EFI mount to reuse the already-mounted
-  `/run/dbrrg/storage/efi`. Real, but unrelated to these four defects.
+- Moving `home.pkg` onto HTTPS.
+- A migration fallback for multi-NIC netboot clients; none exist.
+- `mount-squashfs.sh`'s single-interface DHCP attempt, which `break`s after
+  one try whether or not the lease succeeded. Real, pre-existing, and
+  unrelated to these four defects.
