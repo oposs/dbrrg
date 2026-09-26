@@ -103,6 +103,7 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   when a window can go missing.
 - Session startup: `overlay/usr/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
 - **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the ThinLinc client. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
+  It is also where screen blanking is tuned: `DBRRG_IDLE_TIMEOUT=<seconds>` (default `300`, `0` disables blanking entirely) is read by `dbrrg-session` right after this file is sourced.
 
 - **Per-machine user environment:** `overlay/home/tluser/.dbrrg-environment` — variables the compositor reads at **startup**: keyboard layout (`XKB_DEFAULT_*`) and cursor theme. Sourced by `overlay/etc/profile.d/10-dbrrg-session.sh` after `/etc/dbrrg/labwc/environment`, so the user's value wins. Also persisted via `save-home`.
 
@@ -235,7 +236,7 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Six rules in this repository look like ordinary configuration but are
+Seven rules in this repository look like ordinary configuration but are
 load-bearing. All but the last (patched labwc) have each caused a real
 shipped-image bug; that one is preventive - nothing has shipped broken from
 it yet, but reverting it silently would ship regressions in both patched
@@ -261,6 +262,46 @@ satisfies `linux-image-generic`'s hard dependency via `Provides` while only
 Never add a `find`/`rm -rf` sweep over `/usr/lib/firmware`. To change the
 firmware set, change the package list. `test/integration/test-firmware.sh`
 guards this - run via `make test`.
+
+### The WiFi core stack must come from the kernel, never from a backport
+
+`containers/ubuntu/Dockerfile` installs `linux-image-generic` and **not**
+`linux-modules-iwlwifi-generic`. Re-adding that package silently breaks WiFi
+for every wireless device in the image, not just Intel ones.
+
+Despite the name, `linux-modules-iwlwifi-generic` is not an Intel driver
+add-on. It ships its own `cfg80211.ko` and `mac80211.ko` - the shared core of
+the Linux WiFi stack - into `/usr/lib/modules/<ver>/ubuntu/dkms/iwlwifi/`.
+Ubuntu's depmod order is `search updates ubuntu built-in` (`/lib/depmod.d/`),
+so `ubuntu/` outranks `kernel/` and the backport copies win. Measured on the
+last image built with it (kernel 7.0.0-29): `modules.dep` resolved
+`mac80211` and `cfg80211` *only* to `ubuntu/dkms/iwlwifi/`, and
+`rtw89_core.ko` - the Realtek USB driver - depended on Intel's backported
+core. The in-tree copies were still on disk, fully shadowed. Two copies of
+`mac80211`/`cfg80211` in one image is what produces `ieee80211_*` symbol
+mismatches at module load.
+
+It entered in `2785aea` ("upgrade to ubntu 24.04", 2024-11-14), in the same
+hunk that moved the base from 22.04 to 24.04, with no stated rationale, and
+was carried verbatim through the SquashFS rewrite (`7e33c00`) into 26.04.
+On 6.8 it was defensible - that kernel needed backported Intel support.
+Kernel 7.x ships `iwlwifi`, `iwldvm`, `iwlmvm` and `iwlmld` in-tree, so the
+backport adds no hardware coverage and only creates the conflict.
+
+Two traps when debugging this in the field, both of which make a genuinely
+affected machine look clean:
+
+- the directory is `ubuntu/dkms/iwlwifi/`, **not** `updates/`, so the usual
+  `find /lib/modules/$(uname -r)/updates` finds nothing;
+- `dkms status` is empty too - despite the path name it is a prebuilt binary
+  package, not a DKMS build.
+
+Nothing depends on the package (`apt-cache rdepends` is empty, and
+`linux-image-generic` has no relationship to it), so the package list is the
+only thing keeping it out. `test/integration/test-wifi-stack.sh` guards
+this - it asserts the backport directory is absent, the four in-tree Intel
+drivers are present, and `modules.dep` resolves exactly one `mac80211` and
+one `cfg80211`, both under `kernel/`. Run via `make test`.
 
 ### dracut must be invoked with --no-hostonly
 
@@ -429,6 +470,42 @@ without that dependency would not trigger a rebuild, leaving `make test` and
 Open items found during the Ubuntu 26.04/Wayland/PipeWire upgrade. These are
 not fixed; they are recorded so they aren't rediscovered from scratch.
 
+### Screen blanking had to be rebuilt after the X11 removal
+
+Nothing blanked the screen between the move to Wayland and its fix. On X11 the
+server did this itself (`xset s`, server-side DPMS), so it came for free with
+the `xorg` metapackage. Wayland splits the job: the compositor only *reports*
+idleness, and a separate daemon decides what to do about it.
+
+labwc 0.9.3 holds up its half - the shipped binary advertises
+`ext_idle_notifier_v1`, `zwlr_output_power_manager_v1`,
+`zwp_idle_inhibit_manager_v1` and `ext_session_lock_manager_v1`. What was
+missing was any listener, so labwc reported idleness into an empty room
+forever.
+
+`swayidle` (the listener) and `wlopm` (the output power switch) are therefore
+part of the session package set, launched from `dbrrg-session` at a 300 s
+default. Two decisions are deliberate:
+
+- **`wlopm`, never `wlr-randr --off`.** `wlr-randr` is already in the image
+  and looks like the obvious tool. It speaks the output *management* protocol
+  and disables the output outright, which changes the monitor layout and
+  resizes the fullscreen ThinLinc client (and makes
+  `LABWC_FULLSCREEN_SPAN_OUTPUTS` recompute over a different set of outputs).
+  `wlopm` speaks output *power* management - real DPMS, layout untouched.
+- **No locking.** `ext_session_lock_manager_v1` is available, but `tluser` has
+  no password, so a lock screen would have nothing to authenticate against.
+  Session security is ThinLinc's job.
+
+Known consequence: the ThinLinc client is an X11 app under Xwayland and cannot
+send an idle inhibit, so a long video inside the remote session with no local
+input blanks the local screen. Any keypress restores it. Raise
+`DBRRG_IDLE_TIMEOUT` in `~/.dbrrg-sessionrc` where that matters.
+
+`test/integration/test-session-packages.sh` guards both halves - the two labwc
+protocols, the presence of `swayidle`/`wlopm`, that `dbrrg-session` starts the
+daemon, and that it does *not* blank with `wlr-randr --off`.
+
 ### x11-xserver-utils: investigated and disproved
 
 `xrandr`, `xset` and `xrdb` were a hard dependency of the `xorg` metapackage,
@@ -439,6 +516,11 @@ negotiation) and then checked: `vncviewer`/`tlclient.bin` dlopen
 the executables `xrandr`/`xset`/`xrdb` across `/opt/thinlinc/` returns zero
 hits. ThinLinc uses the RandR *library*, never the CLI tools that
 `x11-xserver-utils` shipped, so removing that package is safe.
+
+That conclusion still holds, but note its scope: it only ever asked what
+*ThinLinc* needed. `xset s` and server-side DPMS went out with the same
+change and nothing replaced them - see "Screen blanking had to be rebuilt
+after the X11 removal" above.
 
 ## Debugging
 

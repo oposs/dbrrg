@@ -269,6 +269,7 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 
 test: rootfs
 	@test/integration/test-firmware.sh
+	@test/integration/test-wifi-stack.sh
 	@test/integration/test-session-packages.sh
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh

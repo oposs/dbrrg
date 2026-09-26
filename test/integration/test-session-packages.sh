@@ -47,6 +47,8 @@ absent  "waybar user unit enabled" 'systemd/user/graphical-session\.target\.want
 present "session script"    'usr/bin/dbrrg-session$'
 present "save-home"         'usr/bin/dbrrg-save-home$'
 present "labwc config merge" 'usr/bin/dbrrg-compose-labwc-config$'
+present "swayidle"          'usr/bin/swayidle$'
+present "wlopm"             'usr/bin/wlopm$'
 absent  "restore-home script" 'usr/local/bin/dbrrg-restore-home$'
 absent  "old save-home path"  'opt/thinlinc/bin/save-home$'
 present "labwc rc.xml"     'etc/dbrrg/labwc/rc\.xml$'
@@ -128,6 +130,52 @@ if unsquashfs -no-xattrs -d "$DPKG_TMP/bin" "$SQSH" usr/bin/labwc >/dev/null 2>&
     echo "ok   - labwc implements zwp_xwayland_keyboard_grab_manager_v1"
 else
     echo "FAIL - shipped labwc has no xwayland keyboard grab support"
+    fail=1
+fi
+
+# Screen blanking needs both halves of the Wayland split: labwc reports
+# idleness (ext_idle_notifier_v1) and can power outputs down
+# (zwlr_output_power_manager_v1), but has no timeout of its own. Without a
+# policy daemon listening, nothing ever blanks - which is what happened when
+# the session moved off X11, where the server did this internally.
+for proto in ext_idle_notifier_v1 zwlr_output_power_manager_v1; do
+    if grep -aq "$proto" "$DPKG_TMP/bin/usr/bin/labwc" 2>/dev/null; then
+        echo "ok   - labwc implements $proto"
+    else
+        echo "FAIL - shipped labwc has no $proto (screen blanking cannot work)"
+        fail=1
+    fi
+done
+
+# The other half: the session must actually run the idle daemon, and must
+# blank via wlopm rather than wlr-randr. 'wlr-randr --off' speaks the output
+# *management* protocol and disables the output outright - that changes the
+# monitor layout and resizes the fullscreen ThinLinc client. wlopm speaks
+# output *power* management, which is real DPMS and leaves the layout alone.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/idle" "$SQSH" usr/bin/dbrrg-session >/dev/null 2>&1 &&
+   [[ -f "$DPKG_TMP/idle/usr/bin/dbrrg-session" ]]; then
+    SESS="$DPKG_TMP/idle/usr/bin/dbrrg-session"
+    if grep -q 'swayidle' "$SESS"; then
+        echo "ok   - session starts swayidle"
+    else
+        echo "FAIL - dbrrg-session does not start swayidle (screen never blanks)"
+        fail=1
+    fi
+    if grep -qE 'wlopm --(off|on)' "$SESS"; then
+        echo "ok   - session blanks via wlopm"
+    else
+        echo "FAIL - dbrrg-session does not blank via wlopm"
+        fail=1
+    fi
+    if grep -vE '^[[:space:]]*#' "$SESS" | grep -qE 'wlr-randr[^|]*--off'; then
+        echo "FAIL - dbrrg-session blanks with 'wlr-randr --off' (disables the"
+        echo "       output and reflows the layout); use wlopm instead"
+        fail=1
+    else
+        echo "ok   - session does not disable outputs to blank"
+    fi
+else
+    echo "FAIL - cannot extract usr/bin/dbrrg-session from $SQSH"
     fail=1
 fi
 

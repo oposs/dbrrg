@@ -87,6 +87,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     wl-clipboard \
     kanshi \
     wlr-randr \
+    swayidle \
+    wlopm \
     waybar \
     xfonts-base \
     fonts-dejavu-core \
@@ -105,7 +107,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     plymouth-theme-spinner \
     intel-microcode \
     linux-image-generic \
-    linux-modules-iwlwifi-generic \
     linux-firmware-minimal \
     linux-firmware-intel-graphics \
     linux-firmware-intel-wireless \
