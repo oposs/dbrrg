@@ -176,7 +176,12 @@ $(USB_IMAGE_COMPRESSED): $(USB_IMAGE)
 	@echo "✓ Compressed: $$(du -h $(USB_IMAGE_COMPRESSED) | cut -f1) (was $$(du -h $(USB_IMAGE) | cut -f1))"
 
 $(USB_CHECKSUM): $(USB_IMAGE_COMPRESSED)
-	@sha256sum $(USB_IMAGE_COMPRESSED) > $(USB_CHECKSUM)
+# Record the bare filename, not the path: the checksum is published next
+# to the image on the web server, so 'sha256sum -c' must work in whatever
+# directory someone downloads the pair into. Naming
+# artifacts/images/... made it look for a nested tree that only exists
+# in this repo.
+	@cd $(IMAGE_DIR) && sha256sum $(notdir $(USB_IMAGE_COMPRESSED)) > $(notdir $(USB_CHECKSUM))
 	@echo "✓ Checksum created"
 
 image: $(USB_IMAGE_COMPRESSED) $(USB_CHECKSUM)

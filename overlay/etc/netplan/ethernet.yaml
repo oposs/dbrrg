@@ -6,3 +6,20 @@ network:
             match:
                 name: 'en*'
             dhcp4: true
+            # Do not hold up boot for a NIC with no cable. Without this,
+            # netplan lists the interface as required in the drop-in it
+            # writes at
+            # systemd-networkd-wait-online.service.d/10-netplan.conf - as
+            # "-i eno1:degraded -i wlp58s0:degraded", observed on a 24.04
+            # client - and an unplugged eno1 then waits out wait-online's
+            # full 120 s timeout and fails. Measured on NUC7i3BNK hardware
+            # 2026-09-19: 120 s lost, system state "degraded"; with
+            # optional: true, wait-online finished in 4.1 s and succeeded.
+            #
+            # Nothing in this image currently pulls network-online.target,
+            # so the stall needs a trigger - on that client it was
+            # wg-quick@wg0 started synchronously from ~/.xsessionrc. This
+            # setting is therefore preventive here: it costs nothing and
+            # stops the next unit that wants the network from inheriting a
+            # two-minute boot.
+            optional: true
