@@ -131,8 +131,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
 RUN chmod u+s /usr/bin/ping
 
 # Install ThinLinc
-RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.20.0-4284_amd64.deb && \
-    apt install -y ./thinlinc-client_4.20.0-*_amd64.deb && \
+RUN wget https://www.cendio.com/downloads/clients/thinlinc-client_4.21.0-4588_amd64.deb && \
+    apt install -y ./thinlinc-client_4.21.0-*_amd64.deb && \
     rm -f thinlinc-client_*.deb
 
 # Install locally built packages staged by the Makefile into vendor/
