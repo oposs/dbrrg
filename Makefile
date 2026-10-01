@@ -37,8 +37,28 @@ SQUASHFS_COMP ?= zstd
 SQUASHFS_COMP_LEVEL ?= 3
 EFI_PARTITION_SIZE ?= 2000
 
-# Local (non-archive) packages staged into the container build context
-OXULNK_DEB ?= /scratch/oetiker/cargo-target/oxulnk-desktop-ux-fixes-2404/debian/oxulnk-desktop_0.1.0+dev20260726183924_amd64.deb
+# Local (non-archive) packages staged into the container build context.
+#
+# vendor/oxulnk-desktop.deb is the file the Dockerfile reads. OXULNK_DEB only
+# refreshes it from a local build, and is unset by default: the default used to
+# be an absolute path into one branch's build directory under
+# /scratch/oetiker/cargo-target, and once cargo-sweep removed that directory
+# every make target stopped with "No rule to make target", `test` included,
+# although the staged copy in vendor/ was present and current.
+OXULNK_DEB ?=
+VENDOR_DEB := vendor/oxulnk-desktop.deb
+
+# Checked here rather than in the recipe below. Make resolves the prerequisite
+# graph before it runs anything, so a `test -f "$(OXULNK_DEB)"` inside the
+# recipe can never fire: make has already stopped with its own message.
+ifneq ($(strip $(OXULNK_DEB)),)
+ifeq ($(wildcard $(OXULNK_DEB)),)
+$(error OXULNK_DEB=$(OXULNK_DEB) does not exist)
+endif
+ifeq ($(abspath $(OXULNK_DEB)),$(abspath $(VENDOR_DEB)))
+$(error OXULNK_DEB points at $(VENDOR_DEB) itself; the copy would truncate it)
+endif
+endif
 
 # QEMU settings
 QEMU_MEMORY ?= 2G
@@ -70,7 +90,7 @@ help:
 	@echo "  QEMU_MEMORY=2G             - QEMU RAM allocation"
 	@echo "  QCOW2_TEST_SIZE=4G         - Size for qemu-test"
 	@echo "  QEMU_EXTRA_ARGS=\"\"          - Additional QEMU arguments"
-	@echo "  OXULNK_DEB=path/to.deb     - Locally built oxulnk-desktop package"
+	@echo "  OXULNK_DEB=path/to.deb     - Restage vendor/oxulnk-desktop.deb from a local build"
 
 $(ARTIFACT_DIR) $(ROOTFS_DIR) $(IMAGE_DIR):
 	mkdir -p $@
@@ -99,15 +119,22 @@ $(if $(shell $(CONTAINER_RUNTIME) image exists $(UBUNTU_IMAGE) 2>/dev/null || ec
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .image-builder-container))
 $(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .ipxe-container))
 
-vendor/oxulnk-desktop.deb: $(OXULNK_DEB)
-	@test -f "$(OXULNK_DEB)" || { \
-	  echo "ERROR: oxulnk-desktop package not found at:"; \
-	  echo "  $(OXULNK_DEB)"; \
-	  echo "Set OXULNK_DEB=/path/to/oxulnk-desktop_*.deb"; exit 1; }
+ifeq ($(strip $(OXULNK_DEB)),)
+# Nothing to refresh from, so the staged copy is the whole input. No
+# prerequisites: make leaves an existing file alone and runs this only when it
+# is missing.
+$(VENDOR_DEB):
+	@echo "ERROR: no oxulnk-desktop package staged at $@"
+	@echo "Stage one with:"
+	@echo "  make $@ OXULNK_DEB=/path/to/oxulnk-desktop_*.deb"
+	@exit 1
+else
+$(VENDOR_DEB): $(OXULNK_DEB)
 	@mkdir -p vendor
 	cp $< $@
+endif
 
-.ubuntu-container: containers/ubuntu/Dockerfile vendor/oxulnk-desktop.deb $(OVERLAY_FILES) $(PATCH_FILES) containers/ubuntu/patches | $(ROOTFS_DIR)
+.ubuntu-container: containers/ubuntu/Dockerfile $(VENDOR_DEB) $(OVERLAY_FILES) $(PATCH_FILES) containers/ubuntu/patches | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
 	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \
