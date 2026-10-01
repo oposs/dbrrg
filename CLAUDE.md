@@ -189,6 +189,20 @@ The system implements home directory persistence across reboots:
   USB boot, where `boot-home-base` is never written.
   `test/integration/test-save-home.sh` guards both.
 
+- The remote-access password rides the same archive. `sudo dbrrg-password`
+  stores the hash the system produced in `~tluser/.dbrrg-password`, mode 600
+  and **owned by tluser**, because `dbrrg-save-home` archives the home as
+  tluser and a root-owned 600 file never reaches the archive.
+  `dbrrg-password.service`, ordered `Before=ssh.service`, reinstalls it on
+  every boot with `chpasswd -e`. `--clear` removes it and locks the account
+  again.
+
+  Consequence worth stating plainly: that hash sits in `home.tar.gz` on a FAT
+  EFI partition with no file permissions, or is POSTed to the boot server over
+  plain HTTP. Anyone holding the boot medium can read it and attack it
+  offline. This is the same exposure the SSH host *private* keys in
+  `~/.dbrrg-ssh-host-keys` already carry, which is why it was accepted.
+
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.
 
 ## Network Boot vs USB Boot
@@ -244,11 +258,49 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Seven rules in this repository look like ordinary configuration but are
+Eight rules in this repository look like ordinary configuration but are
 load-bearing. All but the last (patched labwc) have each caused a real
 shipped-image bug; that one is preventive - nothing has shipped broken from
 it yet, but reverting it silently would ship regressions in both patched
 behaviours.
+
+### No login password ships in the image
+
+`containers/ubuntu/Dockerfile` creates tluser with `adduser
+--disabled-password` and nothing else. There used to be an `echo
+"tluser:tluser" | chpasswd` on the next line. Re-adding any shipped password
+gives every machine in the field the same login, and because tluser has
+`NOPASSWD:ALL` two lines below, that login is root: anyone who could reach
+port 22 and knew the default owned every deployed machine. It also
+contradicted `overlay/usr/bin/dbrrg-session`, which already documented
+"tluser has no password" as the reason the session has no lock screen.
+
+`passwd -l` is **not** a substitute for leaving it unset. It prefixes the
+existing hash with `!` and leaves it recoverable. The shadow field must hold
+`!` alone.
+
+Root is locked with `passwd -d root && passwd -l root`. `-d` on its own
+leaves the field *empty*, and Ubuntu's `/etc/pam.d/common-auth` carries
+`nullok`, so root logged in at a VT by pressing Enter. sshd refused it only
+because `PermitEmptyPasswords` defaults to no, which kept the hole invisible
+from the network. `PermitRootLogin no` is now set as well, for the day
+somebody gives root a password.
+
+`PasswordAuthentication yes` stays. It cannot succeed while no password is
+set, and the user needs it once they set one; the image ships no
+`authorized_keys`, so turning it off leaves no remote access at all.
+
+A person at the machine sets their own password with `sudo dbrrg-password`.
+See [Persistent Home Directory](#persistent-home-directory) for how it
+survives a reboot. `test/integration/test-session-packages.sh` guards the
+shadow fields, both sshd settings and the unit, and
+`test/integration/test-password.sh` guards the script - both run via `make
+test`.
+
+**Verified on a QEMU boot (2026-10-01):** `getty@tty1` started exactly once
+across a 300 s boot, so `login -f tluser` succeeds against a `!` field. A
+failing autologin would have restarted it every 5 seconds
+(`RestartSec=5`, `StartLimitIntervalSec=0`). Not verified on hardware.
 
 ### Firmware is selected by package, never by cleanup
 
@@ -563,7 +615,11 @@ the way `dbrrg-save-home` already escalates.
 
 With zero labwc keybindings ([Standing Constraints](#standing-constraints))
 and no menu, `foot` has no launch path from within the session itself. Reach
-it from a VT (Ctrl+Alt+F2, say) or over SSH instead:
+it from a VT (Ctrl+Alt+F2, say) or over SSH instead. **SSH needs a password
+first:** a machine nobody has run `sudo dbrrg-password` on refuses every
+password login, because tluser's shadow field is `!` and the image ships no
+`authorized_keys`. On such a machine the VT is the only way in, and the VT
+autologin gets there without a password.
 
 ```bash
 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 foot

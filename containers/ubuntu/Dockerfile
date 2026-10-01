@@ -147,12 +147,35 @@ COPY --from=labwc-build /out/ /tmp/labwc-deb/
 RUN apt-get install -yq --no-install-recommends --no-install-suggests /tmp/labwc-deb/labwc_*.deb && \
     rm -rf /tmp/labwc-deb
 
-# Remove root password
-RUN passwd -d root
+# Lock root rather than blanking it.
+#
+# `passwd -d root` alone leaves the shadow field EMPTY, and Ubuntu's
+# /etc/pam.d/common-auth carries `nullok`, so root logged in at a VT by
+# pressing Enter. sshd refused it only because PermitEmptyPasswords defaults
+# to no, which made the hole invisible from the network and easy to keep.
+# `-d` then `-l` gives a field of `!`: no hash to recover and nothing to
+# authenticate with. Recovery at the machine goes through tluser's autologin
+# on tty1 and its passwordless sudo.
+RUN passwd -d root && passwd -l root
 
-# Create user with simple password for console login
+# Create the session user with NO password.
+#
+# There used to be an `echo "tluser:tluser" | chpasswd` here. Every image in
+# the field therefore shipped the same login, and because tluser has
+# NOPASSWD:ALL below, anyone who could reach port 22 and knew that default had
+# root on every deployed machine. It also contradicted
+# overlay/usr/bin/dbrrg-session, which already documents "tluser has no
+# password" as the reason the session has no lock screen.
+#
+# --disabled-password leaves `!` in the shadow field, so password
+# authentication cannot succeed. A person at the machine sets their own with
+# `sudo dbrrg-password`, which stores the hash in the home directory so it
+# survives a reboot. Do not reintroduce a shipped password here: make it a
+# per-machine secret or none at all.
+#
+# `passwd -l` would NOT be a substitute for leaving it unset. It prefixes the
+# existing hash with `!` and leaves it recoverable.
 RUN adduser --disabled-password --gecos "ThinUser" tluser && \
-    echo "tluser:tluser" | chpasswd && \
     adduser tluser sudo && \
     echo "tluser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     adduser tluser audio
@@ -244,6 +267,7 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl mask ssh.socket || true && \
     systemctl mask sshd-keygen.service || true && \
     systemctl enable dbrrg-ssh-hostkeys.service || true && \
+    systemctl enable dbrrg-password.service || true && \
     systemctl enable ssh.service || true && \
     systemctl enable un-dockerize.service || true && \
     systemctl enable systemd-networkd && \

@@ -274,6 +274,103 @@ else
     fail=1
 fi
 
+# No password ships for tluser. adduser --disabled-password leaves `!` in the
+# shadow field; an image that carries a hash there has a login every machine
+# in the field shares, and tluser has NOPASSWD:ALL, so that login is root.
+# `passwd -l` is NOT a fix for this: it prefixes the existing hash with `!`
+# and leaves it recoverable. The field must hold `!` and nothing else.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/shadow" "$SQSH" \
+        etc/shadow >/dev/null 2>&1; then
+    tl_field=$(sed -n 's/^tluser:\([^:]*\):.*/\1/p' "$DPKG_TMP/shadow/etc/shadow")
+    if [[ "$tl_field" == "!" ]]; then
+        echo "ok   - tluser ships with no password hash"
+    else
+        echo "FAIL - tluser ships a password field of '$tl_field'; the image has a shared login"
+        fail=1
+    fi
+    # root's field must be `!`, not empty. Empty plus the `nullok` that
+    # Ubuntu's /etc/pam.d/common-auth carries is a VT login by pressing
+    # Enter. sshd refuses it today only because PermitEmptyPasswords
+    # defaults to no.
+    root_field=$(sed -n 's/^root:\([^:]*\):.*/\1/p' "$DPKG_TMP/shadow/etc/shadow")
+    if [[ "$root_field" == "!" ]]; then
+        echo "ok   - root is locked, not merely password-less"
+    else
+        echo "FAIL - root's password field is '$root_field'; with nullok that is a VT login"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract etc/shadow from $SQSH"
+    fail=1
+fi
+
+# PermitRootLogin must be no. It is inert while root is locked and
+# PermitEmptyPasswords is no, which is exactly why it is easy to leave
+# wrong: the day anyone sets a root password, root is on the network.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/sshd" "$SQSH" \
+        etc/ssh/sshd_config.d/01-dbrrg.conf >/dev/null 2>&1; then
+    if grep -qE '^[[:space:]]*PermitRootLogin[[:space:]]+no[[:space:]]*$' \
+            "$DPKG_TMP/sshd/etc/ssh/sshd_config.d/01-dbrrg.conf"; then
+        echo "ok   - PermitRootLogin is no"
+    else
+        echo "FAIL - PermitRootLogin is not no: $(grep -i permitrootlogin "$DPKG_TMP/sshd/etc/ssh/sshd_config.d/01-dbrrg.conf" | tr -d '\r')"
+        fail=1
+    fi
+    # PasswordAuthentication stays yes on purpose: it cannot succeed while no
+    # password is set, and the user needs it once dbrrg-password sets one.
+    if grep -qE '^[[:space:]]*PasswordAuthentication[[:space:]]+yes[[:space:]]*$' \
+            "$DPKG_TMP/sshd/etc/ssh/sshd_config.d/01-dbrrg.conf"; then
+        echo "ok   - PasswordAuthentication stays yes for dbrrg-password"
+    else
+        echo "FAIL - PasswordAuthentication is not yes; a set password could not be used"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract etc/ssh/sshd_config.d/01-dbrrg.conf from $SQSH"
+    fail=1
+fi
+
+# dbrrg-password and its unit must both ship, and the unit must be enabled.
+present "dbrrg-password"  'usr/bin/dbrrg-password$'
+
+# The -f test is not redundant: unsquashfs exits 0 for a path it did not
+# find, so without it the negative ordering check below greps a file that
+# does not exist, returns non-zero, and reports ok on a missing unit.
+PWUNIT="$DPKG_TMP/pwunit/etc/systemd/system/dbrrg-password.service"
+if unsquashfs -no-xattrs -d "$DPKG_TMP/pwunit" "$SQSH" \
+        etc/systemd/system/dbrrg-password.service >/dev/null 2>&1 &&
+   [[ -f "$PWUNIT" ]]; then
+    if grep -qE '^Before=ssh\.service[[:space:]]*$' "$PWUNIT"; then
+        echo "ok   - dbrrg-password.service is ordered before ssh.service"
+    else
+        echo "FAIL - dbrrg-password.service is not ordered before ssh.service"
+        fail=1
+    fi
+    # A multi-user.target unit is implicitly After=basic.target, so a
+    # Before= on anything in sysinit.target orders it both before and after
+    # the same target and systemd silently deletes a job on every boot. Two
+    # instances of this have shipped in this repo; see CLAUDE.md.
+    if grep -qE '^Before=.*(sysinit|local-fs|systemd-hwdb|sockets|udev)' "$PWUNIT"; then
+        echo "FAIL - dbrrg-password.service declares Before= on an early-boot unit: $(grep '^Before=' "$PWUNIT" | tr -d '\r')"
+        fail=1
+    else
+        echo "ok   - dbrrg-password.service has no early-boot ordering cycle"
+    fi
+else
+    echo "FAIL - could not extract dbrrg-password.service"
+    fail=1
+fi
+
+# Greps $LIST, not a fresh `unsquashfs -l | grep -q` pipeline. With pipefail
+# set, grep -q exits on the first match, unsquashfs dies of SIGPIPE, and the
+# pipeline reports failure although the file is there.
+if grep -qE 'etc/systemd/system/multi-user\.target\.wants/dbrrg-password\.service$' "$LIST"; then
+    echo "ok   - dbrrg-password.service is enabled"
+else
+    echo "FAIL - dbrrg-password.service is not enabled; a set password would not survive a reboot"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"
