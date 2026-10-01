@@ -180,6 +180,14 @@ The system implements home directory persistence across reboots:
   `/run/dbrrg/state/boot-mac` — the interface the initramfs actually used —
   rather than by re-deriving it, so restore and save cannot disagree.
 - On logout: ThinLinc client shutdown triggers `/usr/bin/dbrrg-save-home` which saves home directory back to USB or uploads to boot server via HTTP POST
+- `dbrrg-save-home` resolves the directory to archive from `getent passwd
+  tluser`, never from `$HOME`, and every read of a recorded value under
+  `/run/dbrrg/state` ends in `|| true`. Both are load-bearing. `sudo` on this
+  image sets `HOME=/root` (`Defaults env_reset`, no `env_keep` for HOME), so a
+  save called from a root process archived `/root` over the user's home; and
+  `set -e` ends a script on `X=$(cat missing)`, which disabled every save on
+  USB boot, where `boot-home-base` is never written.
+  `test/integration/test-save-home.sh` guards both.
 
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.
 
@@ -302,6 +310,11 @@ only thing keeping it out. `test/integration/test-wifi-stack.sh` guards
 this - it asserts the backport directory is absent, the four in-tree Intel
 drivers are present, and `modules.dep` resolves exactly one `mac80211` and
 one `cfg80211`, both under `kernel/`. Run via `make test`.
+
+**Confirmed on hardware (2026-10-01):** with the backport gone, an Intel 8265
+associates. The ThinLinc 4.21.0 client also reads the existing
+`tlclient.conf` unchanged, `HOST_ALIASES` and
+`FULL_SCREEN_SELECTED_MONITORS` included.
 
 ### dracut must be invoked with --no-hostonly
 
@@ -506,6 +519,9 @@ input blanks the local screen. Any keypress restores it. Raise
 protocols, the presence of `swayidle`/`wlopm`, that `dbrrg-session` starts the
 daemon, and that it does *not* blank with `wlr-randr --off`.
 
+**Confirmed on hardware (2026-10-01):** the screen blanks at the 300 s default
+and any keypress restores it.
+
 ### x11-xserver-utils: investigated and disproved
 
 `xrandr`, `xset` and `xrdb` were a hard dependency of the `xorg` metapackage,
@@ -524,6 +540,27 @@ after the X11 removal" above.
 
 ## Debugging
 
+### A session body that fails to start does so silently
+
+`labwc` always exits 0, whatever its `-S` command returned. Measured against
+the shipped binary: a `-S` command exiting 10, 0 or 101 all give `labwc` exit
+0. `overlay/etc/profile.d/10-dbrrg-session.sh` captures that status into
+`DBRRG_SESSION_RC`, so the failure screen that file describes as intentional
+production behaviour fires only when `labwc` itself cannot start. A `tlclient`
+that fails respawns the session in a loop with nothing on screen.
+
+What does record it is the session log, which carries labwc's own line:
+`[ERROR] [../src/server.c:167] spawned child 12 exited with 10`.
+
+### Rebooting from inside the session needs sudo
+
+There is no polkit in this image, no `polkitd` and no `pkexec`, and systemd
+gates `Reboot` and `PowerOff` for non-root callers on a polkit authority. A
+bare `systemctl reboot` as `tluser` is refused. Use `sudo systemctl reboot`,
+the way `dbrrg-save-home` already escalates.
+
+### Reaching a terminal
+
 With zero labwc keybindings ([Standing Constraints](#standing-constraints))
 and no menu, `foot` has no launch path from within the session itself. Reach
 it from a VT (Ctrl+Alt+F2, say) or over SSH instead:
@@ -534,6 +571,8 @@ XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 foot
 
 Do not add a keybinding to launch it - that would violate the
 zero-keybindings constraint.
+
+### Screenshots
 
 Screenshots use `grim`, with `slurp` for region selection and `wl-copy` to
 put the result on the clipboard. Same constraint as `foot`: with zero
