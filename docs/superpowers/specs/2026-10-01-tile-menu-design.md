@@ -305,12 +305,15 @@ ones are 16x16) and look coarse on a large tile. Lucide is drawn at 24 px with
 stroke geometry that scales.
 
 The five SVGs live in the crate's source tree and are installed to
-`/usr/share/dbrrg/icons/`, a few kilobytes. Lucide is ISC licensed, so its
-licence text ships beside them. The names in the table below are the ones
-Lucide uses today and none of them was checked against a release, because no
-copy of Lucide is on this machine. Check each one when the crate is written: a
-name that no longer exists resolves to the letter fallback described below, so
-the tile still appears and the typo does not announce itself.
+`/usr/share/dbrrg/icons/`, a few kilobytes. The source is
+`lucide-static@1.49.0`, ISC licensed, so its licence text ships beside them.
+
+All five names below were **verified against that release** on 2026-10-01:
+`hard-drive-download`, `usb`, `log-out`, `rotate-cw` and `power` all exist, as
+does `terminal` for the foot tile. Re-check them on a version bump rather than
+assuming: a name that no longer exists resolves to the letter fallback
+described below, so the tile still appears, still launches, and the typo does
+not announce itself.
 
 `Icon=` resolves in this order:
 
@@ -510,7 +513,8 @@ written into the section that implements it; this list exists so a reader does
 not have to hunt for them.
 
 - **Icon set: Lucide.** The five SVGs ship in the crate and install to
-  `/usr/share/dbrrg/icons/`, with the ISC licence beside them. See Icons.
+  `/usr/share/dbrrg/icons/`, from `lucide-static@1.49.0` with its ISC licence
+  beside them. All five names are verified against that release. See Icons.
 - **No autostart.** The grid comes first on every boot and no tile starts by
   itself, so a deployed machine shows a grid where it shows a ThinLinc login
   today. See Session lifecycle.
@@ -519,6 +523,19 @@ not have to hunt for them.
   This removes the wrong-stick hazard from the existing save path, not only
   from the new copy-onto-a-new-stick feature. See Copying a home onto a new
   stick.
+
+## Mockup
+
+`https://claude.ai/artifact/URQJWXkBctqKPWosDwuAPP` is an interactive mockup of
+the grid built from this spec on 2026-10-01: the nine tiles (eight shipped plus
+a user tile sorting between them), the three failure states drawn on the tile
+itself, the save modal with its elapsed timer, and the exit codes handed back
+to `dbrrg-session`. It is a picture, not the program.
+
+Two things it does not settle. The `Name` and `Comment` text on every tile is
+invented, because this spec fixes none of it, and that text is what the person
+at the machine reads. The ThinLinc and oxulnk tiles show a placeholder rather
+than the logos their own packages install.
 
 ## Known limits
 
