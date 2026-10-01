@@ -1,5 +1,7 @@
 # Patched labwc Implementation Plan
 
+> **Note on `docs/controller-handoff.md`:** that file is referenced below but no longer exists. It was removed in `64cb49c`; controller handoffs now live in a private store outside this public repository.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a locally patched `labwc` .deb so ThinLinc fullscreen spans all monitors again, and so X11 keyboard grabs suspend compositor keybindings.

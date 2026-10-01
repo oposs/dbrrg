@@ -1,5 +1,7 @@
 # Patched labwc: multi-monitor fullscreen for X11 clients, and X keyboard grabs
 
+> **Note on `docs/controller-handoff.md`:** that file is referenced below but no longer exists. It was removed in `64cb49c`; controller handoffs now live in a private store outside this public repository.
+
 Date: 2026-07-27
 Status: implemented and confirmed on hardware (2026-07-27). A real ThinLinc
 session on a dual-head machine starts normally and spans both monitors -
