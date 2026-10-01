@@ -1,5 +1,29 @@
 #!/bin/sh
 set -e
+
+# Locations, overridable so test/integration/test-save-home.sh can run this
+# script unprivileged.
+DBRRG_STATE_DIR="${DBRRG_STATE_DIR:-/run/dbrrg/state}"
+DBRRG_CMDLINE="${DBRRG_CMDLINE:-/proc/cmdline}"
+
+# The directory to archive, which is NOT $HOME.
+#
+# upgrade-image re-execs itself under sudo and then calls this script from
+# that root process. sudo runs with `Defaults env_reset` and no env_keep for
+# HOME, so HOME becomes the target user's: `su - tluser -c "sudo printenv
+# HOME"` prints /root on this image. A save triggered by `sudo upgrade-image`
+# therefore ran `cd /root` and wrote a tar of root's dotfiles over
+# /boot/efi/home.tar.gz. /root holds a .bashrc, so the archive had a valid
+# member and dbrrg_restore_home_from_file accepted it on the next boot,
+# replacing the user's home and the SSH host keys staged in
+# ~/.dbrrg-ssh-host-keys, with no error printed anywhere.
+DBRRG_HOME_DIR="${DBRRG_HOME_DIR:-$(getent passwd tluser | cut -d: -f6)}"
+: "${DBRRG_HOME_DIR:=/home/tluser}"
+if [ ! -d "$DBRRG_HOME_DIR" ]; then
+  echo "dbrrg: $DBRRG_HOME_DIR is not a directory - refusing to save, so" >&2
+  echo "       the stored home is not overwritten with something else." >&2
+  exit 1
+fi
 # Prefer the base the initramfs actually built the fetch URL from.
 #
 # The sed below is kept only as a fallback, and it is wrong in a way worth
@@ -10,9 +34,16 @@ set -e
 # parameter after ramroot=, so this has never fired, but adding one would
 # silently orphan every netboot client's home. Reading the recorded value
 # removes the whole class.
-BASE_PATH=$(cat /run/dbrrg/state/boot-home-base 2>/dev/null)
+#
+# The `|| true` is load-bearing, not decoration. A failed command
+# substitution in an assignment ends the script under `set -e`, and
+# restore_home() records boot-home-base only on the netboot branch
+# (dbrrg-lib.sh:323-357). Without it, a USB machine died here on the second
+# line of this script and saved nothing at logout, losing that session's
+# changes and never persisting its SSH host keys.
+BASE_PATH=$(cat "$DBRRG_STATE_DIR/boot-home-base" 2>/dev/null || true)
 if [ -z "$BASE_PATH" ]; then
-  BASE_PATH=$(cat /proc/cmdline | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
+  BASE_PATH=$(cat "$DBRRG_CMDLINE" | sed -n 's/.*ramroot=\(.*\)\/.*$/\1/p')
 fi
 
 # Prefer the MAC the initramfs actually used to fetch this machine's home.
@@ -22,17 +53,17 @@ fi
 # order. Posting the archive under a different MAC than it was fetched with
 # would silently orphan it. The old expression stays as a fallback for a
 # boot where nothing was recorded.
-MAC_ADDR=$(cat /run/dbrrg/state/boot-mac 2>/dev/null)
+MAC_ADDR=$(cat "$DBRRG_STATE_DIR/boot-mac" 2>/dev/null || true)
 if [ -z "$MAC_ADDR" ]; then
-  MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address)
+  MAC_ADDR=$(cat /sys/class/net/$(ip  addr show  | sed -n 's/^2: *\([^: ]*\).*$/\1/p')/address 2>/dev/null || true)
 fi
-BOOT_SRV=$(cat /proc/cmdline | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
+BOOT_SRV=$(cat "$DBRRG_CMDLINE" | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/p')
 # wait for dns to come up
 #systemctl --user stop pulseaudio.service
 #systemctl --user stop pulseaudio.socket
 #systemctl --user disable pulseaudio.service
 #systemctl --user disable pulseaudio.socket
-cd $HOME
+cd "$DBRRG_HOME_DIR"
 
 # Refuse to overwrite a good archive with a home we failed to restore.
 #
@@ -48,7 +79,7 @@ cd $HOME
 #
 # A missing marker means an initramfs that predates this mechanism; fall
 # through to saving, which is the old behaviour.
-DBRRG_RESTORE_STATE=$(cat /run/dbrrg/state/home-restore 2>/dev/null || true)
+DBRRG_RESTORE_STATE=$(cat "$DBRRG_STATE_DIR/home-restore" 2>/dev/null || true)
 if [ "$DBRRG_RESTORE_STATE" = "failed" ]; then
   echo "dbrrg: home restore FAILED this boot - refusing to save, so the" >&2
   echo "       stored home and SSH host keys are not overwritten with a" >&2
