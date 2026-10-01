@@ -167,6 +167,14 @@ and these of its rules shape the design rather than only the code:
 `dbrrg-session` runs `dbrrg-menu` where it runs `tlclient` today. A tile that
 starts a program spawns it, waits for it, and returns to the grid.
 
+The grid comes up on every boot and no tile starts by itself. An
+`X-DBRRG-Autostart=true` key on `10-thinlinc.desktop` was considered and
+rejected on 2026-10-01. It would have kept the machines in the field going
+straight to the ThinLinc login as they do today, at the cost of the decision
+that the grid is what the user sees first. Every deployed machine therefore
+changes behaviour with this image: it shows a grid, and reaching the ThinLinc
+login takes one click.
+
 The menu never shuts the machine down itself. It asks by exit code, and
 `dbrrg-session` carries it out:
 
@@ -290,18 +298,24 @@ recolouring them at load time; Lucide's use `stroke="currentColor"`, which
 resvg resolves to black. Either way the menu substitutes the colour in the SVG
 source before parsing, or tints the rasterised pixmap.
 
-Which set the action tiles use is an open decision, recorded under Open
-decisions below. Adwaita costs nothing and is already installed, but its
-symbolic icons are drawn on a 16x16 grid (`drive-harddisk` and
-`media-removable` are 128x128, the three `*-symbolic` ones are 16x16) and will
-look coarse on a large tile. Lucide is drawn at 24 px with stroke geometry
-that scales, at the cost of shipping files and a licence.
+The action tiles use Lucide, decided on 2026-10-01. Adwaita costs nothing and
+is already installed, but its symbolic icons are drawn on a 16x16 grid
+(`drive-harddisk` and `media-removable` are 128x128, the three `*-symbolic`
+ones are 16x16) and look coarse on a large tile. Lucide is drawn at 24 px with
+stroke geometry that scales.
+
+The five SVGs live in the crate's source tree and are installed to
+`/usr/share/dbrrg/icons/`, a few kilobytes. Lucide is ISC licensed, so its
+licence text ships beside them. The names in the table below are the ones
+Lucide uses today and none of them was checked against a release, because no
+copy of Lucide is on this machine. Check each one when the crate is written: a
+name that no longer exists resolves to the letter fallback described below, so
+the tile still appears and the typo does not announce itself.
 
 `Icon=` resolves in this order:
 
 - An absolute path, used as given.
-- `/usr/share/icons/Adwaita/symbolic/**/<name>.svg`, then
-  `/usr/share/icons/Adwaita/scalable/**/<name>.svg`.
+- `/usr/share/dbrrg/icons/<name>.svg`, the shipped Lucide set.
 - `/usr/share/icons/hicolor`: `scalable/apps/<name>.svg` first, then the
   largest pixel size. "Largest first" alone is ambiguous because `scalable`
   sorts between `48x48` and `256x256`, and `foot` ships both a scalable SVG
@@ -315,6 +329,9 @@ The fallback exists so a user tile with a misspelled or missing icon still
 appears and still launches. A tile that silently vanishes on a machine with no
 keybindings cannot be diagnosed from the machine.
 
+An earlier draft listed the Adwaita lookup twice, as the second step and again
+as the fourth.
+
 ### Shipped tiles
 
 | file | icon |
@@ -322,11 +339,11 @@ keybindings cannot be diagnosed from the machine.
 | `10-thinlinc.desktop` | `/opt/thinlinc/lib/tlclient/thinlinc_128.png` |
 | `20-oxulnk.desktop` | `oxulnk-desktop` from `hicolor` |
 | `30-terminal.desktop` | `foot` from `hicolor` |
-| `40-save-home.desktop` | Adwaita `drive-harddisk` |
-| `50-upgrade-image.desktop` | Adwaita `media-removable` |
-| `80-logout.desktop` | Adwaita `system-log-out-symbolic` |
-| `90-reboot.desktop` | Adwaita `system-reboot-symbolic` |
-| `95-poweroff.desktop` | Adwaita `system-shutdown-symbolic` |
+| `40-save-home.desktop` | Lucide `hard-drive-download` |
+| `50-upgrade-image.desktop` | Lucide `usb` |
+| `80-logout.desktop` | Lucide `log-out` |
+| `90-reboot.desktop` | Lucide `rotate-cw` |
+| `95-poweroff.desktop` | Lucide `power` |
 
 `30-terminal` runs `foot`. `tluser` has passwordless sudo, so this is a route
 to a root shell for anyone at the keyboard. The same route already exists over
@@ -355,9 +372,16 @@ writes the whole image byte for byte, so after `partprobe` two partitions
 carry `PARTLABEL=EFI-SYSTEM`, the same PARTUUID and the same FAT label, and
 that symlink resolves to whichever udev saw last. `dbrrg-save-home:84-88`
 mounts exactly that symlink, so a save after a fresh install can land on the
-wrong stick. Closing that needs `dbrrg-save-home` to prefer the partition
-already mounted under the boot storage directory, which is a separate change
-listed under Open decisions.
+wrong stick. Closing that for the save path as well was decided on
+2026-10-01, by recording the node rather than by consulting a mount table:
+nothing mounts the EFI partition during a normal session, so there is no
+mounted partition to prefer. `dbrrg_wait_for_efi()` records what the symlink
+resolved to as `<state-dir>/boot-efi-dev`, on each of its two successful
+returns, next to `boot-mac` and `boot-home-base` and for the same reason those
+exist: the save then addresses the partition the restore actually read, so the
+two cannot disagree. `dbrrg-save-home` mounts that node, keeps the symlink as
+the fallback for a boot that recorded nothing, and reads the file with the
+`|| true` that every other read of that directory now carries.
 
 On yes it writes `home.tar.gz` to the new drive's EFI partition, which is the
 file `restore_home()` reads at boot, so the new stick comes up with the user's
@@ -479,23 +503,22 @@ because a native Wayland client has no X connection to query. The menu prints
 its own configure size when `DBRRG_MENU_DEBUG` is set, and the runtime test
 asserts on that.
 
-## Open decisions
+## Decisions taken
 
-Three things this spec deliberately does not settle.
+The three things this spec left open were settled on 2026-10-01. Each one is
+written into the section that implements it; this list exists so a reader does
+not have to hunt for them.
 
-- **Which icon set the action tiles use.** See Icons. Adwaita is free and
-  installed; Lucide looks better at tile size and costs shipped files.
-- **Whether a deployed machine still goes straight into ThinLinc.** Every
-  machine in the field today shows a ThinLinc login immediately. With the grid
-  first, it shows a grid and needs one click. An opt-in
-  `X-DBRRG-Autostart=true` on `10-thinlinc.desktop` would start the client at
-  once and land on the grid when it exits, which keeps deployed machines
-  behaving as they do now. It also contradicts the decision that the grid
-  comes first, so it is a decision, not an oversight.
-- **Addressing the EFI partition in `dbrrg-save-home`.** See Copying a home
-  onto a new stick. Preferring the already-mounted boot partition over
-  `/dev/disk/by-partlabel/EFI-SYSTEM` is a two line change that removes the
-  wrong-stick hazard for the save path, not only for the new feature.
+- **Icon set: Lucide.** The five SVGs ship in the crate and install to
+  `/usr/share/dbrrg/icons/`, with the ISC licence beside them. See Icons.
+- **No autostart.** The grid comes first on every boot and no tile starts by
+  itself, so a deployed machine shows a grid where it shows a ThinLinc login
+  today. See Session lifecycle.
+- **`dbrrg-save-home` stops trusting `by-partlabel`.** The initramfs records
+  the EFI device node the symlink resolved to and the save mounts that node.
+  This removes the wrong-stick hazard from the existing save path, not only
+  from the new copy-onto-a-new-stick feature. See Copying a home onto a new
+  stick.
 
 ## Known limits
 
