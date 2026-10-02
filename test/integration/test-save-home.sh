@@ -399,4 +399,36 @@ else
     bad "unmounted ESP gave exit $rc, esp: $(ls -A "$WORK/esp")"
 fi
 
+# --------------------------------------------------------------- test 22
+# Both branches archive as root. The netboot branch ran tar as tluser, so one
+# file in the home that tluser cannot read (a root-owned 600 file) failed
+# every netboot save with exit 5 while USB saved the same home.
+setup
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q '^sudo tar ' "$WORK/sudo.log" 2>/dev/null; then
+    ok "netboot save runs tar through sudo, like the USB save"
+else
+    bad "netboot tar did not go through sudo (exit $rc, sudo log: $(cat "$WORK/sudo.log" 2>/dev/null))"
+fi
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q '^sudo tar ' "$WORK/sudo.log" 2>/dev/null; then
+    ok "USB save runs tar through sudo"
+else
+    bad "USB tar did not go through sudo (exit $rc)"
+fi
+
+# --------------------------------------------------------------- test 23
+# A netboot archive that tar could not write is exit 5 and is never uploaded.
+setup
+rc=$(DBRRG_TEST_TAR_RC=2 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ ! -s "$WORK/curl.log" ]]; then
+    ok "netboot tar exit 2 is exit 5 and uploads nothing"
+else
+    bad "netboot tar exit 2 gave exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null)"
+fi
+
 exit $fail

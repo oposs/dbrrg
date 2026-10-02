@@ -161,8 +161,14 @@ if [ "" != "$BOOT_SRV" ]; then
   fi
   # GNU tar exits 1 for "file changed as we read it", which is normal for a
   # live home; only status 2 and above is a failed archive.
+  #
+  # tar runs as root, as on the USB branch below. As tluser, one file in the
+  # home that tluser cannot read (a root-owned 600 file left by a sudo
+  # command) made tar exit 2 and failed every netboot save with exit 5, while
+  # USB machines saved the same home fine. The archive is written through a
+  # redirect by this shell, so the temporary file stays tluser's to remove.
   _dsh_rc=0
-  tar --warning=no-file-changed "$@" -zcf "/tmp/$$.tar.gz" . || _dsh_rc=$?
+  sudo tar --warning=no-file-changed "$@" -zcf - . >"/tmp/$$.tar.gz" || _dsh_rc=$?
   if [ "$_dsh_rc" -gt 1 ]; then
     rm -f "/tmp/$$.tar.gz"
     echo "dbrrg: could not archive $DBRRG_HOME_DIR - nothing was uploaded." >&2

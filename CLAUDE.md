@@ -191,8 +191,10 @@ The system implements home directory persistence across reboots:
 
 - The remote-access password rides the same archive. `sudo dbrrg-password`
   stores the hash the system produced in `~tluser/.dbrrg-password`, mode 600
-  and **owned by tluser**, because `dbrrg-save-home` archives the home as
-  tluser and a root-owned 600 file never reaches the archive.
+  and **owned by tluser**, like the rest of the home. Both save paths of
+  `dbrrg-save-home` run tar as root, so a file tluser cannot read is still
+  archived; until 2026-10 the netboot path ran tar as tluser, and one such
+  file failed every netboot save with exit 5.
   `dbrrg-password.service`, ordered `Before=ssh.service`, reinstalls it on
   every boot with `chpasswd -e`. `--clear` removes it and locks the account
   again.

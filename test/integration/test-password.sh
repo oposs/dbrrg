@@ -16,9 +16,9 @@
 #     $HOME-based path writes the hash into root's home: lost at reboot, and
 #     with the wrong owner. Same defect as the one cfe7aa0 fixed in
 #     dbrrg-save-home.
-#   - The stored file is owned by tluser, not root. dbrrg-save-home archives
-#     the home with `tar zcf - .` running as tluser, so a root-owned 600 file
-#     is unreadable to it and never reaches the archive.
+#   - The stored file is owned by tluser, not root, like the rest of the
+#     home. Until 2026-10 the netboot save in dbrrg-save-home ran tar as
+#     tluser, and a root-owned 600 file failed that save outright.
 #
 # Runs without root: chpasswd, getent, passwd and chown are stubbed and their
 # calls recorded.
@@ -128,8 +128,8 @@ else
 fi
 
 # ---------------------------------------------------------------- test 3
-# dbrrg-save-home tars the home as tluser, so a root-owned 600 file never
-# reaches the archive and the password would not survive a reboot.
+# The stored file belongs to tluser, like the rest of the home (see the
+# header).
 setup
 rc=$(run_password "$WORK/root" $'swordfish\nswordfish\n')
 mode=$(stat -c '%a' "$STORE" 2>/dev/null)
