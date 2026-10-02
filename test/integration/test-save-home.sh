@@ -52,10 +52,17 @@ done
 exit "${DBRRG_TEST_TAR_RC:-0}"
 STUB
 
+# curl also records whether the file it was told to upload exists at that
+# moment, so a test can tell an upload of the archive from one of nothing.
 cat >"$STUBS/curl" <<'STUB'
 #!/bin/bash
 echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 0
+for a in "$@"; do
+    case "$a" in
+        data=@*) [ -f "${a#data=@}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
+    esac
+done
+exit "${DBRRG_TEST_CURL_RC:-0}"
 STUB
 
 # The real mountpoint(1) needs a real mount. The test ESP is a plain directory;
@@ -115,15 +122,17 @@ run_save_home() {
     DBRRG_EXCLUDE_DEFAULT="${DBRRG_EXCLUDE_DEFAULT_OVERRIDE:-/etc/dbrrg/save-home-exclude}" \
     DBRRG_TEST_GZIP_FAIL="${DBRRG_TEST_GZIP_FAIL:-}" \
     DBRRG_TEST_TAR_RC="${DBRRG_TEST_TAR_RC:-0}" \
+    DBRRG_TEST_CURL_RC="${DBRRG_TEST_CURL_RC:-0}" \
+    TMPDIR="$WORK/tmp" \
     PATH="$STUBS:$PATH" \
         "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err"
     echo $?
 }
 
 setup() {
-    rm -rf "$WORK/home" "$WORK/root" "$WORK/state" \
+    rm -rf "$WORK/home" "$WORK/root" "$WORK/state" "$WORK/tmp" \
            "$WORK/tar.log" "$WORK/curl.log" "$WORK/sudo.log"
-    mkdir -p "$WORK/home/tluser" "$WORK/root" "$WORK/state"
+    mkdir -p "$WORK/home/tluser" "$WORK/root" "$WORK/state" "$WORK/tmp"
     echo "the user's wifi password" >"$WORK/home/tluser/.dbrrg-sessionrc"
     echo "root's shell config"      >"$WORK/root/.bashrc"
     # Netboot: a boot server in the cmdline selects the upload path, which
@@ -216,24 +225,12 @@ fi
 # refusal, which is exit 1. The menu would otherwise tell the user their home
 # directory does not exist when the upload merely failed.
 setup
-cat >"$STUBS/curl" <<'STUB'
-#!/bin/bash
-echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 7
-STUB
-chmod +x "$STUBS/curl"
-rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+rc=$(DBRRG_TEST_CURL_RC=7 run_save_home "$WORK/root" "$WORK/home/tluser")
 if [[ "$rc" == "5" ]]; then
     ok "exit 5 when the upload was attempted and failed"
 else
     bad "failed upload exited $rc (wanted 5)"
 fi
-cat >"$STUBS/curl" <<'STUB'
-#!/bin/bash
-echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 0
-STUB
-chmod +x "$STUBS/curl"
 
 # ---------------------------------------------------------------- test 11
 setup
@@ -429,6 +426,46 @@ if [[ "$rc" == "5" ]] && [[ ! -s "$WORK/curl.log" ]]; then
     ok "netboot tar exit 2 is exit 5 and uploads nothing"
 else
     bad "netboot tar exit 2 gave exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null)"
+fi
+
+# --------------------------------------------------------------- test 24
+# The netboot archive is staged in a file from mktemp under $TMPDIR, never at
+# a predictable /tmp/<pid>.tar.gz that another process could create first,
+# and that file is gone again on every way out of the script.
+fixed_tmp=$(grep -nE '^[^#]*(/tmp/|\$\$)' "$SCRIPT")
+if [[ -z "$fixed_tmp" ]]; then
+    ok "dbrrg-save-home names no fixed path under /tmp and no \$\$ file name"
+else
+    bad "dbrrg-save-home still uses a predictable temp path: $fixed_tmp"
+fi
+setup
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+upload=$(grep -o 'data=@[^ ]*' "$WORK/curl.log" 2>/dev/null | head -1)
+upload=${upload#data=@}
+if [[ "$rc" == "0" ]] && [[ "$upload" == "$WORK/tmp/"* ]] &&
+   grep -q upload-file-exists "$WORK/curl.log"; then
+    ok "netboot upload sends a file mktemp made under \$TMPDIR"
+else
+    bad "netboot upload sent '$upload' (exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null))"
+fi
+if [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed after a successful upload"
+else
+    bad "left behind after a successful upload: $(ls -A "$WORK/tmp")"
+fi
+setup
+rc=$(DBRRG_TEST_CURL_RC=22 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed when the upload fails"
+else
+    bad "failed upload: exit $rc, left behind: $(ls -A "$WORK/tmp")"
+fi
+setup
+rc=$(DBRRG_TEST_TAR_RC=2 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed when tar fails"
+else
+    bad "failed tar: exit $rc, left behind: $(ls -A "$WORK/tmp")"
 fi
 
 exit $fail
