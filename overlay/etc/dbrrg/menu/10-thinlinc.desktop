@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=ThinLinc
+Icon=/opt/thinlinc/lib/tlclient/thinlinc_128.png
+Exec=/opt/thinlinc/bin/tlclient
+X-DBRRG-Save-On-Exit=true

@@ -5,3 +5,5 @@
 !containers/ubuntu/patches
 !syslinux.cfg
 !vendor
+!src/dbrrg-menu
+src/dbrrg-menu/target

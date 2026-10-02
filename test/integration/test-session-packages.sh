@@ -56,6 +56,16 @@ present "tty1 autologin"   'getty@tty1\.service\.d/autologin\.conf$'
 present "ssh host key helper" 'usr/bin/dbrrg-ssh-hostkeys$'
 present "ssh host key unit"   'dbrrg-ssh-hostkeys\.service$'
 absent  "old regenerate unit" 'regenerate_ssh_host_keys\.service$'
+present "dbrrg-menu"          'usr/bin/dbrrg-menu$'
+present "session verdict"     'usr/libexec/dbrrg/session-verdict$'
+for t in 10-thinlinc 20-oxulnk 30-terminal 40-save-home 50-upgrade-image 80-logout; do
+    present "tile $t" "etc/dbrrg/menu/$t\.desktop$"
+done
+for i in hard-drive-download usb log-out; do
+    present "Lucide icon $i" "usr/share/dbrrg/icons/$i\.svg$"
+done
+present "Lucide licence"      'usr/share/dbrrg/icons/LICENSE$'
+present "Oxanium licence"     'usr/share/dbrrg/fonts/Oxanium-OFL\.txt$'
 
 absent  "Xorg server"      'usr/lib/xorg/Xorg$'
 absent  "nodm"             'usr/sbin/nodm$'
@@ -491,6 +501,63 @@ else
     echo "FAIL - cannot extract usr/bin/upgrade-image from $SQSH"
     fail=1
 fi
+# dbrrg-menu rasterises on the CPU. The images this is built for have no
+# Vulkan driver at all, and a GL path would make the menu's start depend on
+# EGL context creation. A later switch to a GPU backend must fail here, not
+# on a client. Both linking and dlopen are checked: winit and wgpu load
+# their libraries at runtime.
+MENU_TMP=$(mktemp -d)
+if unsquashfs -no-xattrs -d "$MENU_TMP/x" "$SQSH" usr/bin/dbrrg-menu >/dev/null 2>&1 &&
+   [[ -f "$MENU_TMP/x/usr/bin/dbrrg-menu" ]]; then
+    MB="$MENU_TMP/x/usr/bin/dbrrg-menu"
+    if readelf -d "$MB" | grep NEEDED | grep -qiE 'vulkan|libGL|libEGL|GLES'; then
+        echo "FAIL - dbrrg-menu links a GPU library"
+        fail=1
+    elif grep -aqE 'libvulkan\.so|libEGL\.so|libGLESv2\.so|libGL\.so' "$MB"; then
+        echo "FAIL - dbrrg-menu names a GPU library it may dlopen"
+        fail=1
+    else
+        echo "ok   - dbrrg-menu uses no GPU library"
+    fi
+else
+    echo "FAIL - cannot extract usr/bin/dbrrg-menu from $SQSH"
+    fail=1
+fi
+rm -rf "$MENU_TMP"
+
+# The session body is the menu now; tlclient is one of its tiles.
+if [[ -n "${SESS:-}" && -f "$SESS" ]] &&
+   grep -q 'DBRRG_MENU:-/usr/bin/dbrrg-menu' "$SESS" &&
+   ! grep -v '^[[:space:]]*#' "$SESS" | grep -q '/opt/thinlinc/bin/tlclient'; then
+    echo "ok   - dbrrg-session launches dbrrg-menu, not tlclient"
+else
+    echo "FAIL - dbrrg-session does not launch dbrrg-menu"
+    fail=1
+fi
+
+# Cargo.lock is committed, so the image builds what was tested, and it
+# carries no smithay-clipboard, which segfaults on Wayland.
+LOCK=src/dbrrg-menu/Cargo.lock
+if git ls-files --error-unmatch "$LOCK" >/dev/null 2>&1 &&
+   ! grep -q '^name = "smithay-clipboard"$' "$LOCK"; then
+    echo "ok   - $LOCK is committed and has no smithay-clipboard"
+else
+    echo "FAIL - $LOCK missing from git or pulls smithay-clipboard"
+    fail=1
+fi
+
+# Every shipped tile is usable and its Icon= resolves to a file in the
+# image, checked by the menu's own resolver. thinlinc_128.png is an absolute
+# path into /opt/thinlinc, which has moved across client versions before.
+IMAGE="${DBRRG_UBUNTU_IMAGE:-localhost/dbrrg-ubuntu:3.0.0}"
+if check_out=$(podman run --rm --network=none "$IMAGE" /usr/bin/dbrrg-menu --check 2>&1); then
+    echo "ok   - every shipped tile is usable and its icon resolves"
+else
+    echo "FAIL - dbrrg-menu --check in $IMAGE:"
+    echo "$check_out"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"

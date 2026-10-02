@@ -117,6 +117,17 @@ OVERLAY_FILES := $(shell find overlay -type f ! -name '*~' 2>/dev/null)
 # changed.
 PATCH_FILES := $(wildcard containers/ubuntu/patches/*.patch)
 
+# dbrrg-menu is built from source in the ubuntu container's menu-build stage.
+# Like PATCH_FILES, its sources must be prerequisites of .ubuntu-container:
+# OVERLAY_FILES only finds files under overlay/, and the crate cannot live
+# there because overlay/ is copied into the shipped rootfs. Without this,
+# editing main.rs leaves the stamp valid, 'make rootfs' reports nothing to
+# do, and 'make test' validates a stale binary while printing green. The
+# directories are listed as well, so deleting a file still changes a
+# prerequisite's mtime.
+MENU_FILES := $(shell find src/dbrrg-menu -path src/dbrrg-menu/target -prune -o -type f ! -name '*~' -print 2>/dev/null)
+MENU_DIRS := $(shell find src/dbrrg-menu -path src/dbrrg-menu/target -prune -o -type d -print 2>/dev/null)
+
 # Each container stamp holds the ID of the image its build produced, and is
 # removed at parse time unless the tag still names exactly that image.
 #
@@ -148,7 +159,7 @@ $(VENDOR_DEB): $(OXULNK_DEB)
 	cp $< $@
 endif
 
-.ubuntu-container: containers/ubuntu/Dockerfile $(VENDOR_DEB) $(OVERLAY_FILES) $(PATCH_FILES) containers/ubuntu/patches | $(ROOTFS_DIR)
+.ubuntu-container: containers/ubuntu/Dockerfile $(VENDOR_DEB) $(OVERLAY_FILES) $(PATCH_FILES) containers/ubuntu/patches $(MENU_FILES) $(MENU_DIRS) | $(ROOTFS_DIR)
 	@echo "Building Ubuntu container..."
 	$(CONTAINER_RUNTIME) build --pull --progress=plain --cpu-period=100000 --cpu-quota=$$(($(BUILD_JOBS)*100000)) \
 		--build-arg VERSION=$(VERSION) \
@@ -358,7 +369,7 @@ test-unit:
 test: test-unit rootfs
 	@test/integration/test-firmware.sh
 	@test/integration/test-wifi-stack.sh
-	@test/integration/test-session-packages.sh
+	@DBRRG_UBUNTU_IMAGE=$(UBUNTU_IMAGE) test/integration/test-session-packages.sh
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh
 	@test/integration/test-initramfs-commands.sh

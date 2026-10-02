@@ -37,6 +37,28 @@ RUN set -eu; \
     mkdir -p /out; \
     cp /build/labwc_*.deb /out/
 
+# dbrrg-menu, the tile grid that is the body of the session. See
+# docs/superpowers/specs/2026-10-01-tile-menu-design.md.
+#
+# The toolchain comes from rustup, pinned by the crate's rust-toolchain.toml:
+# egui 0.36 needs Rust 1.95 and Ubuntu 26.04's archive rustc is 1.93.
+# Cargo.lock is committed and --locked makes a drifted lock fail the build
+# instead of silently resolving something untested.
+FROM ubuntu:26.04 AS menu-build
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -yq --no-install-recommends rustup ca-certificates gcc libc6-dev
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+COPY src/dbrrg-menu/ /build/dbrrg-menu/
+WORKDIR /build/dbrrg-menu
+RUN set -eu; \
+    toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml); \
+    rustup toolchain install "$toolchain" --profile minimal; \
+    CARGO_BUILD_JOBS=4 rustup run "$toolchain" cargo build --release --locked -j 4; \
+    install -D -m 0755 target/release/dbrrg-menu /out/usr/bin/dbrrg-menu; \
+    install -D -m 0644 -t /out/usr/share/dbrrg/icons icons/*.svg icons/LICENSE; \
+    install -D -m 0644 egui_shadcn/assets/Oxanium-OFL.txt /out/usr/share/dbrrg/fonts/Oxanium-OFL.txt
+
 FROM ubuntu:26.04
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -146,6 +168,10 @@ RUN apt-get install -yq --no-install-recommends /tmp/oxulnk-desktop.deb && \
 COPY --from=labwc-build /out/ /tmp/labwc-deb/
 RUN apt-get install -yq --no-install-recommends --no-install-suggests /tmp/labwc-deb/labwc_*.deb && \
     rm -rf /tmp/labwc-deb
+
+# dbrrg-menu and its icons, from the menu-build stage above. The tiles
+# themselves are plain files in overlay/etc/dbrrg/menu.
+COPY --from=menu-build /out/ /
 
 # Lock root rather than blanking it.
 #

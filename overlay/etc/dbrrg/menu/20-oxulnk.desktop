@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=oxulnk
+Icon=oxulnk-desktop
+Exec=oxulnk-desktop
+X-DBRRG-Save-On-Exit=true

@@ -43,12 +43,15 @@ chmod +x "$RUNTIME"
 # Just enough of a checkout for the .ubuntu-container rule: its inputs, all
 # older than the stamp, so only the stamp's content can make it stale.
 TREE="$WORK/tree"
-mkdir -p "$TREE/containers/ubuntu/patches" "$TREE/vendor" "$TREE/artifacts/rootfs"
+mkdir -p "$TREE/containers/ubuntu/patches" "$TREE/vendor" "$TREE/artifacts/rootfs" \
+    "$TREE/src/dbrrg-menu/src"
 cp "$REPO/Makefile" "$TREE/Makefile"
 : >"$TREE/containers/ubuntu/Dockerfile"
 : >"$TREE/vendor/oxulnk-desktop.deb"
+: >"$TREE/src/dbrrg-menu/src/main.rs"
 touch -d '2020-01-01' "$TREE/containers/ubuntu/Dockerfile" \
-    "$TREE/vendor/oxulnk-desktop.deb" "$TREE/containers/ubuntu/patches"
+    "$TREE/vendor/oxulnk-desktop.deb" "$TREE/containers/ubuntu/patches" \
+    "$TREE/src/dbrrg-menu/src/main.rs" "$TREE/src/dbrrg-menu/src" "$TREE/src/dbrrg-menu"
 
 STAMP="$TREE/.ubuntu-container"
 
@@ -110,6 +113,24 @@ if [[ "$r" == built ]]; then
     ok "an empty stamp from before the ID check is rebuilt"
 else
     bad "an empty stamp was taken as up to date ($r)"
+fi
+
+# ---------------------------------------------------------------- test 6
+# dbrrg-menu is compiled inside the container build from src/dbrrg-menu, which
+# OVERLAY_FILES does not cover. Editing it must make the stamp stale, or
+# 'make test' checks a binary built from the old source.
+echo sha256:aaaa >"$STAMP"
+r=$(run_make sha256:aaaa)
+if [[ "$r" != up-to-date ]]; then
+    bad "setup: stamp not up to date before touching the crate ($r)"
+else
+    touch "$TREE/src/dbrrg-menu/src/main.rs"
+    r=$(run_make sha256:aaaa)
+    if [[ "$r" == built ]]; then
+        ok "editing a dbrrg-menu source file invalidates the stamp"
+    else
+        bad "a dbrrg-menu edit left the stamp standing ($r)"
+    fi
 fi
 
 exit $fail
