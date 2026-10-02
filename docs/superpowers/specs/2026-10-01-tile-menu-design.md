@@ -178,7 +178,9 @@ login takes one click.
 The menu never shuts the machine down itself. It asks by exit code, and
 `dbrrg-session` carries it out:
 
-- `0`: Save the home directory and return. getty starts a fresh session.
+- `0`: Log out. The menu has already saved the home directory behind its
+  dialog, or the save failed and the person at the machine chose "Log out
+  anyway". dbrrg-session does not save. getty starts a fresh session.
 - `10`: Save the home directory, then `sudo systemctl reboot`.
 - `11`: Save the home directory, then `sudo systemctl poweroff`.
 - Anything else: the menu failed. Do **not** save, print a diagnostic, and
@@ -418,8 +420,9 @@ A field report from a NUC7i3BNK
 is right. So the save writes to `/run/dbrrg/storage/efi`, which is by
 construction the partition this boot read — the goal the breadcrumb was
 invented to reach, without the breadcrumb, and without mounting the same vfat
-filesystem a second time. `/dev/disk/by-partlabel/EFI-SYSTEM` stays only as
-the fallback for a boot that left nothing mounted. No `boot-efi-dev` state
+filesystem a second time. The shipped `dbrrg-save-home` has no
+by-partlabel fallback (2026-10-02): with nothing mounted it reports "nowhere
+to store" (exit 4). No `boot-efi-dev` state
 file is written, and `dbrrg_wait_for_efi()` is unchanged.
 
 On yes it writes `home.tar.gz` to the new drive's EFI partition, which is the
@@ -565,6 +568,13 @@ Settled 2026-10-02:
   that route visible rather than add it. The person at the keyboard of a thin
   client is the person who administers it. This is the intended design, not a
   tolerated gap. See Shipped tiles.
+- **Log out saves in the menu first.** The Log out tile runs
+  `dbrrg-save-home` behind the same dialog as Back up home and exits 0 only
+  after it. A failed or refused save shows the reason and offers Stay or
+  Log out anyway; it never logs out by itself. A boot whose restore failed
+  is asked at once, without a save attempt. `dbrrg-session` no longer saves
+  on any status, so exit 0 means the save is done or was declined at the
+  machine. Item 3's reboot and poweroff follow the same rule.
 
 Settled 2026-10-01:
 
@@ -574,11 +584,11 @@ Settled 2026-10-01:
 - **No autostart.** The grid comes first on every boot and no tile starts by
   itself, so a deployed machine shows a grid where it shows a ThinLinc login
   today. See Session lifecycle.
-- **`dbrrg-save-home` stops trusting `by-partlabel`.** The initramfs records
-  the EFI device node the symlink resolved to and the save mounts that node.
-  This removes the wrong-stick hazard from the existing save path, not only
-  from the new copy-onto-a-new-stick feature. See Copying a home onto a new
-  stick.
+- **`dbrrg-save-home` stops trusting `by-partlabel`.** It writes to the ESP
+  the initramfs already mounted at `/run/dbrrg/storage/efi`, which is by
+  construction the partition this boot read, and never mounts by partlabel.
+  (The first version of this bullet said the initramfs records the device
+  node; see "Corrected 2026-10-02" under Copying a home onto a new stick.)
 
 ## Mockup
 

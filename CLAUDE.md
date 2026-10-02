@@ -14,6 +14,13 @@ The build process uses containers in `containers/` directory:
 2. **containers/ipxe/Dockerfile** - Builds iPXE network boot loaders (PXE, KPXE, EFI formats)
 3. **containers/image-builder/Dockerfile** - Final packaging container with tools to create bootable EFI images
 
+The `menu-build` stage of `containers/ubuntu/Dockerfile` compiles the tile menu
+`dbrrg-menu` from the crate at `src/dbrrg-menu/` (Rust 1.96.0 via rustup,
+`cargo build --release --locked`) and the final stage copies the result into
+the image. `MENU_FILES` and `MENU_DIRS` in the `Makefile` list the crate's
+files and directories as prerequisites of `.ubuntu-container`, so editing the
+crate rebuilds the image.
+
 The `overlay/` directory contains all customizations that get layered onto the base Ubuntu system during the build.
 
 ## Common Commands
@@ -68,8 +75,11 @@ The boot process involves several interconnected components:
 4. **Un-dockerization** (overlay/etc/systemd/system/un-dockerize.service) - First-boot service removes Docker artifacts, fixes /etc/hosts, reconfigures systemd-resolved
 
 5. **Home Persistence** - the initramfs restores the home directory before
-   the pivot (`restore_home()` in the dracut module); `dbrrg-session` saves
-   it on logout, after the ThinLinc client exits (`dbrrg-save-home`)
+   the pivot (`restore_home()` in the dracut module). `dbrrg-menu` saves it
+   (`dbrrg-save-home`), behind its dialog: from the Log out tile before the
+   menu exits 0 (a failed save asks Stay / Log out anyway), after a tile with
+   `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) exits, and from the Back up
+   home tile. `dbrrg-session` never saves.
 
 ## Key Configuration Files
 
@@ -101,8 +111,14 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   fullscreen surfaces above the layer-shell top layer and ignores exclusive
   zones - so it is visible exactly when no window is fullscreen, which is
   when a window can go missing.
+- Tiles: the shipped tiles are `.desktop` files in `overlay/etc/dbrrg/menu/`,
+  outside `$HOME` for the reason `rc.xml` is. Per-machine tiles go in
+  `~/.config/dbrrg/menu/*.desktop`: at most 32 files, and they may only `run`
+  a program. A user file named like a shipped one may reword `Name`, `Comment`
+  and `Icon` only; its other keys are ignored. The files travel with the home
+  directory through `save-home`.
 - Session startup: `overlay/usr/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
-- **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the ThinLinc client. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
+- **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the menu, and so before any tile starts `tlclient`. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
   It is also where screen blanking is tuned: `DBRRG_IDLE_TIMEOUT=<seconds>` (default `300`, `0` disables blanking entirely) is read by `dbrrg-session` right after this file is sourced.
 
 - **Per-machine user environment:** `overlay/home/tluser/.dbrrg-environment` — variables the compositor reads at **startup**: keyboard layout (`XKB_DEFAULT_*`) and cursor theme. Sourced by `overlay/etc/profile.d/10-dbrrg-session.sh` after `/etc/dbrrg/labwc/environment`, so the user's value wins. Also persisted via `save-home`.
@@ -179,7 +195,13 @@ The system implements home directory persistence across reboots:
   Netboot identifies the machine by the MAC recorded at
   `/run/dbrrg/state/boot-mac` — the interface the initramfs actually used —
   rather than by re-deriving it, so restore and save cannot disagree.
-- On logout: ThinLinc client shutdown triggers `/usr/bin/dbrrg-save-home` which saves home directory back to USB or uploads to boot server via HTTP POST
+- On logout: `dbrrg-menu` runs `/usr/bin/dbrrg-save-home`, which saves the home
+  directory back to USB or uploads it to the boot server via HTTP POST. The
+  menu does this behind its dialog in three places: the Log out tile (before
+  the menu exits 0; a failed save asks Stay / Log out anyway), a tile with
+  `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program exits, and
+  the Back up home tile. The menu greys the save tile out when
+  `/run/dbrrg/state/home-restore` says `failed`.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd
   tluser`, never from `$HOME`, and every read of a recorded value under
   `/run/dbrrg/state` ends in `|| true`. Both are load-bearing. `sudo` on this
@@ -314,12 +336,15 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Twelve rules in this repository look like ordinary configuration but are
-load-bearing. All but the patched-labwc and hook-order ones have each caused
-a real shipped-image bug. The patched-labwc one is preventive - nothing has
-shipped broken from it yet, but reverting it silently would ship regressions
-in both patched behaviours. The hook-order one was caught in QEMU: the race it
-closes is present in every image built before it.
+Fourteen rules in this repository look like ordinary configuration but are
+load-bearing. All but the patched-labwc, hook-order, menu-rendering and
+logout-save ones have each caused a real shipped-image bug. The
+patched-labwc one is preventive - nothing has shipped broken from it yet, but
+reverting it silently would ship regressions in both patched behaviours. The
+hook-order one was caught in QEMU: the race it closes is present in every
+image built before it. The menu-rendering and logout-save ones are preventive
+too: both were decided while the menu was designed, and no image has shipped
+without them.
 
 ### No login password ships in the image
 
@@ -653,10 +678,36 @@ netboot, where the machine-id is new every boot. It runs before switch-root,
 so PID 1 reads the name and `%H` in `un-dockerize.service` is correct.
 `test/integration/test-field-report.sh` guards the exclusion and the call.
 
+### dbrrg-menu draws on the CPU
+
+The crate has no `wgpu`, `glow` or `eframe`. The target images have no Vulkan
+ICD (`/usr/share/vulkan/icd.d` does not exist), and GL would make the menu's
+start depend on EGL. `test/integration/test-session-packages.sh` fails when
+the binary links or names a GPU library.
+
+### dbrrg-session never saves; dbrrg-menu saves before it exits 0
+
+Decided 2026-10-02, so a failed logout save is shown at the machine and
+answered there (Stay / Log out anyway). Failure is the default branch of the
+status handling in `dbrrg-session`: a panic (101), a segfault (139) or a
+failed exec (126/127) read as logout would be silent, and saving on them
+would archive the home on every respawn. `test/integration/test-session-lifecycle.sh`
+guards both.
+
 ## Known Limitations
 
 Open items found during the Ubuntu 26.04/Wayland/PipeWire upgrade. These are
 not fixed; they are recorded so they aren't rediscovered from scratch.
+
+### Menu limits
+
+- The grid is on one monitor. The span patch covers Xwayland windows only.
+- A tile whose program never exits and opens no window keeps the menu busy
+  with no way to cancel.
+- Clicking a tile is not covered by the headless runtime test, which has no
+  input devices. The logout dialog and its Stay / Log out anyway buttons are
+  proven by unit tests of the state machine only.
+- None of the menu has been run on hardware yet.
 
 ### Screen blanking had to be rebuilt after the X11 removal
 
@@ -715,17 +766,21 @@ after the X11 removal" above.
 
 ## Debugging
 
-### A session body that fails to start does so silently
+### A failed menu is shown and counted
 
-`labwc` always exits 0, whatever its `-S` command returned. Measured against
-the shipped binary: a `-S` command exiting 10, 0 or 101 all give `labwc` exit
-0. `overlay/etc/profile.d/10-dbrrg-session.sh` captures that status into
-`DBRRG_SESSION_RC`, so the failure screen that file describes as intentional
-production behaviour fires only when `labwc` itself cannot start. A `tlclient`
-that fails respawns the session in a loop with nothing on screen.
+`labwc` always exits 0, whatever its `-S` command returned (measured: a `-S`
+command exiting 10, 0 or 101 all give `labwc` exit 0). `dbrrg-session`
+therefore writes the menu's exit status to `$XDG_RUNTIME_DIR/dbrrg-session.status`
+and, on any status but 0, opens a `foot` window with the status and the last
+lines of the session log. `overlay/usr/libexec/dbrrg/session-verdict`, called
+from `overlay/etc/profile.d/10-dbrrg-session.sh`, reads that file after labwc
+returns. It stops the restarts and shows the failure screen after three
+consecutive failed sessions, counted in `/tmp/dbrrg-session-failures.<uid>`.
 
-What does record it is the session log, which carries labwc's own line:
+The session log also carries labwc's own line:
 `[ERROR] [../src/server.c:167] spawned child 12 exited with 10`.
+
+From a VT, `dbrrg-menu --check` lists every tile and why one is grey.
 
 ### The session waits for the GPU before it starts
 
@@ -744,9 +799,10 @@ the way `dbrrg-save-home` already escalates.
 
 ### Reaching a terminal
 
-With zero labwc keybindings ([Standing Constraints](#standing-constraints))
-and no menu, `foot` has no launch path from within the session itself. Reach
-it from a VT (Ctrl+Alt+F2, say) or over SSH instead. **SSH needs a password
+The Terminal tile of the menu starts `foot` inside the session. With zero
+labwc keybindings ([Standing Constraints](#standing-constraints)) there is no
+other in-session path, so when the session is down, reach a terminal from a VT
+(Ctrl+Alt+F2, say) or over SSH instead. **SSH needs a password
 first:** a machine nobody has run `sudo dbrrg-password` on refuses every
 password login, because tluser's shadow field is `!` and the image ships no
 `authorized_keys`. On such a machine the VT is the only way in, and the VT

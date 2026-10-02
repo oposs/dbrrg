@@ -127,6 +127,32 @@ Upgrade modes:
 - **In-place** (other USB): Rotates `tl/` → `tl.old/`, installs new `tl/`
 - **Full image**: Complete rewrite with data backup/restore
 
+### The session menu
+
+After login the session opens a grid of tiles. ThinLinc is one click.
+Other shipped tiles start oxulnk, a terminal, a home backup, `upgrade-image`
+and the logout. Logging out saves the home directory first; if the save
+fails, the menu asks whether to stay or to log out anyway.
+
+Add a tile for one machine as a `.desktop` file in `~/.config/dbrrg/menu/`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Wiki
+Icon=/home/tluser/wiki.png
+Exec=firefox https://wiki.example.com
+```
+
+- `Name`, `Icon`, `Exec`: Label, icon and command of the tile.
+- `Terminal=true`: Run the command in a terminal window.
+- `X-DBRRG-Save-On-Exit=true`: Save the home directory when the program exits.
+
+The files are saved with the home directory. A file with the name of a
+shipped tile (for example `10-thinlinc.desktop`) rewords that tile's `Name`,
+`Comment` and `Icon`; its other keys are ignored. `dbrrg-menu --check` run
+from a VT explains why a tile is grey.
+
 ### Network Boot (PXE/iPXE)
 ```bash
 # Build iPXE boot loaders
