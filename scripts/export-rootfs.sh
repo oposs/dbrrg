@@ -42,6 +42,12 @@ log_success "Cleanup complete"
 log_step "Creating squashfs..."
 SQSH_OUTPUT="${ARTIFACT_DIR}/ramroot.sqsh"
 
+# etc/hostname and etc/resolv.conf are excluded because podman bind-mounts
+# them (and /etc/hosts) into this container, so mksquashfs would read through
+# the mounts and pack the container's runtime files instead of the image's.
+# /etc/hosts and /etc/resolv.conf are replaced on every boot by
+# un-dockerize.service, and the initramfs writes /etc/hostname from the
+# machine-id; before this, every machine shipped the build container's ID.
 mksquashfs / "$SQSH_OUTPUT" \
     -comp "$SQUASHFS_COMP" \
     -Xcompression-level "$SQUASHFS_COMP_LEVEL" \
@@ -49,7 +55,8 @@ mksquashfs / "$SQSH_OUTPUT" \
     -processors "$BUILD_JOBS" \
     -noappend \
     -no-progress \
-    -e boot tmp var/tmp artifacts proc sys dev run || die "mksquashfs failed"
+    -e boot tmp var/tmp artifacts proc sys dev run \
+       etc/hostname etc/resolv.conf || die "mksquashfs failed"
 
 log_success "SquashFS created: $(format_bytes $(stat -c%s "$SQSH_OUTPUT"))"
 

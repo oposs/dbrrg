@@ -457,6 +457,36 @@ else
     bad "symlinked wifi.yaml was installed or rc=$rc"
 fi
 
+# --- dbrrg_write_hostname ---
+
+nr="$WORK/host-ok"; mkdir -p "$nr/etc"
+dbrrg_write_hostname "$nr" "abcdef0123456789abcdef0123456789"; rc=$?
+if [[ $rc -eq 0 && "$(cat "$nr/etc/hostname")" == "dbrrg-abcdef" ]]; then
+    ok "dbrrg_write_hostname writes dbrrg-<first 6 of machine-id>"
+else
+    bad "dbrrg_write_hostname: rc=$rc content=$(cat "$nr/etc/hostname" 2>&1)"
+fi
+
+for short in "" "abc12"; do
+    nr="$WORK/host-short-${short:-empty}"; mkdir -p "$nr/etc"
+    : >"$WORK/warnings"
+    dbrrg_write_hostname "$nr" "$short"; rc=$?
+    if [[ $rc -eq 0 && ! -e "$nr/etc/hostname" && -s "$WORK/warnings" ]]; then
+        ok "machine-id '${short}': no hostname written, warned, returns 0"
+    else
+        bad "machine-id '${short}': rc=$rc file=$(ls "$nr/etc") warnings=$(cat "$WORK/warnings")"
+    fi
+done
+
+nr="$WORK/host-noetc"; mkdir -p "$nr"
+: >"$WORK/warnings"
+dbrrg_write_hostname "$nr" "abcdef0123456789"; rc=$?
+if [[ $rc -eq 0 && -s "$WORK/warnings" ]]; then
+    ok "unwritable /etc: warns and returns 0"
+else
+    bad "unwritable /etc: rc=$rc warnings=$(cat "$WORK/warnings")"
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - initramfs home helpers"

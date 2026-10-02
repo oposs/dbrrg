@@ -554,3 +554,27 @@ setup_loop_device() {
 }
 
 fi  # end of _DBRRG_LIB_LOADED guard
+
+# dbrrg_write_hostname <newroot> <machine_id>
+#
+# Write dbrrg-<first 6 characters of machine_id> to <newroot>/etc/hostname.
+# The machine-id is persisted on the ESP, so the name is stable per machine
+# and differs between machines.
+#
+# Never fails the boot: an id shorter than 6 characters or a failed write is
+# warned about and skipped, and the function always returns 0.
+dbrrg_write_hostname() {
+    local _wh_root="$1"
+    local _wh_id="$2"
+
+    if [ "${#_wh_id}" -lt 6 ]; then
+        warn "dbrrg: machine-id too short for a hostname, skipping"
+        return 0
+    fi
+
+    { printf 'dbrrg-%s\n' "$(printf '%s' "$_wh_id" | cut -c1-6)" \
+        > "$_wh_root/etc/hostname"; } 2>/dev/null || \
+        warn "dbrrg: could not write /etc/hostname"
+
+    return 0
+}

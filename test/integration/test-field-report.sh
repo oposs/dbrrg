@@ -263,4 +263,29 @@ else
     bad "first-time success: exit $ps_rc, labwc called $ps_calls time(s) (want 1)"
 fi
 
+# --- 5. the hostname -----------------------------------------------------
+
+EXPORT="scripts/export-rootfs.sh"
+UNDOCK="overlay/etc/systemd/system/un-dockerize.service"
+
+# podman bind-mounts these files, so mksquashfs packs the container's copies -
+# which is how every machine ended up named after the build container.
+if grep -qE 'etc/hostname' "$EXPORT"; then
+    ok "the squashfs build excludes /etc/hostname"
+else
+    bad "export-rootfs.sh still packs podman's bind-mounted /etc/hostname"
+fi
+
+if grep -v '^[[:space:]]*#' "$SO" | grep -q 'dbrrg_write_hostname'; then
+    ok "setup-overlay.sh writes the hostname from the machine-id"
+else
+    bad "setup-overlay.sh never calls dbrrg_write_hostname - hostname stays unset"
+fi
+
+if grep -q 'hostnamectl' "$UNDOCK"; then
+    bad "un-dockerize.service uses hostnamectl - the hostname is set in the initramfs"
+else
+    ok "un-dockerize.service leaves the hostname to the initramfs"
+fi
+
 exit $fail

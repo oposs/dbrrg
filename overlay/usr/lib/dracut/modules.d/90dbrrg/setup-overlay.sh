@@ -53,6 +53,16 @@ echo "$machine_id" > "$NEWROOT/etc/machine-id" || \
 
 info "Machine-id set: $machine_id"
 
+# Name the machine after its machine-id. mksquashfs runs inside the build
+# container, where podman bind-mounts /etc/hostname, so the image used to ship
+# the container ID (fa0ad0f31bfa) and every machine had the same name. The file
+# is now excluded from the squashfs. Writing it here means systemd PID 1 reads
+# the right name from /etc/hostname at startup, before it loads any unit: the
+# first journal line carries it, and %H in un-dockerize.service's /etc/hosts
+# substitution expands to it. The machine-id is persisted on the ESP, so the
+# name is stable per machine. Six hex characters are used.
+dbrrg_write_hostname "$NEWROOT" "$machine_id"
+
 # Restore the home directory here, in the initramfs, rather than at login.
 #
 # It has to be in place before multi-user.target so dbrrg-ssh-hostkeys can
