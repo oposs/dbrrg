@@ -191,8 +191,10 @@ The system implements home directory persistence across reboots:
 
 - The remote-access password rides the same archive. `sudo dbrrg-password`
   stores the hash the system produced in `~tluser/.dbrrg-password`, mode 600
-  and **owned by tluser**, because `dbrrg-save-home` archives the home as
-  tluser and a root-owned 600 file never reaches the archive.
+  and **owned by tluser**, like the rest of the home. Both save paths of
+  `dbrrg-save-home` run tar as root, so a file tluser cannot read is still
+  archived; until 2026-10 the netboot path ran tar as tluser, and one such
+  file failed every netboot save with exit 5.
   `dbrrg-password.service`, ordered `Before=ssh.service`, reinstalls it on
   every boot with `chpasswd -e`. `--clear` removes it and locks the account
   again.
@@ -238,12 +240,35 @@ This allows WiFi credentials, ThinLinc settings, and user customizations to pers
 
 ## Network Boot vs USB Boot
 
-The system detects boot method by checking for `/dev/disk/by-partlabel/EFI-SYSTEM`:
+The boot method follows from `ramroot=` on the kernel command line
+(`is_remote_url` in `dbrrg-lib.sh`):
 
-- **USB Boot**: Partition present → loads ramroot.sqsh from local `tl/ramroot.sqsh`, persists home to partition
-- **Network Boot**: No partition → uses ramroot URL from kernel cmdline, persists home to boot server HTTP endpoint
+- **USB Boot**: a path such as `tl/ramroot.sqsh` → loaded from the
+  `EFI-SYSTEM` partition, home persisted to that partition
+- **Network Boot**: an `http://` URL → downloaded into RAM, home persisted
+  to the boot server over HTTP
 
 Both modes execute identical code paths after SquashFS mount.
+
+Netboot networking in the initramfs is dracut's `systemd-networkd` and
+`systemd-resolved` modules (`--add` in `containers/ubuntu/Dockerfile`).
+`parse-dbrrg.sh` sets `rd.neednet=1` for an http ramroot, so
+`systemd-networkd-wait-online` runs before the hooks; USB boots do not set
+it and do not wait. dracut 110 has no `network-legacy` module, and the
+hook's former `dhclient` call never worked - the initramfs had no
+`dhclient-script`, so every netboot failed with `Download failed` until
+2026-10. `mount-squashfs.sh` records the boot MAC from the interface holding
+the default route, i.e. the one whose lease was applied, not from the first
+`/sys/class/net` entry. A host name in the ramroot URL resolves through the
+resolved stub. Cost: networkd pulls in `kernel-network-modules` (every NIC
+driver), and the initrd grew from 165.6 MB to 179.3 MB.
+
+`make qemu-smoke-netboot` boots the artifacts from a local HTTP server with
+`ramroot=http://_gateway:<port>/ramroot.sqsh` (resolved answers `_gateway`
+itself; it is the host on QEMU's user network) and requires the hostname
+`dbrrg-123456` for MAC 52:54:00:12:34:56 and a `home.pkg` request under that
+MAC. It does not exercise forwarding to a DHCP-supplied DNS server.
+**Not verified on hardware.**
 
 ## Container Build Best Practices
 
@@ -289,11 +314,12 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Eleven rules in this repository look like ordinary configuration but are
-load-bearing. All but the patched-labwc one have each caused a real
-shipped-image bug; that one is preventive - nothing has shipped broken from
-it yet, but reverting it silently would ship regressions in both patched
-behaviours.
+Twelve rules in this repository look like ordinary configuration but are
+load-bearing. All but the patched-labwc and hook-order ones have each caused
+a real shipped-image bug. The patched-labwc one is preventive - nothing has
+shipped broken from it yet, but reverting it silently would ship regressions
+in both patched behaviours. The hook-order one was caught in QEMU: the race it
+closes is present in every image built before it.
 
 ### No login password ships in the image
 
@@ -561,6 +587,15 @@ the design spec for why it is unnecessary.
 without that dependency would not trigger a rebuild, leaving `make test` and
 `make test-runtime` validating a stale image while still reporting green.
 
+The same false green has a second source: the image tag. `.ubuntu-container`
+belongs to one checkout, but every checkout builds `dbrrg-ubuntu:$(VERSION)`,
+so another checkout's build replaces the image under this checkout's stamp.
+Each container stamp therefore holds the image ID its build produced, and the
+`Makefile` drops it at parse time when the tag names a different image or
+none. Build with a distinct `VERSION` per checkout, or two checkouts rebuild
+over each other. `test/integration/test-container-stamp.sh` guards this - run
+via `make test`.
+
 ### Per-machine network config is installed by the initramfs, never by a unit
 
 The netplan systemd generator creates `netplan-wpa-<if>.service` when the
@@ -574,16 +609,39 @@ Do not move the copy into a `dbrrg-local-network.service`.
 `test/integration/test-field-report.sh` asserts that unit does not exist and
 `test/integration/test-session-packages.sh` asserts mode 600 in the image.
 
-### The initramfs has no cut, basename, head, install, sync, rmdir, wc or date
+### The initramfs has no cut, basename, head, install, wc or date
 
 Only what the `inst_multiple` lines in `90dbrrg/module-setup.sh` install,
 plus dracut's base set, exists there. Shell builtins (`printf`, `test`,
 `read`) are fine. A missing command fails silently at boot while every
 offline test passes on the dev host - that is how the hostname shipped as
-`dbrrg` and why netboot never recorded the boot MAC.
-`test/integration/test-initramfs-home.sh` runs the helpers with PATH
-restricted to that set. Known and unfixed: `finalize-upgrade.sh` still calls
-`sync` and `rmdir`.
+`dbrrg`, why netboot never recorded the boot MAC, and why every `sync` in
+the `tl.new` upgrade rotation failed. `sync` and `rmdir` are now installed
+explicitly for that rotation. `dhclient` is no longer installed: DHCP is
+`systemd-networkd`'s job (see [Network Boot vs USB Boot](#network-boot-vs-usb-boot)).
+`test/integration/test-initramfs-home.sh` runs
+the helpers, `dbrrg_finalize_upgrade` included, with PATH restricted to that
+set. `test/integration/test-initramfs-commands.sh` checks every command the
+90dbrrg hooks call against `lsinitramfs` of the built `initrd.img`, so a new
+call to a missing tool fails `make test` even where no offline test runs it.
+Its command extractor (`test/integration/initramfs-commands.py`) is a
+heuristic: it skips comments, quoted text, `for` lists and `case` patterns,
+and descends into `$( )`; a command it cannot see is not checked.
+
+### The dbrrg pre-mount and mount hooks run after dracut-cmdline
+
+`90dbrrg/module-setup.sh` installs `dbrrg-after-cmdline.conf` as a drop-in
+for `dracut-pre-mount.service` and `dracut-mount.service`
+(`After=dracut-cmdline.service`). Upstream orders both only after
+`dracut-initqueue.service`, which a dbrrg boot does not pull in, so they ran
+in parallel with the cmdline hook that sets `root=dbrrg` and writes
+`/tmp/dbrrg-ramroot`. A boot that lost that race logged `Can't mount root
+filesystem` and stopped in the emergency shell; QEMU netboot hit it, and the
+USB smoke log showed pre-mount starting before cmdline finished. USB was
+spared only by the time the pre-mount hook spends waiting for the ESP.
+`test/integration/test-initramfs-commands.sh` asserts both drop-ins are in
+the built initrd, and `scripts/check-boot-smoke.sh` fails a boot log in which
+either hook starts before `dracut-cmdline.service` has finished.
 
 ### /etc/hostname is excluded from the squashfs and written by the initramfs
 

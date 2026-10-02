@@ -64,7 +64,7 @@ endif
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test-unit test test-runtime help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke qemu-smoke-netboot test-unit test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
@@ -78,10 +78,12 @@ help:
 	@echo "  ipxe              - Build iPXE network boot loaders"
 	@echo "  image             - Build bootable USB image"
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
+	@echo "  qemu-smoke        - Headless USB-style boot smoke test"
+	@echo "  qemu-smoke-netboot - Headless HTTP netboot smoke test"
 	@echo "  test-unit         - Run offline unit tests (no rootfs needed)"
 	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
-	@echo "  clean             - Remove artifacts"
+	@echo "  clean             - Remove artifacts (FORCE=1 if artifacts is a symlink)"
 	@echo "  help              - Show this help"
 	@echo ""
 	@echo "Variables:"
@@ -115,10 +117,21 @@ OVERLAY_FILES := $(shell find overlay -type f ! -name '*~' 2>/dev/null)
 # changed.
 PATCH_FILES := $(wildcard containers/ubuntu/patches/*.patch)
 
-# Remove stale stamp files if container images don't exist (checked at parse time)
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(UBUNTU_IMAGE) 2>/dev/null || echo missing),$(shell rm -f .ubuntu-container))
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .image-builder-container))
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .ipxe-container))
+# Each container stamp holds the ID of the image its build produced, and is
+# removed at parse time unless the tag still names exactly that image.
+#
+# The stamp is per checkout, but the tag is not: every checkout of this repo
+# builds dbrrg-ubuntu:$(VERSION). The old check only asked whether the tag
+# existed, so after another checkout built and re-tagged the image, this
+# checkout's stamp still said "up to date" and `make test` ran its guards
+# against the other checkout's image and reported green. A stamp from before
+# this check is empty and so is dropped once. Build with a distinct VERSION
+# per checkout, or two checkouts will keep rebuilding over each other.
+image_id = $(CONTAINER_RUNTIME) image inspect --format '{{.Id}}' $(1)
+drop_stale_stamp = $(shell id=$$($(call image_id,$(1)) 2>/dev/null); [ -n "$$id" ] && [ "$$id" = "$$(cat $(2) 2>/dev/null)" ] || rm -f $(2))
+$(call drop_stale_stamp,$(UBUNTU_IMAGE),.ubuntu-container)
+$(call drop_stale_stamp,$(IMAGE_BUILDER),.image-builder-container)
+$(call drop_stale_stamp,$(IPXE_BUILDER),.ipxe-container)
 
 ifeq ($(strip $(OXULNK_DEB)),)
 # Nothing to refresh from, so the staged copy is the whole input. No
@@ -142,7 +155,7 @@ endif
 		-t $(UBUNTU_IMAGE) \
 		-f containers/ubuntu/Dockerfile \
 		.
-	@touch $@
+	$(call image_id,$(UBUNTU_IMAGE)) >$@
 
 $(KERNEL) $(INITRD) $(SQUASHFS): .ubuntu-container | $(ROOTFS_DIR)
 	@echo "Exporting rootfs artifacts..."
@@ -166,7 +179,7 @@ rootfs: $(KERNEL) $(INITRD) $(SQUASHFS)
 		-t $(IPXE_BUILDER) \
 		-f containers/ipxe/Dockerfile \
 		containers/ipxe
-	@touch $@
+	$(call image_id,$(IPXE_BUILDER)) >$@
 
 $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI): .ipxe-container | $(ROOTFS_DIR)
 	@echo "Exporting iPXE boot loaders..."
@@ -183,7 +196,7 @@ ipxe: $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI)
 		-t $(IMAGE_BUILDER) \
 		-f containers/image-builder/Dockerfile \
 		containers/image-builder
-	@touch $@
+	$(call image_id,$(IMAGE_BUILDER)) >$@
 
 $(USB_IMAGE): rootfs .image-builder-container | $(IMAGE_DIR)
 	@echo "Creating bootable USB image..."
@@ -277,13 +290,24 @@ qemu-test: $(QCOW2_BOOT_IMAGE) $(QCOW2_TARGET_IMAGE) $(QCOW2_EMPTY_IMAGE)
 # the kernel, the initramfs, the dbrrg dracut module, the squashfs mount, the
 # overlay setup and systemd startup. Syslinux itself is covered by the
 # interactive qemu-test target.
+#
+# scripts/run-qemu-smoke.sh stops the VM QEMU_SMOKE_GRACE seconds after the
+# boot reaches multi-user.target; a boot that never does runs into
+# QEMU_SMOKE_TIMEOUT and is failed by check-boot-smoke.sh.
 QEMU_SMOKE_LOG := $(IMAGE_DIR)/qemu-smoke.log
 QEMU_SMOKE_TIMEOUT ?= 300
+QEMU_SMOKE_GRACE ?= 15
+# serial-getty@ttyS0 is masked because agetty's terminal reset, written to the
+# same serial line, has landed inside systemd's "Reached target
+# multi-user.target" line and failed a good boot. Nothing in the smoke test
+# logs in on the serial console.
+QEMU_SMOKE_APPEND := console=ttyS0,115200 systemd.unit=multi-user.target rd.info \
+	systemd.log_target=console systemd.mask=serial-getty@ttyS0.service
 
 qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 	@echo "Running headless boot smoke test..."
-	@rm -f $(QEMU_SMOKE_LOG)
-	-timeout $(QEMU_SMOKE_TIMEOUT) qemu-system-x86_64 \
+	scripts/run-qemu-smoke.sh $(QEMU_SMOKE_LOG) $(QEMU_SMOKE_TIMEOUT) $(QEMU_SMOKE_GRACE) -- \
+		qemu-system-x86_64 \
 		-machine type=q35,accel=kvm \
 		-cpu host,migratable=off \
 		-smp $(BUILD_JOBS) \
@@ -296,9 +320,27 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-drive file=$(QCOW2_BOOT_IMAGE),format=qcow2,if=virtio \
 		-kernel $(KERNEL) \
 		-initrd $(INITRD) \
-		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console" \
-		-serial file:$(QEMU_SMOKE_LOG)
+		-append "ramroot=tl/ramroot.sqsh $(QEMU_SMOKE_APPEND)"
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
+
+# Headless netboot smoke test: the rootfs artifacts are served over HTTP from
+# the host and booted with no disk, as a PXE client would boot them. Besides
+# the clean-boot checks it requires the MAC-based hostname and a home.pkg
+# request under the boot MAC; see scripts/run-qemu-netboot-smoke.sh.
+QEMU_NETBOOT_LOG := $(IMAGE_DIR)/qemu-netboot-smoke.log
+
+qemu-smoke-netboot: $(KERNEL) $(INITRD) $(SQUASHFS) | $(IMAGE_DIR)
+	@echo "Running headless netboot smoke test..."
+	scripts/run-qemu-netboot-smoke.sh $(ROOTFS_DIR) $(QEMU_NETBOOT_LOG) \
+		$(QEMU_SMOKE_TIMEOUT) $(QEMU_SMOKE_GRACE) \
+		-machine type=q35,accel=kvm \
+		-cpu host,migratable=off \
+		-smp $(BUILD_JOBS) \
+		-m 3G \
+		-display none \
+		-no-reboot \
+		-object rng-random,filename=/dev/urandom,id=rng0 \
+		-device virtio-rng-pci,rng=rng0
 
 # Host-side tests. No image, no container, no network: these run in under a
 # second and are the fast feedback loop for the scripts in overlay/usr/bin.
@@ -312,10 +354,14 @@ test: test-unit rootfs
 	@test/integration/test-session-packages.sh
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh
+	@test/integration/test-initramfs-commands.sh
+	@test/integration/test-boot-smoke-check.sh
 	@test/integration/test-ssh-hostkeys.sh
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh
 	@test/integration/test-field-report.sh
+	@test/integration/test-container-stamp.sh
+	@test/integration/test-make-clean.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of
@@ -329,8 +375,18 @@ test-runtime: rootfs
 		test/runtime
 	@test/runtime/test-labwc-runtime.sh $(PROJECT_NAME)-runtime-test:$(VERSION)
 
+# A symlinked artifacts directory points somewhere this checkout may not own
+# alone: `rm -rf artifacts/*` follows the link and empties the target, other
+# checkouts' builds included. clean therefore refuses it unless FORCE=1. The
+# stamps are this checkout's own and are always removed.
 clean:
-	rm -rf $(ARTIFACT_DIR)/*
 	rm -f .ubuntu-container .image-builder-container .ipxe-container
+	@if [ -L "$(ARTIFACT_DIR)" ] && [ "$(FORCE)" != 1 ]; then \
+		echo "$(ARTIFACT_DIR) is a symlink to $$(readlink "$(ARTIFACT_DIR)") - not emptying it."; \
+		echo "Removed the container stamps only. To empty the link target too:"; \
+		echo "  make clean FORCE=1"; \
+		exit 1; \
+	fi
+	rm -rf $(ARTIFACT_DIR)/*
 	@echo "✓ Cleaned artifacts"
 

@@ -91,6 +91,29 @@ else
     ok "dbrrg_record_boot_mac fails on a missing address file"
 fi
 
+# --- dbrrg_route_iface ---------------------------------------------------
+#
+# The boot MAC comes from the interface holding the default route, not from
+# the first /sys/class/net entry.
+
+routes='default via 10.0.2.2 dev enp0s3 proto dhcp src 10.0.2.15 metric 1024
+default via 192.168.1.1 dev enp1s0 proto dhcp src 192.168.1.9 metric 2048'
+got=$(printf '%s\n' "$routes" | dbrrg_route_iface)
+[[ "$got" == enp0s3 ]] && ok "dbrrg_route_iface picks the first default route's device" \
+    || bad "dbrrg_route_iface returned '$got', want enp0s3"
+if got=$(printf '' | dbrrg_route_iface); then
+    bad "dbrrg_route_iface succeeded with no default route (printed '$got')"
+else
+    ok "dbrrg_route_iface fails with no default route"
+fi
+
+MS_SRC="$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/mount-squashfs.sh"
+if grep -v '^[[:space:]]*#' "$MS_SRC" | grep -qE '\bdhclient\b|/sys/class/net/\*'; then
+    bad "mount-squashfs.sh still runs dhclient or picks the first /sys/class/net entry"
+else
+    ok "mount-squashfs.sh leaves DHCP to networkd and takes the lease's interface"
+fi
+
 # --- dbrrg_restore_home_from_file ---------------------------------------
 
 # Build a home archive the way dbrrg-save-home does: tar czf from inside
@@ -586,6 +609,64 @@ if [[ "$(cat "$nr/etc/hostname")" == "dbrrg-abcdef" \
 else
     bad "helpers failed under the initramfs PATH: hostnames=$(cat "$nr/etc/hostname" "$nr2/etc/hostname" 2>&1 | tr '\n' ' ') stderr=$(cat "$WORK/sb-stderr") warnings=$(cat "$WORK/warnings")"
 fi
+
+# --- dbrrg_finalize_upgrade, inside the same sandbox ---------------------
+#
+# The tl.new -> tl -> tl.old rotation called sync, which the initramfs did not
+# have, so every sync in it failed with "command not found" on the stick.
+
+mkesp() {  # mkesp <name>: fake ESP with tl, tl.old and a complete tl.new
+    local d="$WORK/$1"
+    mkdir -p "$d/tl" "$d/tl.old" "$d/tl.new"
+    echo current >"$d/tl/marker"; echo previous >"$d/tl.old/marker"
+    for f in vmlinuz initrd.img ramroot.sqsh; do echo new >"$d/tl.new/$f"; done
+    echo "$d"
+}
+
+esp=$(mkesp esp-rotate)
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>"$WORK/fu-stderr"; rc=$?
+if [[ $rc -eq 0 && -f "$esp/tl/ramroot.sqsh" && ! -e "$esp/tl.new" \
+   && "$(cat "$esp/tl.old/marker")" == current && ! -s "$WORK/fu-stderr" ]]; then
+    ok "dbrrg_finalize_upgrade rotates tl.new -> tl -> tl.old with only the initramfs's tools"
+else
+    bad "dbrrg_finalize_upgrade under the initramfs PATH: rc=$rc stderr=$(cat "$WORK/fu-stderr") esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+esp=$(mkesp esp-incomplete); rm "$esp/tl.new/ramroot.sqsh"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl.new" && "$(cat "$esp/tl/marker")" == current ]]; then
+    ok "an incomplete tl.new is left alone for the next boot"
+else
+    bad "incomplete tl.new: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+esp="$WORK/esp-none"; mkdir -p "$esp/tl"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl" && ! -e "$esp/tl.old" ]]; then
+    ok "no pending upgrade: nothing is touched"
+else
+    bad "no pending upgrade: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+# The pre-mount hook runs in parallel with the cmdline hook that writes
+# /tmp/dbrrg-ramroot, so it must read ramroot= from the command line itself.
+# Reading the file made every netboot wait 60s for an ESP.
+if grep -v '^[[:space:]]*#' "$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/finalize-upgrade.sh" \
+        | grep -q '/tmp/dbrrg-ramroot'; then
+    bad "finalize-upgrade.sh reads /tmp/dbrrg-ramroot, which may not exist yet in pre-mount"
+else
+    ok "finalize-upgrade.sh does not depend on the cmdline hook's /tmp/dbrrg-ramroot"
+fi
+
+# finalize-upgrade.sh itself mounts the ESP and so cannot run here; this
+# pins the two commands it was missing.
+for tool in sync rmdir; do
+    if [[ -x "$BIN/$tool" ]]; then
+        ok "module-setup.sh installs $tool"
+    else
+        bad "module-setup.sh does not install $tool, which finalize-upgrade needs"
+    fi
+done
 
 if [[ $fail -ne 0 ]]; then
     echo ""

@@ -161,22 +161,44 @@ if [ "" != "$BOOT_SRV" ]; then
   fi
   # GNU tar exits 1 for "file changed as we read it", which is normal for a
   # live home; only status 2 and above is a failed archive.
+  #
+  # tar runs as root, as on the USB branch below. As tluser, one file in the
+  # home that tluser cannot read (a root-owned 600 file left by a sudo
+  # command) made tar exit 2 and failed every netboot save with exit 5, while
+  # USB machines saved the same home fine. The archive is written through a
+  # redirect by this shell, so the temporary file stays tluser's to remove.
+  #
+  # The file comes from mktemp, not a fixed name. It used to be
+  # /tmp/$$.tar.gz, a name any local process can predict and create first:
+  # the archive holds the password hash and the SSH host private keys, and a
+  # file someone else made could be read, or swapped before the upload. Only
+  # the kernel's protected_regular/protected_symlinks settings stood in the
+  # way. mktemp creates a new file, mode 600, owned by tluser, and honours
+  # $TMPDIR. The traps remove it on every path out, error exits included.
+  if ! _dsh_archive=$(mktemp --tmpdir --suffix=.tar.gz dbrrg-save-home.XXXXXX); then
+    echo "dbrrg: could not create a temporary file - nothing was uploaded." >&2
+    exit 5
+  fi
+  # A signal ends a POSIX sh without running the EXIT trap, so turn one into
+  # an exit; logout can deliver SIGHUP while tar or curl is still running.
+  trap 'rm -f "$_dsh_archive"' EXIT
+  trap 'exit 5' HUP INT TERM
   _dsh_rc=0
-  tar --warning=no-file-changed "$@" -zcf "/tmp/$$.tar.gz" . || _dsh_rc=$?
+  sudo tar --warning=no-file-changed "$@" -zcf - . >"$_dsh_archive" || _dsh_rc=$?
   if [ "$_dsh_rc" -gt 1 ]; then
-    rm -f "/tmp/$$.tar.gz"
     echo "dbrrg: could not archive $DBRRG_HOME_DIR - nothing was uploaded." >&2
     exit 5
   fi
   # -f: without it curl exits 0 on an HTTP 4xx/5xx reply (413, 500, full
   # disk) and this script would report "home saved" for an upload the server
   # rejected, breaking the exit-5 contract.
-  if ! curl -f -sS -F "data=@/tmp/$$.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
-    rm -f "/tmp/$$.tar.gz"
+  #
+  # filename= fixes the name the server sees. Without it curl sends the local
+  # basename, which is now whatever mktemp picked.
+  if ! curl -f -sS -F "data=@$_dsh_archive;filename=home.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
     echo "dbrrg: upload to ${BASE_PATH} failed - your home was NOT saved." >&2
     exit 5
   fi
-  rm -f "/tmp/$$.tar.gz"
 # mountpoint, not -d: the initramfs creates the directory on every boot,
 # netboot included, so an unmounted one would take the archive into RAM and
 # report "home saved".

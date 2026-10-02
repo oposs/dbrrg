@@ -6,8 +6,8 @@ check() {
 }
 
 depends() {
-    # network-legacy is optional - we use it if available, but can work without it
-    # We mainly need basic networking tools (curl, which we install ourselves)
+    # Netboot networking comes from dracut's systemd-networkd and
+    # systemd-resolved modules, added with --add in containers/ubuntu/Dockerfile.
     return 0
 }
 
@@ -20,8 +20,17 @@ install() {
 
     inst_simple "$moddir/dbrrg-lib.sh" "/lib/dbrrg-lib.sh"
 
-    # Network tools
-    inst_multiple curl ip dhclient
+    # Order the pre-mount and mount hooks after the cmdline hook that sets
+    # root=dbrrg and writes /tmp/dbrrg-ramroot. See dbrrg-after-cmdline.conf.
+    local _unit
+    for _unit in dracut-pre-mount.service dracut-mount.service; do
+        inst_simple "$moddir/dbrrg-after-cmdline.conf" \
+            "$systemdsystemunitdir/$_unit.d/90-dbrrg-after-cmdline.conf"
+    done
+
+    # Network tools. DHCP is systemd-networkd's job (see mount-squashfs.sh);
+    # ip finds the interface that holds the lease.
+    inst_multiple curl ip
 
     # Archive tools for the home restore in restore_home(). GNU tar runs
     # gzip as a separate process for -z, so both are required.
@@ -33,6 +42,10 @@ install() {
     # Also install fsck.vfat symlink
     inst /sbin/fsck.vfat
     inst_multiple stat dd od tr mkdir mount umount cp ln chmod
+    # finalize-upgrade.sh and dbrrg_finalize_upgrade(): sync orders the FAT
+    # directory updates of the tl.new -> tl rotation, rmdir removes its
+    # temporary mount point. Neither is in dracut's base set.
+    inst_multiple sync rmdir
     inst_multiple udevadm awk grep sed lsblk
 
     # Kernel modules (only what we need)

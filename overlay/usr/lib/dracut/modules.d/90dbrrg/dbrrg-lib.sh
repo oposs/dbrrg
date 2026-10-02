@@ -135,10 +135,10 @@ dbrrg_home_url() {
 #
 # Before this, both halves derived the MAC independently from kernel ifindex
 # 2 - which agreed only because both ran in the booted system. ifindex
-# follows driver registration order, the initramfs loads a deliberately small
-# driver set, and mount-squashfs.sh picks its interface by /sys/class/net
-# glob order instead; on a machine with two NICs those can name different
-# devices. Recording what was actually used makes the two halves agree by
+# follows driver registration order, which the initramfs need not share; on
+# a machine with two NICs the two could name different devices.
+# mount-squashfs.sh passes the interface holding the default route (see
+# dbrrg_route_iface). Recording what was actually used makes the two halves agree by
 # construction. It is also the better identity: on netboot it is the
 # interface that demonstrably worked, having taken a DHCP lease and served
 # ramroot.sqsh.
@@ -164,6 +164,31 @@ dbrrg_record_boot_mac() {
     fi
 
     return 0
+}
+
+# dbrrg_route_iface
+#
+# Read `ip -o route show default` output on stdin and print the device of the
+# first default route, which is the one the kernel uses (the list is sorted by
+# metric). Prints nothing and returns 1 if there is none.
+#
+# On netboot this names the interface whose DHCP lease systemd-networkd
+# applied, which is what the boot MAC must come from - not the first entry
+# of /sys/class/net, which on a machine with two NICs can be the one without
+# a cable.
+dbrrg_route_iface() {
+    local _dri_line _dri_prev _dri_word
+    while read -r _dri_line; do
+        _dri_prev=""
+        for _dri_word in $_dri_line; do
+            if [ "$_dri_prev" = dev ]; then
+                printf '%s\n' "$_dri_word"
+                return 0
+            fi
+            _dri_prev=$_dri_word
+        done
+    done
+    return 1
 }
 
 # dbrrg_restore_home_from_file <archive> <target-home>
@@ -608,5 +633,84 @@ dbrrg_write_hostname() {
     { printf 'dbrrg-%s\n' "$_wh_suffix" > "$_wh_root/etc/hostname"; } \
         2>/dev/null || warn "dbrrg: could not write /etc/hostname"
 
+    return 0
+}
+
+# dbrrg_finalize_upgrade <efi-mount>
+#
+# Rotate a pending upgrade on the mounted ESP: tl.old is removed, tl becomes
+# tl.old, tl.new becomes tl. Called by finalize-upgrade.sh, which owns the
+# mount and unmount.
+#
+# Returns 0 when nothing was pending, the upgrade was finalized, or the boot
+# should continue regardless (a failed tl.new -> tl move is logged and left
+# for mount-squashfs to report). Returns 1 when tl.old or tl could not be
+# moved out of the way, which finalize-upgrade.sh has always passed on as its
+# exit status.
+#
+# The syncs are why module-setup.sh installs sync: they order the FAT
+# directory updates on the stick, so a power cut between two moves leaves a
+# bootable tl/ or tl.old/. The initramfs had no sync until 2026-10, so every
+# one of these calls failed with "command not found" while the offline tests
+# passed on the dev host.
+dbrrg_finalize_upgrade() {
+    local _dfu_efi="$1"
+    local _dfu_file
+
+    # Check if upgrade is pending (tl.new exists with required files)
+    [ -d "$_dfu_efi/tl.new" ] || return 0
+
+    for _dfu_file in vmlinuz initrd.img ramroot.sqsh; do
+        if [ ! -f "$_dfu_efi/tl.new/$_dfu_file" ]; then
+            dbrrg_log "finalize-upgrade: tl.new/$_dfu_file missing - aborting (keeping tl.new for next attempt)"
+            return 0
+        fi
+    done
+
+    info "finalize-upgrade: Finalizing pending upgrade (tl.new -> tl -> tl.old)"
+    dbrrg_log "finalize-upgrade: Starting rotation"
+
+    if [ -d "$_dfu_efi/tl.old" ]; then
+        info "finalize-upgrade: Removing old fallback (tl.old)"
+        if ! rm -rf "$_dfu_efi/tl.old"; then
+            dbrrg_log "finalize-upgrade: Failed to remove tl.old"
+            return 1
+        fi
+    fi
+
+    if [ -d "$_dfu_efi/tl" ]; then
+        info "finalize-upgrade: Moving current to fallback (tl -> tl.old)"
+        if ! mv "$_dfu_efi/tl" "$_dfu_efi/tl.old"; then
+            dbrrg_log "finalize-upgrade: Failed to move tl to tl.old"
+            return 1
+        fi
+        # Sync after critical move to ensure FAT32 directory entries are written
+        sync
+    fi
+
+    info "finalize-upgrade: Activating new version (tl.new -> tl)"
+    if ! mv "$_dfu_efi/tl.new" "$_dfu_efi/tl"; then
+        dbrrg_log "finalize-upgrade: CRITICAL - Failed to move tl.new to tl!"
+        # Try to restore - this is critical for bootability
+        if [ -d "$_dfu_efi/tl.old" ]; then
+            if mv "$_dfu_efi/tl.old" "$_dfu_efi/tl"; then
+                dbrrg_log "finalize-upgrade: Recovered by restoring tl.old -> tl"
+                sync
+            else
+                dbrrg_log "finalize-upgrade: FATAL - Recovery failed! System may be unbootable!"
+                dbrrg_log "finalize-upgrade: tl.new exists but couldn't be moved, tl.old couldn't be restored"
+            fi
+        else
+            dbrrg_log "finalize-upgrade: FATAL - No tl.old to restore! System may be unbootable!"
+        fi
+        # Don't fail - let boot continue and possibly fail at mount-squashfs.
+        # This gives the user a chance to see the error messages.
+        return 0
+    fi
+
+    sync
+
+    info "finalize-upgrade: Upgrade finalized successfully"
+    dbrrg_log "finalize-upgrade: Complete - now booting from new tl/"
     return 0
 }

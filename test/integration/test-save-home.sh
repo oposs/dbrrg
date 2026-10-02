@@ -52,10 +52,24 @@ done
 exit "${DBRRG_TEST_TAR_RC:-0}"
 STUB
 
+# curl also records whether the file it was told to upload exists at that
+# moment, so a test can tell an upload of the archive from one of nothing.
 cat >"$STUBS/curl" <<'STUB'
 #!/bin/bash
 echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 0
+for a in "$@"; do
+    case "$a" in
+        data=@*) f=${a#data=@}; [ -f "${f%%;*}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
+    esac
+done
+# Stand in for an upload that hangs, so a test can signal the script while it
+# waits. The sleep is bounded and in the script's process group, so a signal
+# to the group ends it and nothing outlives the test.
+if [ -n "${DBRRG_TEST_CURL_BLOCK:-}" ]; then
+    : >"$DBRRG_TEST_CURL_BLOCK"
+    /bin/sleep 30
+fi
+exit "${DBRRG_TEST_CURL_RC:-0}"
 STUB
 
 # The real mountpoint(1) needs a real mount. The test ESP is a plain directory;
@@ -115,15 +129,17 @@ run_save_home() {
     DBRRG_EXCLUDE_DEFAULT="${DBRRG_EXCLUDE_DEFAULT_OVERRIDE:-/etc/dbrrg/save-home-exclude}" \
     DBRRG_TEST_GZIP_FAIL="${DBRRG_TEST_GZIP_FAIL:-}" \
     DBRRG_TEST_TAR_RC="${DBRRG_TEST_TAR_RC:-0}" \
+    DBRRG_TEST_CURL_RC="${DBRRG_TEST_CURL_RC:-0}" \
+    TMPDIR="$WORK/tmp" \
     PATH="$STUBS:$PATH" \
         "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err"
     echo $?
 }
 
 setup() {
-    rm -rf "$WORK/home" "$WORK/root" "$WORK/state" \
+    rm -rf "$WORK/home" "$WORK/root" "$WORK/state" "$WORK/tmp" \
            "$WORK/tar.log" "$WORK/curl.log" "$WORK/sudo.log"
-    mkdir -p "$WORK/home/tluser" "$WORK/root" "$WORK/state"
+    mkdir -p "$WORK/home/tluser" "$WORK/root" "$WORK/state" "$WORK/tmp"
     echo "the user's wifi password" >"$WORK/home/tluser/.dbrrg-sessionrc"
     echo "root's shell config"      >"$WORK/root/.bashrc"
     # Netboot: a boot server in the cmdline selects the upload path, which
@@ -216,24 +232,12 @@ fi
 # refusal, which is exit 1. The menu would otherwise tell the user their home
 # directory does not exist when the upload merely failed.
 setup
-cat >"$STUBS/curl" <<'STUB'
-#!/bin/bash
-echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 7
-STUB
-chmod +x "$STUBS/curl"
-rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+rc=$(DBRRG_TEST_CURL_RC=7 run_save_home "$WORK/root" "$WORK/home/tluser")
 if [[ "$rc" == "5" ]]; then
     ok "exit 5 when the upload was attempted and failed"
 else
     bad "failed upload exited $rc (wanted 5)"
 fi
-cat >"$STUBS/curl" <<'STUB'
-#!/bin/bash
-echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
-exit 0
-STUB
-chmod +x "$STUBS/curl"
 
 # ---------------------------------------------------------------- test 11
 setup
@@ -397,6 +401,133 @@ if [[ "$rc" == "4" ]] && ! grep -q "home saved" "$WORK/out" &&
     ok "an existing but unmounted ESP directory exits 4 and writes nothing"
 else
     bad "unmounted ESP gave exit $rc, esp: $(ls -A "$WORK/esp")"
+fi
+
+# --------------------------------------------------------------- test 22
+# Both branches archive as root. The netboot branch ran tar as tluser, so one
+# file in the home that tluser cannot read (a root-owned 600 file) failed
+# every netboot save with exit 5 while USB saved the same home.
+setup
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q '^sudo tar ' "$WORK/sudo.log" 2>/dev/null; then
+    ok "netboot save runs tar through sudo, like the USB save"
+else
+    bad "netboot tar did not go through sudo (exit $rc, sudo log: $(cat "$WORK/sudo.log" 2>/dev/null))"
+fi
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q '^sudo tar ' "$WORK/sudo.log" 2>/dev/null; then
+    ok "USB save runs tar through sudo"
+else
+    bad "USB tar did not go through sudo (exit $rc)"
+fi
+
+# --------------------------------------------------------------- test 23
+# A netboot archive that tar could not write is exit 5 and is never uploaded.
+setup
+rc=$(DBRRG_TEST_TAR_RC=2 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ ! -s "$WORK/curl.log" ]]; then
+    ok "netboot tar exit 2 is exit 5 and uploads nothing"
+else
+    bad "netboot tar exit 2 gave exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null)"
+fi
+
+# --------------------------------------------------------------- test 24
+# The netboot archive is staged in a file from mktemp under $TMPDIR, never at
+# a predictable /tmp/<pid>.tar.gz that another process could create first,
+# and that file is gone again on every way out of the script.
+fixed_tmp=$(grep -nE '^[^#]*(/tmp/|\$\$)' "$SCRIPT")
+if [[ -z "$fixed_tmp" ]]; then
+    ok "dbrrg-save-home names no fixed path under /tmp and no \$\$ file name"
+else
+    bad "dbrrg-save-home still uses a predictable temp path: $fixed_tmp"
+fi
+setup
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+upload=$(grep -o 'data=@[^ ]*' "$WORK/curl.log" 2>/dev/null | head -1)
+upload=${upload#data=@}
+upload=${upload%%;*}
+if [[ "$rc" == "0" ]] && [[ "$upload" == "$WORK/tmp/"* ]] &&
+   grep -q upload-file-exists "$WORK/curl.log"; then
+    ok "netboot upload sends a file mktemp made under \$TMPDIR"
+else
+    bad "netboot upload sent '$upload' (exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null))"
+fi
+# The server sees a fixed name, not the mktemp one.
+if grep -qF ';filename=home.tar.gz ' "$WORK/curl.log"; then
+    ok "netboot upload names the file home.tar.gz"
+else
+    bad "netboot upload does not name the file home.tar.gz: $(cat "$WORK/curl.log")"
+fi
+if [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed after a successful upload"
+else
+    bad "left behind after a successful upload: $(ls -A "$WORK/tmp")"
+fi
+setup
+rc=$(DBRRG_TEST_CURL_RC=22 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed when the upload fails"
+else
+    bad "failed upload: exit $rc, left behind: $(ls -A "$WORK/tmp")"
+fi
+setup
+rc=$(DBRRG_TEST_TAR_RC=2 run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+    ok "the temporary archive is removed when tar fails"
+else
+    bad "failed tar: exit $rc, left behind: $(ls -A "$WORK/tmp")"
+fi
+
+# --------------------------------------------------------------- test 25
+# Logout can send SIGHUP while the upload is still running. A POSIX sh killed
+# by a signal skips its EXIT trap, so without `trap 'exit 5' HUP INT TERM` the
+# archive - password hash and SSH host private keys - stays behind in $TMPDIR
+# and the menu sees a signal status instead of 5.
+#
+# The script runs in its own process group (setsid) and the whole group gets
+# the signal, as a terminal hangup delivers it. Every wait has a deadline.
+setup
+ready="$WORK/curl-ready"
+rm -f "$ready"
+DBRRG_TEST_TAR_LOG="$WORK/tar.log" \
+DBRRG_TEST_CURL_LOG="$WORK/curl.log" \
+DBRRG_TEST_SUDO_LOG="$WORK/sudo.log" \
+DBRRG_TEST_CURL_BLOCK="$ready" \
+HOME="$WORK/root" \
+DBRRG_HOME_DIR="$WORK/home/tluser" \
+DBRRG_STATE_DIR="$WORK/state" \
+DBRRG_CMDLINE="$WORK/cmdline" \
+TMPDIR="$WORK/tmp" \
+PATH="$STUBS:$PATH" \
+    setsid "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err" &
+pid=$!
+for _ in $(seq 100); do
+    [[ -e "$ready" ]] && break
+    sleep 0.1
+done
+staged=$(ls -A "$WORK/tmp")
+kill -HUP -- "-$pid" 2>/dev/null
+for _ in $(seq 100); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+done
+if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL -- "-$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    bad "SIGHUP during the upload: the script did not end within 10s"
+else
+    wait "$pid"
+    rc=$?
+    if [[ -e "$ready" ]] && [[ -n "$staged" ]] && [[ "$rc" == 5 ]] &&
+       [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+        ok "SIGHUP during the upload exits 5 and removes the archive"
+    else
+        bad "SIGHUP during the upload: exit $rc, staged '$staged', left behind '$(ls -A "$WORK/tmp")', curl reached: $([[ -e "$ready" ]] && echo yes || echo no)"
+    fi
 fi
 
 exit $fail

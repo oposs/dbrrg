@@ -26,26 +26,40 @@ if is_remote_url "$ramroot"; then
 
     mount -t ramfs ramfs "$download_dir" || die "Failed to create ramfs"
 
-    info "Waiting for network..."
+    # The network is brought up by dracut's systemd-networkd module (DHCP on
+    # every wired interface). parse-dbrrg.sh sets rd.neednet=1 for an http
+    # ramroot, which makes systemd-networkd-wait-online run before this hook.
+    # This hook used to run dhclient itself, but the initramfs never had
+    # dhclient-script, so the lease was never applied and every netboot
+    # failed with "Download failed".
+    #
+    # The boot MAC is taken from the interface holding the default route,
+    # i.e. the one whose lease was applied. The wait is a fallback for a
+    # wait-online that gave up early; it is bounded so a machine without a
+    # network still reaches the download error below instead of hanging.
+    boot_iface=""
+    _waited=0
+    while :; do
+        boot_iface=$(ip -o route show default 2>/dev/null | dbrrg_route_iface)
+        [ -n "$boot_iface" ] && break
+        [ "$_waited" -ge 60 ] && break
+        [ $((_waited % 10)) -eq 0 ] && \
+            dbrrg_log "dbrrg: waiting for a default route (${_waited}/60s)"
+        sleep 1
+        _waited=$((_waited + 1))
+    done
 
-    # Bring up first available network interface
-    for iface in /sys/class/net/*; do
-        # basename is not in the initramfs
-        iface_name=${iface##*/}
-        [ "$iface_name" = "lo" ] && continue
-        info "Bringing up interface $iface_name"
-        ip link set "$iface_name" up
-        dhclient -v "$iface_name" || true
+    if [ -n "$boot_iface" ]; then
+        dbrrg_log "dbrrg: network is up on $boot_iface"
         # Record which interface this actually was, so dbrrg-save-home posts
         # the home archive back under the same MAC restore_home fetched it
         # with. See dbrrg_record_boot_mac() for why both halves must not
         # derive it independently.
-        dbrrg_record_boot_mac "/sys/class/net/$iface_name/address" \
+        dbrrg_record_boot_mac "/sys/class/net/$boot_iface/address" \
             "$DBRRG_STATE" || true
-        break
-    done
-
-    sleep 2  # Give DHCP time to complete
+    else
+        warn "dbrrg: no default route after 60s - the download will fail"
+    fi
 
     info "Downloading squashfs..."
     curl -f -L --progress-bar --connect-timeout 30 --max-time 600 \

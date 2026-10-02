@@ -70,8 +70,9 @@ stage_to_keystore() {
     mkdir -p "$KEYSTORE" 2>/dev/null || return 1
     cp -p "$SSH_DIR"/ssh_host_* "$KEYSTORE"/ 2>/dev/null || return 1
 
-    # Must end up readable by tluser: dbrrg-save-home tars $HOME as tluser,
-    # and a root-owned unreadable file would be silently dropped.
+    # Owned by tluser like the rest of the home. dbrrg-save-home archives as
+    # root now, but until 2026-10 the netboot save ran tar as tluser, and an
+    # unreadable root-owned file failed the whole save.
     chown -R "$KEY_OWNER:$KEY_OWNER" "$KEYSTORE" 2>/dev/null || \
         echo "dbrrg-ssh-hostkeys: WARNING could not chown $KEYSTORE" >&2
     chmod 700 "$KEYSTORE" 2>/dev/null || true
