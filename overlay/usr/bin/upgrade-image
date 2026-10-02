@@ -77,6 +77,22 @@ def _unregister_cleanup(cleanup_type: str, path: str) -> None:
     _cleanup_items = [(t, p) for t, p in _cleanup_items if not (t == cleanup_type and p == path)]
 
 
+def _is_or_holds_mount(path: str) -> bool:
+    """True if path is a mount point or has a mount anywhere beneath it"""
+    if os.path.ismount(path):
+        return True
+    prefix = os.path.realpath(path).rstrip("/") + "/"
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) > 4 and fields[4].replace("\\040", " ").startswith(prefix):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def _do_cleanup() -> None:
     """Cleanup all registered items (called on exit)"""
     for cleanup_type, path in reversed(_cleanup_items):
@@ -84,7 +100,16 @@ def _do_cleanup() -> None:
             if cleanup_type == "mount":
                 run_cmd(["umount", path], check=False, capture=True)
             elif cleanup_type == "dir":
-                shutil.rmtree(path, ignore_errors=True)
+                # Entries run in reverse, so a "mount" on this path has had
+                # its umount attempted already. If that failed (busy), the
+                # directory IS the stick: rmtree would delete its tl/, tl.old/
+                # and home.tar.gz. Leave it. rmtree is only right for scratch
+                # dirs (work_dir) the script filled itself, never a mount point.
+                if _is_or_holds_mount(path):
+                    print(f"WARNING: {path} is still mounted - leaving it "
+                          f"untouched", file=sys.stderr)
+                else:
+                    shutil.rmtree(path, ignore_errors=True)
         except Exception:
             pass
 

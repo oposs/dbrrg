@@ -764,5 +764,45 @@ class TestSavingAnnounced(unittest.TestCase):
         self.assertEqual(order[:2], ["log", "run"])
 
 
+class TestCleanupNeverWipesAMount(unittest.TestCase):
+    """_do_cleanup must not rmtree a directory that is still a mount point."""
+
+    def setUp(self):
+        self._saved = list(ui._cleanup_items)
+        ui._cleanup_items[:] = []
+        self.tmp = tempfile.mkdtemp(prefix="cleanup-test-",
+                                    dir=os.environ.get("TMPDIR"))
+        self.sentinel = os.path.join(self.tmp, "home.tar.gz")
+        with open(self.sentinel, "w") as f:
+            f.write("saved home")
+
+    def tearDown(self):
+        ui._cleanup_items[:] = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cleanup(self, umount_rc, still_mounted):
+        ui._register_cleanup("dir", self.tmp)
+        ui._register_cleanup("mount", self.tmp)
+        out, err = io.StringIO(), io.StringIO()
+        fake = subprocess.CompletedProcess([], umount_rc, "", "busy")
+        with mock.patch.object(ui, "run_cmd", return_value=fake), \
+             mock.patch.object(ui.os.path, "ismount",
+                               return_value=still_mounted), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            ui._do_cleanup()
+        return out.getvalue() + err.getvalue()
+
+    def test_a_directory_whose_umount_failed_is_left_alone(self):
+        text = self._cleanup(1, True)
+        self.assertTrue(os.path.exists(self.sentinel))
+        self.assertIn("WARNING", text)
+        self.assertIn(self.tmp, text)
+
+    def test_a_cleanly_unmounted_directory_is_removed(self):
+        text = self._cleanup(0, False)
+        self.assertFalse(os.path.exists(self.tmp))
+        self.assertEqual(text, "")
+
+
 if __name__ == "__main__":
     unittest.main()
