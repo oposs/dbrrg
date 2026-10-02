@@ -288,4 +288,17 @@ else
     ok "un-dockerize.service leaves the hostname to the initramfs"
 fi
 
+# basename, cut, head and install are not in the initramfs (module-setup.sh
+# does not install them). A call there fails silently: cut gave the hostname
+# "dbrrg-", basename left the netboot interface name empty so no boot-mac was
+# recorded. Comments may mention them.
+for f in mount-squashfs.sh dbrrg-lib.sh setup-overlay.sh; do
+    if grep -v '^[[:space:]]*#' "overlay/usr/lib/dracut/modules.d/90dbrrg/$f" \
+       | grep -qE '(^|[|;&(`]|\$\()[[:space:]]*(basename|cut)([[:space:]]|$)'; then
+        bad "$f calls basename/cut, which the initramfs does not ship"
+    else
+        ok "$f uses no basename/cut command"
+    fi
+done
+
 exit $fail

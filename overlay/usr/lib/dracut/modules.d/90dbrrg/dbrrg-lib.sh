@@ -555,26 +555,58 @@ setup_loop_device() {
 
 fi  # end of _DBRRG_LIB_LOADED guard
 
-# dbrrg_write_hostname <newroot> <machine_id>
+# dbrrg_write_hostname <newroot> <machine_id> <state_dir>
 #
-# Write dbrrg-<first 6 characters of machine_id> to <newroot>/etc/hostname.
-# The machine-id is persisted on the ESP, so the name is stable per machine
-# and differs between machines.
+# Write dbrrg-<six hex characters> to <newroot>/etc/hostname.
 #
-# Never fails the boot: an id shorter than 6 characters or a failed write is
-# warned about and skipped, and the function always returns 0.
+# Netboot: <state_dir>/boot-mac holds the MAC of the interface that fetched
+# ramroot.sqsh. There is no ESP, so the machine-id is new every boot, while
+# the MAC is stable and is already the identity the home archive is keyed on.
+# The name is the LAST six hex digits of it; the first six are the vendor OUI,
+# identical across a fleet of one hardware model.
+# USB boot: no boot-mac is recorded; the first six characters of the
+# machine-id (persisted on the ESP) are used.
+#
+# Only shell builtins and tr are used: the initramfs ships no cut, basename,
+# head or install, and a missing tool here once produced the hostname "dbrrg-".
+#
+# Never fails the boot: an unusable MAC falls back to the machine-id, an
+# unusable machine-id or a failed write is warned about and skipped, and the
+# function always returns 0.
 dbrrg_write_hostname() {
     local _wh_root="$1"
     local _wh_id="$2"
+    local _wh_state="${3:-}"
+    local _wh_mac="" _wh_suffix=""
 
-    if [ "${#_wh_id}" -lt 6 ]; then
-        warn "dbrrg: machine-id too short for a hostname, skipping"
-        return 0
+    if [ -n "$_wh_state" ] && [ -r "$_wh_state/boot-mac" ]; then
+        read -r _wh_mac < "$_wh_state/boot-mac" 2>/dev/null || true
+        if [ -n "$_wh_mac" ]; then
+            _wh_mac=$(printf '%s' "$_wh_mac" | tr -d ':' | tr 'A-Z' 'a-z')
+            if [ "${#_wh_mac}" -ge 6 ]; then
+                _wh_suffix=${_wh_mac#"${_wh_mac%??????}"}
+            fi
+            case "$_wh_suffix" in
+                ''|*[!0-9a-f]*)
+                    warn "dbrrg: unusable boot MAC, using the machine-id for the hostname"
+                    _wh_suffix="" ;;
+            esac
+        fi
     fi
 
-    { printf 'dbrrg-%s\n' "$(printf '%s' "$_wh_id" | cut -c1-6)" \
-        > "$_wh_root/etc/hostname"; } 2>/dev/null || \
-        warn "dbrrg: could not write /etc/hostname"
+    if [ -z "$_wh_suffix" ]; then
+        if [ "${#_wh_id}" -ge 6 ]; then
+            _wh_suffix=${_wh_id%"${_wh_id#??????}"}
+        fi
+        case "$_wh_suffix" in
+            ''|*[!0-9a-f]*)
+                warn "dbrrg: no usable MAC or machine-id for a hostname, skipping"
+                return 0 ;;
+        esac
+    fi
+
+    { printf 'dbrrg-%s\n' "$_wh_suffix" > "$_wh_root/etc/hostname"; } \
+        2>/dev/null || warn "dbrrg: could not write /etc/hostname"
 
     return 0
 }

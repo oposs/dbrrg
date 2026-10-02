@@ -30,7 +30,8 @@ if is_remote_url "$ramroot"; then
 
     # Bring up first available network interface
     for iface in /sys/class/net/*; do
-        iface_name=$(basename "$iface")
+        # basename is not in the initramfs
+        iface_name=${iface##*/}
         [ "$iface_name" = "lo" ] && continue
         info "Bringing up interface $iface_name"
         ip link set "$iface_name" up

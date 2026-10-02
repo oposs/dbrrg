@@ -487,6 +487,106 @@ else
     bad "unwritable /etc: rc=$rc warnings=$(cat "$WORK/warnings")"
 fi
 
+# --- dbrrg_write_hostname: boot MAC ---
+
+mkstate() { mkdir -p "$WORK/$1/etc" "$WORK/$1/state"; echo "$WORK/$1"; }
+MID=0123456789abcdef0123456789abcdef
+
+nr=$(mkstate mac-ok); echo "52:54:00:AB:CD:EF" >"$nr/state/boot-mac"
+dbrrg_write_hostname "$nr" "$MID" "$nr/state"; rc=$?
+if [[ $rc -eq 0 && "$(cat "$nr/etc/hostname")" == "dbrrg-abcdef" ]]; then
+    ok "boot MAC 52:54:00:AB:CD:EF -> dbrrg-abcdef (last six, lowercase, not the OUI)"
+else
+    bad "boot MAC hostname: rc=$rc content=$(cat "$nr/etc/hostname" 2>&1)"
+fi
+
+nr=$(mkstate mac-none)
+dbrrg_write_hostname "$nr" "$MID" "$nr/state"; rc=$?
+if [[ $rc -eq 0 && "$(cat "$nr/etc/hostname")" == "dbrrg-012345" ]]; then
+    ok "no boot-mac (USB boot) -> machine-id name"
+else
+    bad "no boot-mac: rc=$rc content=$(cat "$nr/etc/hostname" 2>&1)"
+fi
+
+nr=$(mkstate mac-bad); echo "zz" >"$nr/state/boot-mac"; : >"$WORK/warnings"
+dbrrg_write_hostname "$nr" "$MID" "$nr/state"; rc=$?
+if [[ $rc -eq 0 && "$(cat "$nr/etc/hostname")" == "dbrrg-012345" && -s "$WORK/warnings" ]]; then
+    ok "malformed MAC -> warns, falls back to machine-id"
+else
+    bad "malformed MAC: rc=$rc content=$(cat "$nr/etc/hostname" 2>&1) warnings=$(cat "$WORK/warnings")"
+fi
+
+nr=$(mkstate mac-nonhex); echo "52:54:00:ab:cd:gh" >"$nr/state/boot-mac"; : >"$WORK/warnings"
+dbrrg_write_hostname "$nr" "$MID" "$nr/state"
+if [[ "$(cat "$nr/etc/hostname")" == "dbrrg-012345" && -s "$WORK/warnings" ]]; then
+    ok "non-hex MAC digits -> warns, falls back to machine-id"
+else
+    bad "non-hex MAC: content=$(cat "$nr/etc/hostname" 2>&1)"
+fi
+
+nr=$(mkstate mac-both); echo "aa:bb:cc:11:22:33" >"$nr/state/boot-mac"
+dbrrg_write_hostname "$nr" "$MID" "$nr/state"
+if [[ "$(cat "$nr/etc/hostname")" == "dbrrg-112233" ]]; then
+    ok "MAC wins over machine-id when both are present"
+else
+    bad "MAC vs machine-id: content=$(cat "$nr/etc/hostname" 2>&1)"
+fi
+
+nr=$(mkstate mac-neither); echo "zz" >"$nr/state/boot-mac"; : >"$WORK/warnings"
+dbrrg_write_hostname "$nr" "" "$nr/state"; rc=$?
+if [[ $rc -eq 0 && ! -e "$nr/etc/hostname" && -s "$WORK/warnings" ]]; then
+    ok "neither MAC nor machine-id usable -> no hostname, warned, returns 0"
+else
+    bad "neither usable: rc=$rc file=$(ls "$nr/etc")"
+fi
+
+# --- only the initramfs's command set -----------------------------------
+#
+# The dev host has cut, basename, head and install; the initramfs does not.
+# dbrrg_write_hostname used `cut` and passed every test here while writing
+# the hostname "dbrrg-" at boot. So run the initramfs helpers with a PATH
+# holding only what module-setup.sh installs (parsed, not hard-coded) plus
+# the dracut base tools the helpers rely on. A call to anything else fails.
+
+MS="$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/module-setup.sh"
+BIN="$WORK/initramfs-bin"; mkdir -p "$BIN"
+installed=$(grep -E '^[[:space:]]*inst_multiple' "$MS" | sed 's/#.*//' \
+    | tr ' ' '\n' | grep -vE '^(inst_multiple|-o|)$|^/' || true)
+for tool in $installed cat rm mv sleep; do
+    src=$(command -v "$tool" 2>/dev/null) && [[ "$src" == /* ]] && \
+        ln -sf "$src" "$BIN/$tool"
+done
+
+if [[ -x "$BIN/tr" && -x "$BIN/mkdir" ]] \
+   && ! PATH="$BIN" command -v cut >/dev/null 2>&1 \
+   && ! PATH="$BIN" command -v basename >/dev/null 2>&1; then
+    ok "initramfs PATH sandbox holds module-setup.sh's tools, and no cut/basename"
+else
+    bad "initramfs PATH sandbox is wrong (is cut/basename listed in inst_multiple?)"
+fi
+
+nr=$(mkstate sb-mac); echo "52:54:00:AB:CD:EF" >"$nr/state/boot-mac"
+nr2=$(mkstate sb-id)
+mkdir -p "$WORK/sb-net/home/tluser"; echo "x: 1" >"$WORK/sb-net/home/tluser/wifi.yaml"
+echo "52:54:00:ab:cd:ef" >"$WORK/sb-addr"
+: >"$WORK/warnings"
+(
+    PATH="$BIN"
+    dbrrg_write_hostname "$nr" "$MID" "$nr/state"
+    dbrrg_write_hostname "$nr2" "$MID" "$nr2/state"
+    dbrrg_record_boot_mac "$WORK/sb-addr" "$WORK/sb-state"
+    install_local_network "$WORK/sb-net"
+) 2>"$WORK/sb-stderr"
+if [[ "$(cat "$nr/etc/hostname")" == "dbrrg-abcdef" \
+   && "$(cat "$nr2/etc/hostname")" == "dbrrg-012345" \
+   && "$(cat "$WORK/sb-state/boot-mac" 2>&1)" == "52:54:00:ab:cd:ef" \
+   && -f "$WORK/sb-net/etc/netplan/wifi.yaml" \
+   && ! -s "$WORK/sb-stderr" && ! -s "$WORK/warnings" ]]; then
+    ok "hostname, boot-mac and local-network helpers work with only the initramfs's tools"
+else
+    bad "helpers failed under the initramfs PATH: hostnames=$(cat "$nr/etc/hostname" "$nr2/etc/hostname" 2>&1 | tr '\n' ' ') stderr=$(cat "$WORK/sb-stderr") warnings=$(cat "$WORK/warnings")"
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - initramfs home helpers"
