@@ -305,6 +305,7 @@ test: rootfs
 	@test/integration/test-session-packages.sh
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh
+	@test/integration/test-initramfs-commands.sh
 	@test/integration/test-ssh-hostkeys.sh
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh

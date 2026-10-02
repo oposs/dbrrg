@@ -571,7 +571,12 @@ offline test passes on the dev host - that is how the hostname shipped as
 the `tl.new` upgrade rotation failed. `sync` and `rmdir` are now installed
 explicitly for that rotation. `test/integration/test-initramfs-home.sh` runs
 the helpers, `dbrrg_finalize_upgrade` included, with PATH restricted to that
-set.
+set. `test/integration/test-initramfs-commands.sh` checks every command the
+90dbrrg hooks call against `lsinitramfs` of the built `initrd.img`, so a new
+call to a missing tool fails `make test` even where no offline test runs it.
+Its command extractor (`test/integration/initramfs-commands.py`) is a
+heuristic: it skips comments, quoted text, `for` lists and `case` patterns,
+and descends into `$( )`; a command it cannot see is not checked.
 
 ### /etc/hostname is excluded from the squashfs and written by the initramfs
 
