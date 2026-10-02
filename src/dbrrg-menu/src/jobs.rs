@@ -50,7 +50,7 @@ impl SaveOutcome {
             }
             SaveOutcome::ServerUnreachable => "Not saved: the boot server cannot be reached.".to_string(),
             SaveOutcome::NowhereToStore => "Not saved: this machine has no place to store a home directory.".to_string(),
-            SaveOutcome::Failed => "The save failed. The previously stored home is unchanged.".to_string(),
+            SaveOutcome::Failed => "Not saved: the save was attempted and failed. The session log says why.".to_string(),
             SaveOutcome::Broken(why) => format!("Not saved: {why}."),
         }
     }
@@ -138,6 +138,12 @@ mod tests {
         assert!(matches!(SaveOutcome::from_status(Some(127)), SaveOutcome::Broken(_)));
         assert!(matches!(SaveOutcome::from_status(None), SaveOutcome::Broken(_)));
         assert!(!SaveOutcome::NowhereToStore.saved());
+        // On netboot a failed upload may have changed what the server
+        // stores, so the message claims nothing about the stored home.
+        assert_eq!(
+            SaveOutcome::Failed.message(),
+            "Not saved: the save was attempted and failed. The session log says why."
+        );
     }
 
     #[test]
