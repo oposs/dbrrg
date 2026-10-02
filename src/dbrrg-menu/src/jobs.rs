@@ -110,13 +110,11 @@ pub fn run(name: &str, argv: &[String], save_on_exit: bool) -> JobResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdir::TestDir;
     use std::fs;
 
-    fn dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("dbrrg-menu-jobs-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
+    fn dir(tag: &str) -> TestDir {
+        TestDir::new("jobs", tag)
     }
 
     // No test here writes a script and then executes it. Another test thread
@@ -161,17 +159,17 @@ mod tests {
         let d = dir("save");
         let ok = Paths {
             save_home: "/bin/true".into(),
-            state_dir: d.clone(),
+            state_dir: d.to_path_buf(),
         };
         assert_eq!(save(&ok), SaveOutcome::Saved);
         let one = Paths {
             save_home: "/bin/false".into(),
-            state_dir: d.clone(),
+            state_dir: d.to_path_buf(),
         };
         assert_eq!(save(&one), SaveOutcome::HomeMissing);
         let missing = Paths {
             save_home: d.join("nope"),
-            state_dir: d.clone(),
+            state_dir: d.to_path_buf(),
         };
         assert!(matches!(save(&missing), SaveOutcome::Broken(_)));
     }

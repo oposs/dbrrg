@@ -346,10 +346,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdir::TestDir;
 
-    fn roots(tag: &str) -> IconRoots {
-        let base = std::env::temp_dir().join(format!("dbrrg-menu-icons-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
+    /// The directory goes when the returned guard drops, so callers bind it
+    /// to a named variable for the length of the test.
+    fn roots(tag: &str) -> (TestDir, IconRoots) {
+        let base = TestDir::new("icons", tag);
         let r = IconRoots {
             dbrrg: base.join("dbrrg"),
             hicolor: base.join("hicolor"),
@@ -366,7 +368,7 @@ mod tests {
         ] {
             fs::create_dir_all(base.join(d)).unwrap();
         }
-        r
+        (base, r)
     }
 
     fn touch(p: &Path) {
@@ -375,7 +377,7 @@ mod tests {
 
     #[test]
     fn resolution_order() {
-        let r = roots("order");
+        let (_dir, r) = roots("order");
         touch(&r.dbrrg.join("usb.svg"));
         touch(&r.hicolor.join("scalable/apps/usb.svg"));
         assert_eq!(
@@ -415,7 +417,7 @@ mod tests {
 
     #[test]
     fn absolute_and_fallback() {
-        let r = roots("abs");
+        let (_dir, r) = roots("abs");
         let p = r.dbrrg.join("logo.png");
         touch(&p);
         assert_eq!(resolve(p.to_str().unwrap(), &r), Some(p));
@@ -439,7 +441,7 @@ mod tests {
 
     #[test]
     fn renders_lucide_svg_in_the_given_colour() {
-        let r = roots("render");
+        let (_dir, r) = roots("render");
         let p = r.dbrrg.join("power.svg");
         fs::write(
             &p,
@@ -460,7 +462,7 @@ mod tests {
     // a regression cannot run unbounded.
     #[test]
     fn embedded_images_are_not_loaded() {
-        let r = roots("embed");
+        let (_dir, r) = roots("embed");
         let sub = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="#ff0000"/></svg>"##;
         let sub_path = r.dbrrg.join("sub.svg");
         fs::write(&sub_path, sub).unwrap();
@@ -522,7 +524,7 @@ mod tests {
     }
 
     fn render_text(tag: &str, text: &str) -> Result<egui::ColorImage, String> {
-        let r = roots(tag);
+        let (_dir, r) = roots(tag);
         let p = r.dbrrg.join("x.svg");
         fs::write(&p, text).unwrap();
         render(&p, 24, [0; 3], false)
@@ -556,7 +558,7 @@ mod tests {
     // thread's stack; RENDER_STACK is sized from this.
     #[test]
     fn the_longest_allowed_chain_renders_on_the_icon_thread() {
-        let r = roots("chain-max");
+        let (_dir, r) = roots("chain-max");
         let p = r.dbrrg.join("x.svg");
         fs::write(&p, pattern_chain((MAX_SVG_ELEMENTS - 4) / 2)).unwrap();
         let out = render_all(vec![p], Duration::from_secs(60), Duration::from_secs(60), |p| {
@@ -589,7 +591,7 @@ mod tests {
             r#"<filter id="f"><feTurbulence baseFrequency="0.01" numOctaves="100000000"/></filter><rect width="24" height="24" filter="url(#f)"/>"#,
         );
         let css = svg(r#"<rect width="24" height="24" style="filter: blur(2px)"/>"#);
-        let r = roots("filter");
+        let (_dir, r) = roots("filter");
         let mut jobs = Vec::new();
         for (name, text) in [("turbulence", turbulence), ("css", css)] {
             let p = r.dbrrg.join(format!("{name}.svg"));
@@ -678,7 +680,7 @@ mod tests {
 
     #[test]
     fn refuses_png_bombs_before_decoding() {
-        let r = roots("bomb");
+        let (_dir, r) = roots("bomb");
         let p = r.dbrrg.join("big.png");
         let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
         b.extend_from_slice(&100_000u32.to_be_bytes());

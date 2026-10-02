@@ -8,5 +8,7 @@ pub mod icons;
 pub mod jobs;
 pub mod menu;
 pub mod raster;
+#[cfg(test)]
+mod testdir;
 pub mod tiles;
 pub mod ui;

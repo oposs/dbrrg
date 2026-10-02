@@ -399,13 +399,11 @@ pub fn command_line(tile: &Tile) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdir::TestDir;
     use std::os::unix::fs::symlink;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("dbrrg-menu-tiles-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
+    fn tmpdir(tag: &str) -> TestDir {
+        TestDir::new("tiles", tag)
     }
 
     fn src(name: &str, text: &str) -> SourceFile {
