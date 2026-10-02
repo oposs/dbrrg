@@ -138,6 +138,18 @@ pub fn is_symbolic(path: &Path, roots: &IconRoots) -> bool {
             .is_some_and(|n| n.ends_with("-symbolic.svg"))
 }
 
+/// Parser options that load nothing a tile icon names. usvg's default `<image
+/// href>` resolver does an unbounded `fs::read` of any path (`/dev/zero` never
+/// ends, a FIFO blocks) and decodes `data:` URIs of any declared size, which
+/// would bypass `MAX_ICON_BYTES` and `MAX_PNG_SIDE` from a file the user can
+/// write. Icons need no embedded images, so both resolvers return nothing.
+fn svg_options() -> usvg::Options<'static> {
+    let mut opts = usvg::Options::default();
+    opts.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    opts.image_href_resolver.resolve_data = Box::new(|_, _, _| None);
+    opts
+}
+
 /// Rasterise the icon at `path` into a `side` x `side` premultiplied RGBA
 /// image, keeping its aspect ratio and centring it.
 pub fn render(path: &Path, side: u32, rgb: [u8; 3], symbolic: bool) -> Result<egui::ColorImage, String> {
@@ -147,7 +159,7 @@ pub fn render(path: &Path, side: u32, rgb: [u8; 3], symbolic: bool) -> Result<eg
     if is_svg {
         let text = String::from_utf8(bytes).map_err(|_| "SVG is not UTF-8".to_string())?;
         let text = recolour_svg(&text, symbolic, rgb);
-        let tree = usvg::Tree::from_str(&text, &usvg::Options::default()).map_err(|e| e.to_string())?;
+        let tree = usvg::Tree::from_str(&text, &svg_options()).map_err(|e| e.to_string())?;
         let size = tree.size();
         let scale = side as f32 / size.width().max(size.height());
         let dx = (side as f32 - size.width() * scale) / 2.0;
@@ -295,6 +307,46 @@ mod tests {
             img.pixels.iter().any(|c| c.r() > 200 && c.g() == 0 && c.a() > 200),
             "red stroke drawn"
         );
+    }
+
+    // A referenced SVG is the one image kind usvg loads without a raster
+    // decoder, so drawing it is observable; the files are small and real, so
+    // a regression cannot run unbounded.
+    #[test]
+    fn embedded_images_are_not_loaded() {
+        let r = roots("embed");
+        let sub = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="#ff0000"/></svg>"##;
+        let sub_path = r.dbrrg.join("sub.svg");
+        fs::write(&sub_path, sub).unwrap();
+        let data_uri = format!("data:image/svg+xml;base64,{}", b64(sub.as_bytes()));
+        for (tag, href) in [("file", sub_path.to_str().unwrap().to_string()), ("data", data_uri)] {
+            let p = r.dbrrg.join(format!("outer-{tag}.svg"));
+            fs::write(
+                &p,
+                format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="24" height="24"><image width="24" height="24" xlink:href="{href}"/></svg>"#
+                ),
+            )
+            .unwrap();
+            let img = render(&p, 24, [0; 3], false).unwrap();
+            assert!(img.pixels.iter().all(|c| c.a() == 0), "{tag} image drawn");
+        }
+    }
+
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in data.chunks(3) {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= c.len() {
+                    out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
     }
 
     #[test]
