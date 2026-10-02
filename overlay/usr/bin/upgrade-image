@@ -10,6 +10,7 @@ import atexit
 import glob
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -77,17 +78,27 @@ def _unregister_cleanup(cleanup_type: str, path: str) -> None:
     _cleanup_items = [(t, p) for t, p in _cleanup_items if not (t == cleanup_type and p == path)]
 
 
+MOUNTINFO = "/proc/self/mountinfo"
+
+
+def _unescape_mountinfo(field: str) -> str:
+    """Decode the octal escapes (\\040 space, \\011 tab, \\012 newline, \\134 backslash)"""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
 def _is_or_holds_mount(path: str) -> bool:
     """True if path is a mount point or has a mount anywhere beneath it"""
     if os.path.ismount(path):
         return True
-    prefix = os.path.realpath(path).rstrip("/") + "/"
+    real = os.path.realpath(path).rstrip("/")
     try:
-        with open("/proc/self/mountinfo") as f:
+        with open(MOUNTINFO) as f:
             for line in f:
                 fields = line.split()
-                if len(fields) > 4 and fields[4].replace("\\040", " ").startswith(prefix):
-                    return True
+                if len(fields) > 4:
+                    mnt = _unescape_mountinfo(fields[4])
+                    if mnt == real or mnt.startswith(real + "/"):
+                        return True
     except OSError:
         pass
     return False
@@ -296,7 +307,11 @@ def examine_efi_partition(efi_partition: str) -> Tuple[bool, bool, bool]:
     except Exception:
         pass
 
-    shutil.rmtree(tmp_mount, ignore_errors=True)
+    # rmdir, never rmtree: if the umount failed this is still the stick
+    try:
+        os.rmdir(tmp_mount)
+    except OSError:
+        pass
     _unregister_cleanup("dir", tmp_mount)
 
     return is_dbrrg, has_tl_old, has_tl_new

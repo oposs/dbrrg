@@ -804,5 +804,28 @@ class TestCleanupNeverWipesAMount(unittest.TestCase):
         self.assertEqual(text, "")
 
 
+class TestMountinfoDetection(unittest.TestCase):
+    def _check(self, path, lines):
+        info = tempfile.NamedTemporaryFile("w", suffix=".mountinfo", delete=False)
+        self.addCleanup(os.unlink, info.name)
+        info.write("".join(
+            f"36 35 8:1 / {m} rw - vfat /dev/sdb1 rw\n" for m in lines))
+        info.close()
+        with mock.patch.object(ui, "MOUNTINFO", info.name):
+            return ui._is_or_holds_mount(path)
+
+    def test_a_space_escaped_mount_below_is_found(self):
+        self.assertTrue(self._check("/nonexistent/a b", ["/nonexistent/a\\040b/sub"]))
+
+    def test_an_exact_match_is_found(self):
+        self.assertTrue(self._check("/nonexistent/a", ["/nonexistent/a"]))
+
+    def test_a_sibling_with_a_common_prefix_is_not_a_match(self):
+        self.assertFalse(self._check("/nonexistent/b", ["/nonexistent/bc"]))
+
+    def test_tab_newline_backslash_escapes_decode(self):
+        self.assertEqual(ui._unescape_mountinfo("a\\011b\\012c\\134d"), "a\tb\nc\\d")
+
+
 if __name__ == "__main__":
     unittest.main()
