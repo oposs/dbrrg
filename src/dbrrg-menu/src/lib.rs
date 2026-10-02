@@ -2,4 +2,5 @@
 
 pub mod bounded;
 pub mod desktop;
+pub mod icons;
 pub mod tiles;
