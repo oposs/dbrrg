@@ -203,6 +203,24 @@ The system implements home directory persistence across reboots:
   offline. This is the same exposure the SSH host *private* keys in
   `~/.dbrrg-ssh-host-keys` already carry, which is why it was accepted.
 
+- `dbrrg-save-home` leaves out what makes the archive slow to unpack on every
+  boot (a 233MB Claude binary did this): patterns come from
+  `~/.save-home-exclude`, falling back to `/etc/dbrrg/save-home-exclude`, and
+  a user file replaces the shipped one rather than extending it.
+- On USB it writes to the ESP the initramfs already mounted at
+  `/run/dbrrg/storage/efi`, never a second mount by partlabel - every stick
+  carries that label, so with two sticks plugged in the home can land on the
+  wrong one. The branch tests `mountpoint -q`, not `-d`: the directory exists
+  on every boot, netboot included, and an unmounted one would take the
+  archive into RAM. The write is atomic: `home.tar.gz.new`, then `gzip -t`,
+  then `mv` over `home.tar.gz`, all through `sudo` because the ESP's vfat
+  mount is root-owned. The ESP therefore has to hold two archives briefly.
+  The netboot upload uses `curl -f`, otherwise an HTTP 413/500 reply is exit 0.
+- Exit codes of `dbrrg-save-home`: 0 saved; 1 home directory missing; 2 this
+  boot's restore failed, so saving would overwrite the stored home with a
+  default one; 3 boot server unreachable; 4 nowhere to store; 5 save
+  attempted and failed. `test/integration/test-save-home.sh` guards each.
+
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.
 
 ## Network Boot vs USB Boot
@@ -258,8 +276,8 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Eight rules in this repository look like ordinary configuration but are
-load-bearing. All but the last (patched labwc) have each caused a real
+Eleven rules in this repository look like ordinary configuration but are
+load-bearing. All but the patched-labwc one have each caused a real
 shipped-image bug; that one is preventive - nothing has shipped broken from
 it yet, but reverting it silently would ship regressions in both patched
 behaviours.
@@ -530,6 +548,40 @@ the design spec for why it is unnecessary.
 without that dependency would not trigger a rebuild, leaving `make test` and
 `make test-runtime` validating a stale image while still reporting green.
 
+### Per-machine network config is installed by the initramfs, never by a unit
+
+The netplan systemd generator creates `netplan-wpa-<if>.service` when the
+manager starts. A `~/wifi.yaml` or `~/wg0.conf` copied into place after that
+never gets a WPA unit, and WiFi never associates. `install_local_network()`
+in `dbrrg-lib.sh`, called from `setup-overlay.sh` after `restore_home`, does
+the copy (and creates the `wg-quick@wg0` wants link) before switch-root, so
+the generator sees the files. Netplan files are mode 0600 through a `chmod`
+in `containers/ubuntu/Dockerfile`, because git stores only 644 and 755.
+Do not move the copy into a `dbrrg-local-network.service`.
+`test/integration/test-field-report.sh` asserts that unit does not exist and
+`test/integration/test-session-packages.sh` asserts mode 600 in the image.
+
+### The initramfs has no cut, basename, head, install, sync, rmdir, wc or date
+
+Only what the `inst_multiple` lines in `90dbrrg/module-setup.sh` install,
+plus dracut's base set, exists there. Shell builtins (`printf`, `test`,
+`read`) are fine. A missing command fails silently at boot while every
+offline test passes on the dev host - that is how the hostname shipped as
+`dbrrg` and why netboot never recorded the boot MAC.
+`test/integration/test-initramfs-home.sh` runs the helpers with PATH
+restricted to that set. Known and unfixed: `finalize-upgrade.sh` still calls
+`sync` and `rmdir`.
+
+### /etc/hostname is excluded from the squashfs and written by the initramfs
+
+podman bind-mounts `/etc/hostname` in the build container, so `mksquashfs`
+packed the container ID (`fa0ad0f31bfa`) and every machine had the same name.
+`dbrrg_write_hostname` writes `dbrrg-` plus the first six hex digits of the
+persisted machine-id on USB, or the last six hex digits of the boot MAC on
+netboot, where the machine-id is new every boot. It runs before switch-root,
+so PID 1 reads the name and `%H` in `un-dockerize.service` is correct.
+`test/integration/test-field-report.sh` guards the exclusion and the call.
+
 ## Known Limitations
 
 Open items found during the Ubuntu 26.04/Wayland/PipeWire upgrade. These are
@@ -603,6 +655,14 @@ that fails respawns the session in a loop with nothing on screen.
 
 What does record it is the session log, which carries labwc's own line:
 `[ERROR] [../src/server.c:167] spawned child 12 exited with 10`.
+
+### The session waits for the GPU before it starts
+
+`dbrrg-wait-kms.service` waits up to 20 s for a real KMS driver before the
+tty1 autologin: i915 is omitted from the initrd and binds only after
+switch-root, and simpledrm's `card0` alone does not count. `10-dbrrg-session.sh`
+retries labwc once after another wait-kms, so a machine with no GPU waits about
+40 s before the failure screen.
 
 ### Rebooting from inside the session needs sudo
 
