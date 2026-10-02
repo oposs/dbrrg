@@ -58,6 +58,14 @@ echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
 exit 0
 STUB
 
+# The real mountpoint(1) needs a real mount. The test ESP is a plain directory;
+# it counts as mounted only when it holds a .test-mounted marker.
+cat >"$STUBS/mountpoint" <<'STUB'
+#!/bin/bash
+[ "$1" = "-q" ] && shift
+[ -e "$1/.test-mounted" ]
+STUB
+
 cat >"$STUBS/ping" <<'STUB'
 #!/bin/bash
 exit 0
@@ -235,13 +243,20 @@ if [[ "$rc" == "0" ]] && grep -q "home saved" "$WORK/out"; then
 else
     bad "successful save exited $rc, stdout: $(cat "$WORK/out")"
 fi
+# A stub cannot emulate an HTTP status, so the honest check is that curl is
+# asked to fail on one (-f); without it a 413/500 reply exits 0.
+if grep -qE '^curl (.* )?-f( |$)|^curl -[a-zA-Z]*f' "$WORK/curl.log"; then
+    ok "netboot upload passes -f so an HTTP error fails the save"
+else
+    bad "curl was called without -f: $(cat "$WORK/curl.log")"
+fi
 
 # --------------------------------------------------------------- test 12
 # The archive is unpacked synchronously by the initramfs on every boot, so an
 # unfiltered home makes every startup slower. A 233MB Claude binary did this.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 printf './.cache\n./.local/share/claude/versions\n' >"$WORK/exclude-default"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
      DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$WORK/exclude-default" \
@@ -256,7 +271,7 @@ fi
 # A user file replaces the shipped defaults.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 printf './my-own-junk\n' >"$WORK/home/tluser/.save-home-exclude"
 printf './.cache\n' >"$WORK/exclude-default"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
@@ -273,7 +288,7 @@ fi
 # into tar arguments breaks every path with a space in it.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 printf './My Documents/big\n' >"$WORK/home/tluser/.save-home-exclude"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
      run_save_home "$WORK/root" "$WORK/home/tluser")
@@ -288,7 +303,7 @@ fi
 # matches nothing or everything depending on the tar version.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 : >"$WORK/home/tluser/.save-home-exclude"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
      DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$WORK/nonexistent" \
@@ -304,7 +319,7 @@ fi
 # copy of the user's home and the machine's SSH identity.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 echo "THE GOOD OLD ARCHIVE" >"$WORK/esp/home.tar.gz"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
      DBRRG_TEST_GZIP_FAIL=1 \
@@ -323,7 +338,7 @@ fi
 # plugged in the home can land on the wrong one.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
      run_save_home "$WORK/root" "$WORK/home/tluser")
 if [[ "$rc" == "0" ]] && [[ -f "$WORK/esp/home.tar.gz" ]] &&
@@ -346,7 +361,7 @@ fi
 # so status 1 with a complete archive must still be a successful save.
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" DBRRG_TEST_TAR_RC=1 \
      run_save_home "$WORK/root" "$WORK/home/tluser")
 if [[ "$rc" == "0" ]] && [[ -f "$WORK/esp/home.tar.gz" ]] &&
@@ -359,7 +374,7 @@ fi
 # --------------------------------------------------------------- test 20
 setup
 echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
-mkdir -p "$WORK/esp"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
 echo "THE GOOD OLD ARCHIVE" >"$WORK/esp/home.tar.gz"
 rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" DBRRG_TEST_TAR_RC=2 \
      run_save_home "$WORK/root" "$WORK/home/tluser")
@@ -367,6 +382,21 @@ if [[ "$rc" == "5" ]] && grep -q "THE GOOD OLD ARCHIVE" "$WORK/esp/home.tar.gz";
     ok "tar exit 2 is a failed save and keeps the old archive"
 else
     bad "tar exit 2 gave exit $rc"
+fi
+
+# --------------------------------------------------------------- test 21
+# The ESP directory exists but nothing is mounted on it (the initramfs creates
+# it on every boot). The archive must not land in RAM and be called saved.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+rm -rf "$WORK/esp"; mkdir -p "$WORK/esp"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "4" ]] && ! grep -q "home saved" "$WORK/out" &&
+   [[ -z "$(ls -A "$WORK/esp")" ]]; then
+    ok "an existing but unmounted ESP directory exits 4 and writes nothing"
+else
+    bad "unmounted ESP gave exit $rc, esp: $(ls -A "$WORK/esp")"
 fi
 
 exit $fail

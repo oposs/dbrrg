@@ -168,13 +168,19 @@ if [ "" != "$BOOT_SRV" ]; then
     echo "dbrrg: could not archive $DBRRG_HOME_DIR - nothing was uploaded." >&2
     exit 5
   fi
-  if ! curl -F "data=@/tmp/$$.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
+  # -f: without it curl exits 0 on an HTTP 4xx/5xx reply (413, 500, full
+  # disk) and this script would report "home saved" for an upload the server
+  # rejected, breaking the exit-5 contract.
+  if ! curl -f -sS -F "data=@/tmp/$$.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
     rm -f "/tmp/$$.tar.gz"
     echo "dbrrg: upload to ${BASE_PATH} failed - your home was NOT saved." >&2
     exit 5
   fi
   rm -f "/tmp/$$.tar.gz"
-elif [ -d "$DBRRG_EFI_MOUNT" ]; then
+# mountpoint, not -d: the initramfs creates the directory on every boot,
+# netboot included, so an unmounted one would take the archive into RAM and
+# report "home saved".
+elif mountpoint -q "$DBRRG_EFI_MOUNT"; then
   # Write beside the live archive and rename over it only once the new one is
   # known good.
   #
