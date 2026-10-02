@@ -32,7 +32,7 @@ install() {
     inst_multiple mkfs.ext4 fsck.fat
     # Also install fsck.vfat symlink
     inst /sbin/fsck.vfat
-    inst_multiple stat dd od tr mkdir mount umount
+    inst_multiple stat dd od tr mkdir mount umount cp ln chmod
     inst_multiple udevadm awk grep sed lsblk
 
     # Kernel modules (only what we need)

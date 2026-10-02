@@ -64,6 +64,10 @@ info "Machine-id set: $machine_id"
 restore_home "$NEWROOT" "$DBRRG_STORAGE/efi" "$DBRRG_STATE" \
     "$(cat /tmp/dbrrg-ramroot 2>/dev/null)"
 
+# Install ~/wifi.yaml and ~/wg0.conf into /etc now, before systemd starts in
+# the new root, so the netplan generator sees them. Always returns 0.
+install_local_network "$NEWROOT"
+
 echo "$zram_dev" > "$DBRRG_STATE/zram-device"
 
 return 0

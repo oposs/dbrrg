@@ -382,6 +382,70 @@ else
     bad "restore_home called die(): $(cat "$WORK/deaths")"
 fi
 
+# --- install_local_network ---
+WGUNIT=/usr/lib/systemd/system/wg-quick@.service
+
+mkhome() {  # mkhome <name>: fake newroot with a home, prints its path
+    mkdir -p "$WORK/$1/home/tluser"
+    echo "$WORK/$1"
+}
+
+nr=$(mkhome net-both)
+echo "network: {version: 2}" >"$nr/home/tluser/wifi.yaml"
+echo "[Interface]" >"$nr/home/tluser/wg0.conf"
+install_local_network "$nr"; rc=$?
+[[ $rc -eq 0 ]] && ok "install_local_network returns 0 with both files"     || bad "install_local_network returned $rc with both files"
+if cmp -s "$nr/home/tluser/wifi.yaml" "$nr/etc/netplan/wifi.yaml" \
+        && [[ "$(stat -c%a "$nr/etc/netplan/wifi.yaml")" == 600 ]]; then
+    ok "wifi.yaml copied to etc/netplan, mode 600"
+else
+    bad "wifi.yaml not copied intact with mode 600"
+fi
+[[ "$(stat -c%a "$nr/etc/wireguard" 2>/dev/null)" == 700 ]] \
+    && ok "etc/wireguard is mode 700" || bad "etc/wireguard is not mode 700"
+if cmp -s "$nr/home/tluser/wg0.conf" "$nr/etc/wireguard/wg0.conf" \
+        && [[ "$(stat -c%a "$nr/etc/wireguard/wg0.conf")" == 600 ]]; then
+    ok "wg0.conf copied to etc/wireguard, mode 600"
+else
+    bad "wg0.conf not copied intact with mode 600"
+fi
+wl="$nr/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service"
+if [[ -L "$wl" && "$(readlink "$wl")" == "$WGUNIT" ]]; then
+    ok "wg-quick@wg0 wants symlink points at the template unit"
+else
+    bad "wg-quick@wg0 wants symlink missing or wrong"
+fi
+
+nr=$(mkhome net-none)
+install_local_network "$nr"; rc=$?
+if [[ $rc -eq 0 && ! -e "$nr/etc/netplan/wifi.yaml" && ! -e "$nr/etc/wireguard" \
+        && ! -L "$nr/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service" ]]; then
+    ok "no files: returns 0 and creates nothing"
+else
+    bad "no files: rc=$rc or something was created"
+fi
+
+nr=$(mkhome net-wg)
+echo "[Interface]" >"$nr/home/tluser/wg0.conf"
+install_local_network "$nr"; rc=$?
+if [[ $rc -eq 0 && ! -e "$nr/etc/netplan/wifi.yaml" \
+        && -f "$nr/etc/wireguard/wg0.conf" \
+        && -L "$nr/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service" ]]; then
+    ok "wg0.conf alone installs the WireGuard half only"
+else
+    bad "wg0.conf alone: rc=$rc, wrong result"
+fi
+
+nr=$(mkhome net-symlink)
+echo secret >"$WORK/target.yaml"
+ln -s "$WORK/target.yaml" "$nr/home/tluser/wifi.yaml"
+install_local_network "$nr"; rc=$?
+if [[ $rc -eq 0 && ! -e "$nr/etc/netplan/wifi.yaml" ]]; then
+    ok "symlinked wifi.yaml is rejected, returns 0"
+else
+    bad "symlinked wifi.yaml was installed or rc=$rc"
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - initramfs home helpers"

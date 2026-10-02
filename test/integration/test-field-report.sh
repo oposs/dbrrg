@@ -149,4 +149,41 @@ else
     bad "udevadm failure case: exit $rc, stderr: $(cat "$WORK/err3")"
 fi
 
+# --- 2. per-machine network config outside the session ---
+SO=overlay/usr/lib/dracut/modules.d/90dbrrg/setup-overlay.sh
+l_restore=$(grep -n 'restore_home' "$SO" | grep -v '^[0-9]*:#' | head -1 | cut -d: -f1)
+l_net=$(grep -n 'install_local_network' "$SO" | grep -v '^[0-9]*:#' | head -1 | cut -d: -f1)
+if [[ -n "$l_restore" && -n "$l_net" && "$l_net" -gt "$l_restore" ]]; then
+    ok "setup-overlay.sh calls install_local_network after restore_home"
+else
+    bad "setup-overlay.sh must call install_local_network after restore_home (restore=$l_restore net=$l_net)"
+fi
+
+if [[ "$(stat -c%a overlay/etc/netplan/ethernet.yaml)" == 600 ]]; then
+    ok "ethernet.yaml ships mode 600"
+else
+    bad "ethernet.yaml must be mode 600 (netplan: permissions too open)"
+fi
+
+RC=overlay/home/tluser/.dbrrg-sessionrc
+if ! grep -q 'sudo netplan apply' "$RC"; then
+    ok ".dbrrg-sessionrc no longer tells the user to run netplan apply"
+else
+    bad ".dbrrg-sessionrc still contains sudo netplan apply"
+fi
+if grep -q 'wifi.yaml' "$RC" && grep -q 'wg0.conf' "$RC"; then
+    ok ".dbrrg-sessionrc mentions wifi.yaml and wg0.conf"
+else
+    bad ".dbrrg-sessionrc must mention wifi.yaml and wg0.conf"
+fi
+
+# A unit that copies the files cannot work: the netplan systemd generator
+# emits netplan-wpa-<iface>.service when systemd starts, before any unit
+# runs, so files installed later get .network files but no WPA unit.
+if [[ ! -e overlay/etc/systemd/system/dbrrg-local-network.service ]]; then
+    ok "no dbrrg-local-network.service (the copy belongs in the initramfs)"
+else
+    bad "dbrrg-local-network.service exists; it runs too late for the netplan generator"
+fi
+
 exit $fail

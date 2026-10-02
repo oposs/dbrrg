@@ -49,14 +49,27 @@
 # launches and is saved and restored with your home in exactly the same way.
 #
 # ---------------------------------------------------------------------------
-# NETWORK
+# NETWORK - nothing to do here any more
 # ---------------------------------------------------------------------------
-# WiFi, as in the old setup - edit ~/wifi.yaml first, then:
+# WiFi and WireGuard are set up during boot, before the network starts. You do
+# not need to run anything from this file.
 #
-#   sudo cp wifi.yaml /etc/netplan/
-#   sudo chown root /etc/netplan/*
-#   sudo chmod 400 /etc/netplan/*
-#   sudo netplan apply
+# Just put the files in your home directory:
+#
+#   ~/wifi.yaml   a netplan config for your wireless interface
+#   ~/wg0.conf    a WireGuard config, started as wg-quick@wg0
+#
+# They are saved with your home when you quit the ThinLinc client, restored on
+# the next boot, and copied into /etc/netplan and /etc/wireguard by the boot
+# image before systemd starts. A change takes effect on the next reboot.
+# Check what happened with:
+#
+#   ls -l /etc/netplan /etc/wireguard
+#   systemctl status wg-quick@wg0 netplan-wpa-*
+#
+# This deliberately does NOT run from this file. Network configuration applied
+# from the session is gone on a machine whose session failed to start - which
+# is when you most need to reach it.
 #
 # ---------------------------------------------------------------------------
 # Add your own commands below.

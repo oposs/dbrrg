@@ -374,6 +374,66 @@ restore_home() {
     return 0
 }
 
+# install_local_network <newroot>
+#
+# Copy the per-machine ~/wifi.yaml and ~/wg0.conf out of the restored home
+# into the new root's /etc, and enable wg-quick@wg0. /etc is a fresh RAM
+# overlay every boot, so nothing else puts them there.
+#
+# This is in the initramfs, not in the session and not in a unit, because the
+# netplan systemd generator emits netplan-wpa-<iface>.service when systemd
+# starts in the real root, before any unit runs. A unit that installed
+# wifi.yaml would only produce .network files and no WPA unit, so WiFi would
+# never associate; a runtime "systemctl enable" would not start wg-quick on
+# that boot either. Doing it here also keeps the network independent of the
+# graphical session, which is how a machine with a broken session stays
+# reachable.
+#
+# The two halves are independent: a missing wifi.yaml must not stop the VPN.
+# Symlinks are refused because in the initramfs an absolute link target
+# resolves against the initramfs root, not the new root.
+#
+# ALWAYS returns 0. It is called from setup-overlay.sh, where a non-zero
+# return aborts the boot.
+install_local_network() {
+    local _iln_root="$1"
+    local _iln_home="$_iln_root/home/tluser"
+    local _iln_wants="$_iln_root/etc/systemd/system/multi-user.target.wants"
+
+    if [ -f "$_iln_home/wifi.yaml" ] && [ ! -L "$_iln_home/wifi.yaml" ]; then
+        dbrrg_log "dbrrg: installing wifi.yaml into /etc/netplan"
+        # netplan ignores a file others can read, hence 600.
+        if mkdir -p "$_iln_root/etc/netplan" && \
+           cp "$_iln_home/wifi.yaml" "$_iln_root/etc/netplan/wifi.yaml" && \
+           chmod 600 "$_iln_root/etc/netplan/wifi.yaml"; then
+            :
+        else
+            warn "dbrrg: could not install wifi.yaml"
+        fi
+    else
+        dbrrg_log "dbrrg: no usable ~/wifi.yaml, skipping"
+    fi
+
+    if [ -f "$_iln_home/wg0.conf" ] && [ ! -L "$_iln_home/wg0.conf" ]; then
+        dbrrg_log "dbrrg: installing wg0.conf into /etc/wireguard"
+        if mkdir -p "$_iln_root/etc/wireguard" && \
+           chmod 700 "$_iln_root/etc/wireguard" && \
+           cp "$_iln_home/wg0.conf" "$_iln_root/etc/wireguard/wg0.conf" && \
+           chmod 600 "$_iln_root/etc/wireguard/wg0.conf" && \
+           mkdir -p "$_iln_wants" && \
+           ln -sf /usr/lib/systemd/system/wg-quick@.service \
+               "$_iln_wants/wg-quick@wg0.service"; then
+            :
+        else
+            warn "dbrrg: could not install wg0.conf"
+        fi
+    else
+        dbrrg_log "dbrrg: no usable ~/wg0.conf, skipping"
+    fi
+
+    return 0
+}
+
 verify_squashfs() {
     local sqsh_path="$1"
 
