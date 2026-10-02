@@ -5,13 +5,24 @@ use crate::bounded::read_bounded;
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use resvg::usvg;
 use std::fs;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Icon files larger than this are not read.
 pub const MAX_ICON_BYTES: u64 = 1024 * 1024;
 /// A PNG declaring a larger side is refused before it is decoded, so a small
 /// file cannot ask for gigabytes.
 pub const MAX_PNG_SIDE: u32 = 4096;
+/// Deeper SVG nesting is refused. Among the 20000 SVGs under
+/// /usr/share/icons on a desktop host the deepest nests 15 levels.
+pub const MAX_SVG_DEPTH: usize = 64;
+/// SVGs with more elements are refused. The largest icon on the same host
+/// has 6741.
+pub const MAX_SVG_ELEMENTS: usize = 10_000;
 
 /// Where `Icon=` names are looked up.
 #[derive(Debug, Clone)]
@@ -138,6 +149,76 @@ pub fn is_symbolic(path: &Path, roots: &IconRoots) -> bool {
             .is_some_and(|n| n.ends_with("-symbolic.svg"))
 }
 
+/// Index just past the first `needle` at or after `from`, or the end.
+fn skip_past(b: &[u8], from: usize, needle: &[u8]) -> usize {
+    b.get(from..)
+        .and_then(|rest| rest.windows(needle.len()).position(|w| w == needle))
+        .map_or(b.len(), |at| from + at + needle.len())
+}
+
+/// Refuse an SVG whose shape alone can kill the process, before any parser
+/// sees it. Parsing and rendering recurse once per nesting level and per
+/// `url(#…)` reference followed, and running out of stack is an
+/// abort that no `catch_unwind` and no deadline can turn into a letter: the
+/// menu would die on every boot. The depth limit covers nesting; the element
+/// limit bounds how long a chain of references can be, and RENDER_STACK is
+/// sized for the longest one it lets through. An entity can expand into
+/// markup this scan never sees, and icons have no use for entities.
+///
+/// The scan only has to be right for files roxmltree would accept: a file
+/// it misreads is either refused here or rejected by the parser.
+fn svg_shape(text: &str, max_depth: usize, max_elements: usize) -> Result<(), String> {
+    if text.contains("<!ENTITY") {
+        return Err("SVG declares entities".to_string());
+    }
+    let b = text.as_bytes();
+    let (mut i, mut depth, mut elements) = (0, 0usize, 0usize);
+    while let Some(at) = b[i..].iter().position(|&c| c == b'<') {
+        i += at;
+        let rest = &b[i..];
+        i = if rest.starts_with(b"<!--") {
+            skip_past(b, i + 4, b"-->")
+        } else if rest.starts_with(b"<![CDATA[") {
+            skip_past(b, i + 9, b"]]>")
+        } else if rest.starts_with(b"<?") {
+            skip_past(b, i + 2, b"?>")
+        } else if rest.starts_with(b"<!") {
+            skip_past(b, i + 2, b">")
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            skip_past(b, i + 2, b">")
+        } else {
+            // A start tag. Attribute values may hold `>` and `/>`.
+            let mut j = i + 1;
+            let mut quote = None;
+            while j < b.len() {
+                match (quote, b[j]) {
+                    (Some(q), c) if c == q => quote = None,
+                    (None, c @ (b'"' | b'\'')) => quote = Some(c),
+                    (None, b'>') => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            elements += 1;
+            if elements > max_elements {
+                return Err(format!("more than {max_elements} elements"));
+            }
+            if depth >= max_depth {
+                return Err(format!("elements nested deeper than {max_depth}"));
+            }
+            if b[j - 1] != b'/' {
+                depth += 1;
+            }
+            j + 1
+        };
+        if i >= b.len() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Parser options that load nothing a tile icon names. usvg's default `<image
 /// href>` resolver does an unbounded `fs::read` of any path (`/dev/zero` never
 /// ends, a FIFO blocks) and decodes `data:` URIs of any declared size, which
@@ -158,8 +239,16 @@ pub fn render(path: &Path, side: u32, rgb: [u8; 3], symbolic: bool) -> Result<eg
     let is_svg = path.extension().is_some_and(|e| e == "svg");
     if is_svg {
         let text = String::from_utf8(bytes).map_err(|_| "SVG is not UTF-8".to_string())?;
+        svg_shape(&text, MAX_SVG_DEPTH, MAX_SVG_ELEMENTS)?;
         let text = recolour_svg(&text, symbolic, rgb);
         let tree = usvg::Tree::from_str(&text, &svg_options()).map_err(|e| e.to_string())?;
+        // Filters are where a small file costs unbounded time: one
+        // feTurbulence with a huge numOctaves rendered for over a minute.
+        // A tile icon needs none, and the tree lists every one in use,
+        // including those written as CSS (`filter: blur()`).
+        if !tree.filters().is_empty() {
+            return Err("SVG uses filters".to_string());
+        }
         let size = tree.size();
         let scale = side as f32 / size.width().max(size.height());
         let dx = (side as f32 - size.width() * scale) / 2.0;
@@ -195,6 +284,63 @@ pub fn render(path: &Path, side: u32, rgb: [u8; 3], symbolic: bool) -> Result<eg
         [side as usize, side as usize],
         out.data(),
     ))
+}
+
+/// How long one icon may take to render before its tile draws the letter.
+pub const ICON_DEADLINE: Duration = Duration::from_secs(2);
+/// How long the first frame may wait for all icons together.
+pub const ICONS_BUDGET: Duration = Duration::from_secs(5);
+/// usvg and resvg recurse once per level of nesting and per `url(#…)`
+/// reference they follow. A thread's default 2 MiB overflows on a chain of
+/// about 1000 patterns. A release build renders the 5000-pattern chain
+/// MAX_SVG_ELEMENTS allows in 64 MiB, a debug build (the tests) does not, so
+/// this has room for both. Only the pages a render touches cost memory.
+const RENDER_STACK: usize = 256 * 1024 * 1024;
+
+/// Run `render` on every job, each on a thread of its own and one at a time,
+/// and give each its result or why it has none.
+///
+/// The renderers parse files the user can write, so a render can run
+/// forever and the first frame must not wait for it. A render that misses
+/// `per_icon`, or the `budget` all of them share, is abandoned: its thread is
+/// left running detached and its tile draws the letter. Rendering one at a
+/// time leaves at most `budget / per_icon` such threads behind.
+pub fn render_all<J, T, F>(jobs: Vec<J>, per_icon: Duration, budget: Duration, render: F) -> Vec<Result<T, String>>
+where
+    J: Send + 'static,
+    T: Send + 'static,
+    F: Fn(J) -> Result<T, String> + Send + Sync + 'static,
+{
+    let render = Arc::new(render);
+    let end = Instant::now() + budget;
+    jobs.into_iter()
+        .map(|job| {
+            let wait = per_icon.min(end.saturating_duration_since(Instant::now()));
+            if wait.is_zero() {
+                return Err("no time left at startup".to_string());
+            }
+            let (tx, rx) = mpsc::channel();
+            let render = render.clone();
+            thread::Builder::new()
+                .name("dbrrg-menu-icon".into())
+                .stack_size(RENDER_STACK)
+                .spawn(move || {
+                    // A panic in usvg or resvg is a tile drawing its letter,
+                    // not a reason to lose the menu. This needs the default
+                    // panic = "unwind"; Cargo.toml must not set "abort".
+                    let result = panic::catch_unwind(AssertUnwindSafe(|| render(job)))
+                        .unwrap_or_else(|_| Err("the renderer panicked".to_string()));
+                    let _ = tx.send(result);
+                })
+                .map_err(|e| e.to_string())?;
+            match rx.recv_timeout(wait) {
+                Ok(result) => result,
+                Err(RecvTimeoutError::Timeout) if wait < per_icon => Err("no time left at startup".to_string()),
+                Err(RecvTimeoutError::Timeout) => Err(format!("took longer than {per_icon:?}")),
+                Err(RecvTimeoutError::Disconnected) => Err("the renderer stopped without a result".to_string()),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -347,6 +493,187 @@ mod tests {
             }
         }
         out
+    }
+
+    fn svg(body: &str) -> String {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">{body}</svg>"#)
+    }
+
+    fn nested(depth: usize) -> String {
+        svg(&format!(
+            r#"{}<rect width="24" height="24"/>{}"#,
+            "<g>".repeat(depth - 2),
+            "</g>".repeat(depth - 2)
+        ))
+    }
+
+    /// A chain of patterns, each filled with the next: flat in the file, but
+    /// usvg and resvg recurse once per link.
+    fn pattern_chain(links: usize) -> String {
+        let mut body = String::from("<defs>");
+        for i in 0..links {
+            body += &format!(
+                r#"<pattern id="p{i}" width="1" height="1"><rect width="1" height="1" fill="url(#p{})"/></pattern>"#,
+                i + 1
+            );
+        }
+        body += r#"</defs><rect width="24" height="24" fill="url(#p0)"/>"#;
+        svg(&body)
+    }
+
+    fn render_text(tag: &str, text: &str) -> Result<egui::ColorImage, String> {
+        let r = roots(tag);
+        let p = r.dbrrg.join("x.svg");
+        fs::write(&p, text).unwrap();
+        render(&p, 24, [0; 3], false)
+    }
+
+    // Before the scan, the deep file overflowed the stack: an abort, not a
+    // panic, so it ended the whole test binary rather than failing a test.
+    #[test]
+    fn deep_nesting_is_refused_before_parsing() {
+        assert_eq!(
+            render_text("deep", &nested(100_000)).unwrap_err(),
+            "elements nested deeper than 64"
+        );
+        assert!(
+            render_text("deep64", &nested(64)).is_ok(),
+            "the limit itself is allowed"
+        );
+        assert!(render_text("deep65", &nested(65)).is_err());
+    }
+
+    #[test]
+    fn a_long_reference_chain_is_refused_before_parsing() {
+        // 1000 links overflowed a 2 MiB stack.
+        assert_eq!(
+            render_text("chain", &pattern_chain(6_000)).unwrap_err(),
+            "more than 10000 elements"
+        );
+    }
+
+    // The worst chain the element limit lets through must fit the render
+    // thread's stack; RENDER_STACK is sized from this.
+    #[test]
+    fn the_longest_allowed_chain_renders_on_the_icon_thread() {
+        let r = roots("chain-max");
+        let p = r.dbrrg.join("x.svg");
+        fs::write(&p, pattern_chain((MAX_SVG_ELEMENTS - 4) / 2)).unwrap();
+        let out = render_all(vec![p], Duration::from_secs(60), Duration::from_secs(60), |p| {
+            render(&p, 24, [0; 3], false)
+        });
+        assert!(out[0].is_ok(), "{:?}", out[0].as_ref().err());
+    }
+
+    #[test]
+    fn every_shipped_icon_passes_the_guards_and_draws() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("icons");
+        let mut svgs: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "svg"))
+            .collect();
+        svgs.sort();
+        assert!(!svgs.is_empty());
+        for p in svgs {
+            let img = render(&p, 96, [255, 255, 255], true).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            assert!(img.pixels.iter().any(|c| c.a() > 200), "{} drew nothing", p.display());
+        }
+    }
+
+    // Before the guard the turbulence file rendered for more than a minute;
+    // the deadline keeps a regression from hanging the test run.
+    #[test]
+    fn filters_are_refused() {
+        let turbulence = svg(
+            r#"<filter id="f"><feTurbulence baseFrequency="0.01" numOctaves="100000000"/></filter><rect width="24" height="24" filter="url(#f)"/>"#,
+        );
+        let css = svg(r#"<rect width="24" height="24" style="filter: blur(2px)"/>"#);
+        let r = roots("filter");
+        let mut jobs = Vec::new();
+        for (name, text) in [("turbulence", turbulence), ("css", css)] {
+            let p = r.dbrrg.join(format!("{name}.svg"));
+            fs::write(&p, text).unwrap();
+            jobs.push(p);
+        }
+        let out = render_all(jobs, Duration::from_secs(10), Duration::from_secs(20), |p| {
+            render(&p, 24, [0; 3], false).map(|_| ())
+        });
+        assert_eq!(out, vec![Err("SVG uses filters".to_string()); 2]);
+    }
+
+    #[test]
+    fn entity_declarations_are_refused() {
+        let text = r#"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "<g><rect width='1' height='1'/></g>">]><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">&a;</svg>"#;
+        assert_eq!(render_text("entity", text).unwrap_err(), "SVG declares entities");
+    }
+
+    #[test]
+    fn the_scan_reads_comments_cdata_and_quoted_brackets_as_text() {
+        let body = r#"<!-- <g><g><g> --><style><![CDATA[ <g><g> ]]></style><?pi <g> ?><g title="a > b <g" id='x/>'><rect width="1" height="1"/></g>"#;
+        assert_eq!(svg_shape(&svg(body), 3, 100), Ok(()));
+        assert_eq!(
+            svg_shape(&svg(body), 2, 100),
+            Err("elements nested deeper than 2".to_string())
+        );
+        assert_eq!(svg_shape(&svg(body), 3, 3), Err("more than 3 elements".to_string()));
+    }
+
+    fn instant(job: u32) -> Result<u32, String> {
+        Ok(job)
+    }
+
+    // The slow render sleeps far past every deadline here, so the test only
+    // passes when the deadline gave up on it; the sleeping thread is left
+    // behind and ends with the test process.
+    #[test]
+    fn a_slow_render_times_out_into_the_letter() {
+        let start = std::time::Instant::now();
+        let out = render_all(
+            vec![1, 2, 3],
+            Duration::from_millis(200),
+            Duration::from_secs(2),
+            |job| {
+                if job == 2 {
+                    std::thread::sleep(Duration::from_secs(60));
+                }
+                instant(job)
+            },
+        );
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+        assert_eq!(out[0], Ok(1));
+        assert_eq!(out[1], Err("took longer than 200ms".to_string()));
+        assert_eq!(out[2], Ok(3), "the icons after a slow one still render");
+    }
+
+    #[test]
+    fn the_startup_budget_bounds_the_wait_for_all_icons() {
+        let start = std::time::Instant::now();
+        let out = render_all(
+            vec![1, 2, 3, 4],
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+            |job| {
+                std::thread::sleep(Duration::from_secs(60));
+                instant(job)
+            },
+        );
+        assert!(start.elapsed() < Duration::from_millis(800), "{:?}", start.elapsed());
+        assert_eq!(out[0], Err("took longer than 300ms".to_string()));
+        assert_eq!(out[1], Err("no time left at startup".to_string()));
+        assert_eq!(out[2], Err("no time left at startup".to_string()));
+        assert_eq!(out[3], Err("no time left at startup".to_string()));
+    }
+
+    #[test]
+    fn a_panicking_render_falls_back_to_the_letter() {
+        let out = render_all(vec![1, 2], Duration::from_secs(5), Duration::from_secs(5), |job| {
+            if job == 1 {
+                panic!("renderer bug");
+            }
+            instant(job)
+        });
+        assert_eq!(out, vec![Err("the renderer panicked".to_string()), Ok(2)]);
     }
 
     #[test]

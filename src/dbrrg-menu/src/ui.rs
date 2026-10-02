@@ -7,6 +7,7 @@ use crate::tiles::{Origin, Tile};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
 use egui_shadcn::Theme;
 use egui_shadcn::components::button::{Button, ButtonVariant};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub const COLUMNS: usize = 3;
@@ -18,20 +19,31 @@ pub const WARN: Color32 = Color32::from_rgb(0xc7, 0x9a, 0x4a);
 /// Rasterise every tile's icon once, at startup. `None` draws the letter.
 pub fn load_icons(ctx: &egui::Context, tiles: &[Tile], roots: &IconRoots) -> Vec<Option<TextureHandle>> {
     let fg = Theme::dark().palette.foreground;
-    tiles
+    let rgb = [fg.r(), fg.g(), fg.b()];
+    let jobs: Vec<(usize, PathBuf, bool)> = tiles
         .iter()
-        .map(|t| {
+        .enumerate()
+        .filter_map(|(i, t)| {
             let path = icons::resolve(t.icon.as_deref()?, roots)?;
             let symbolic = icons::is_symbolic(&path, roots);
-            match icons::render(&path, ICON_SIDE, [fg.r(), fg.g(), fg.b()], symbolic) {
-                Ok(img) => Some(ctx.load_texture(t.file.clone(), img, egui::TextureOptions::LINEAR)),
-                Err(e) => {
-                    eprintln!("dbrrg-menu: icon {} for {}: {e}", path.display(), t.file);
-                    None
-                }
-            }
+            Some((i, path, symbolic))
         })
-        .collect()
+        .collect();
+    let rendered = icons::render_all(
+        jobs.clone(),
+        icons::ICON_DEADLINE,
+        icons::ICONS_BUDGET,
+        move |(_, path, symbolic)| icons::render(&path, ICON_SIDE, rgb, symbolic),
+    );
+    let mut out = vec![None; tiles.len()];
+    for ((i, path, _), result) in jobs.into_iter().zip(rendered) {
+        let file = &tiles[i].file;
+        match result {
+            Ok(img) => out[i] = Some(ctx.load_texture(file.clone(), img, egui::TextureOptions::LINEAR)),
+            Err(e) => eprintln!("dbrrg-menu: icon {} for {file}: {e}", path.display()),
+        }
+    }
+    out
 }
 
 fn elapsed(d: Duration) -> String {

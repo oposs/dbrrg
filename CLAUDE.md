@@ -117,6 +117,14 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   a program. A user file named like a shipped one may reword `Name`, `Comment`
   and `Icon` only; its other keys are ignored. The files travel with the home
   directory through `save-home`.
+  `Icon=` is user data the menu parses on every boot, so an SVG is refused
+  (the tile draws its first letter) when it nests deeper than 64 elements,
+  has more than 10000, declares entities, or uses filters: usvg and resvg
+  recurse per level and per reference, and a stack overflow aborts the menu
+  past any `catch_unwind`; one `feTurbulence` rendered for over a minute.
+  Icons render off the UI thread, 2 s each and 5 s for all of them; a
+  render that misses its time draws the letter and its thread is abandoned.
+  Limits and guards are in `src/dbrrg-menu/src/icons.rs`.
 - Session startup: `overlay/usr/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
 - **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the menu, and so before any tile starts `tlclient`. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
   It is also where screen blanking is tuned: `DBRRG_IDLE_TIMEOUT=<seconds>` (default `300`, `0` disables blanking entirely) is read by `dbrrg-session` right after this file is sourced.
@@ -708,6 +716,10 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
 - Clicking a tile is not covered by the headless runtime test, which has no
   input devices. The logout dialog and its Stay / Log out anyway buttons are
   proven by unit tests of the state machine only.
+- Full-colour theme icons with drop shadows draw the letter, because
+  filters are refused: 15 of 70 Adwaita `scalable` and 53 of 425 hicolor
+  `scalable` icons on a desktop host. Every Adwaita symbolic icon, the
+  shipped Lucide set and the image's `foot.svg` render.
 - None of the menu has been run on hardware yet.
 
 ### Screen blanking had to be rebuilt after the X11 removal
