@@ -64,7 +64,7 @@ endif
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test test-runtime help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke qemu-smoke-netboot test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
@@ -78,6 +78,8 @@ help:
 	@echo "  ipxe              - Build iPXE network boot loaders"
 	@echo "  image             - Build bootable USB image"
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
+	@echo "  qemu-smoke        - Headless USB-style boot smoke test"
+	@echo "  qemu-smoke-netboot - Headless HTTP netboot smoke test"
 	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
 	@echo "  clean             - Remove artifacts"
@@ -308,6 +310,25 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-initrd $(INITRD) \
 		-append "ramroot=tl/ramroot.sqsh $(QEMU_SMOKE_APPEND)"
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
+
+# Headless netboot smoke test: the rootfs artifacts are served over HTTP from
+# the host and booted with no disk, as a PXE client would boot them. Besides
+# the clean-boot checks it requires the MAC-based hostname and a home.pkg
+# request under the boot MAC; see scripts/run-qemu-netboot-smoke.sh.
+QEMU_NETBOOT_LOG := $(IMAGE_DIR)/qemu-netboot-smoke.log
+
+qemu-smoke-netboot: $(KERNEL) $(INITRD) $(SQUASHFS) | $(IMAGE_DIR)
+	@echo "Running headless netboot smoke test..."
+	scripts/run-qemu-netboot-smoke.sh $(ROOTFS_DIR) $(QEMU_NETBOOT_LOG) \
+		$(QEMU_SMOKE_TIMEOUT) $(QEMU_SMOKE_GRACE) \
+		-machine type=q35,accel=kvm \
+		-cpu host,migratable=off \
+		-smp $(BUILD_JOBS) \
+		-m 3G \
+		-display none \
+		-no-reboot \
+		-object rng-random,filename=/dev/urandom,id=rng0 \
+		-device virtio-rng-pci,rng=rng0
 
 test: rootfs
 	@test/integration/test-firmware.sh
