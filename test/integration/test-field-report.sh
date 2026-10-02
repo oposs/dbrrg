@@ -125,4 +125,28 @@ else
     bad "simpledrm case: exit $rc after ${elapsed}s, stderr: $(cat "$WORK/err2")"
 fi
 
+# When udevadm times out (slow /dev node creation), wait-kms must still exit 0,
+# never failing the boot.
+mkdir -p "$WORK/sys3/card0/device"
+ln -s /fake/drivers/i915 "$WORK/sys3/card0/device/driver"
+cat >"$WORK/stubs/udevadm-fail" <<'STUB'
+#!/bin/bash
+echo "udevadm $*" >>"$DBRRG_TEST_UDEV_LOG"
+exit 1
+STUB
+chmod +x "$WORK/stubs/udevadm-fail"
+mv "$WORK/stubs/udevadm" "$WORK/stubs/udevadm-success"
+ln -s udevadm-fail "$WORK/stubs/udevadm"
+
+DBRRG_TEST_UDEV_LOG="$WORK/udev3.log" \
+DBRRG_DRM_GLOB="$WORK/sys3/card[0-9]*" \
+PATH="$WORK/stubs:$PATH" \
+    "$WAITKMS" >"$WORK/out3" 2>"$WORK/err3"
+rc=$?
+if [[ "$rc" == "0" ]] && grep -q 'udev did not finish' "$WORK/err3"; then
+    ok "udevadm timeout does not fail wait-kms, and it reports the timeout"
+else
+    bad "udevadm failure case: exit $rc, stderr: $(cat "$WORK/err3")"
+fi
+
 exit $fail
