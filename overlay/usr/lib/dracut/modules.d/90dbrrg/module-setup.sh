@@ -20,6 +20,14 @@ install() {
 
     inst_simple "$moddir/dbrrg-lib.sh" "/lib/dbrrg-lib.sh"
 
+    # Order the pre-mount and mount hooks after the cmdline hook that sets
+    # root=dbrrg and writes /tmp/dbrrg-ramroot. See dbrrg-after-cmdline.conf.
+    local _unit
+    for _unit in dracut-pre-mount.service dracut-mount.service; do
+        inst_simple "$moddir/dbrrg-after-cmdline.conf" \
+            "$systemdsystemunitdir/$_unit.d/90-dbrrg-after-cmdline.conf"
+    done
+
     # Network tools
     inst_multiple curl ip dhclient
 

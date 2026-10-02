@@ -278,11 +278,12 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Eleven rules in this repository look like ordinary configuration but are
-load-bearing. All but the patched-labwc one have each caused a real
-shipped-image bug; that one is preventive - nothing has shipped broken from
-it yet, but reverting it silently would ship regressions in both patched
-behaviours.
+Twelve rules in this repository look like ordinary configuration but are
+load-bearing. All but the patched-labwc and hook-order ones have each caused
+a real shipped-image bug. The patched-labwc one is preventive - nothing has
+shipped broken from it yet, but reverting it silently would ship regressions
+in both patched behaviours. The hook-order one was caught in QEMU: the race it
+closes is present in every image built before it.
 
 ### No login password ships in the image
 
@@ -579,6 +580,21 @@ call to a missing tool fails `make test` even where no offline test runs it.
 Its command extractor (`test/integration/initramfs-commands.py`) is a
 heuristic: it skips comments, quoted text, `for` lists and `case` patterns,
 and descends into `$( )`; a command it cannot see is not checked.
+
+### The dbrrg pre-mount and mount hooks run after dracut-cmdline
+
+`90dbrrg/module-setup.sh` installs `dbrrg-after-cmdline.conf` as a drop-in
+for `dracut-pre-mount.service` and `dracut-mount.service`
+(`After=dracut-cmdline.service`). Upstream orders both only after
+`dracut-initqueue.service`, which a dbrrg boot does not pull in, so they ran
+in parallel with the cmdline hook that sets `root=dbrrg` and writes
+`/tmp/dbrrg-ramroot`. A boot that lost that race logged `Can't mount root
+filesystem` and stopped in the emergency shell; QEMU netboot hit it, and the
+USB smoke log showed pre-mount starting before cmdline finished. USB was
+spared only by the time the pre-mount hook spends waiting for the ESP.
+`test/integration/test-initramfs-commands.sh` asserts both drop-ins are in
+the built initrd, and `scripts/check-boot-smoke.sh` fails a boot log in which
+either hook starts before `dracut-cmdline.service` has finished.
 
 ### /etc/hostname is excluded from the squashfs and written by the initramfs
 

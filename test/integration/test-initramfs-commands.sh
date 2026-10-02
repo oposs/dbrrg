@@ -86,6 +86,22 @@ else
     bad "no dbrrg-lib.sh in $INITRD - the dbrrg dracut module was not included"
 fi
 
+# The drop-ins that order the pre-mount and mount hooks after the cmdline
+# hook. Without them both raced dracut-cmdline.service; see
+# 90dbrrg/dbrrg-after-cmdline.conf.
+for unit in dracut-pre-mount dracut-mount; do
+    if grep -qE "/$unit\.service\.d/90-dbrrg-after-cmdline\.conf$" "$WORK/initrd.list"; then
+        ok "$unit.service is ordered after dracut-cmdline in the initrd"
+    else
+        bad "no $unit.service.d/90-dbrrg-after-cmdline.conf in $INITRD"
+    fi
+done
+if grep -qx 'After=dracut-cmdline.service' "$MODDIR/dbrrg-after-cmdline.conf"; then
+    ok "the drop-in orders After=dracut-cmdline.service"
+else
+    bad "dbrrg-after-cmdline.conf lacks After=dracut-cmdline.service"
+fi
+
 # --- names that are not files: builtins and shell functions ---------------
 #
 # dracut-lib.sh is taken from the image rather than the dev host: it is the

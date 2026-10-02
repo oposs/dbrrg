@@ -98,6 +98,27 @@ unwant "no dracut emergency shell"   'Entering emergency mode|dracut: FATAL'
 unwant "no kernel panic"             'Kernel panic'
 unwant "no systemd ordering cycle"   'Found ordering cycle'
 
+# The dbrrg pre-mount and mount hooks need what the cmdline hook sets up
+# (root=dbrrg, /tmp/dbrrg-ramroot). Without the 90dbrrg drop-ins ordering them
+# After=dracut-cmdline.service they started in parallel with it, and a boot
+# that lost that race ended in the emergency shell.
+line_of() {
+    strip_terminal_codes "$LOG" | grep -naE -- "$1" | head -1 | cut -d: -f1
+}
+cmdline_done=$(line_of 'Finished dracut-cmdline\.service')
+for unit in dracut-pre-mount dracut-mount; do
+    started=$(line_of "Starting $unit\\.service")
+    if [[ -z "$cmdline_done" || -z "$started" ]]; then
+        echo "FAIL - $unit starts after dracut-cmdline finished (no line for: ${cmdline_done:+$unit start}${cmdline_done:-dracut-cmdline finish})"
+        fail=1
+    elif (( cmdline_done < started )); then
+        echo "ok   - $unit starts after dracut-cmdline finished"
+    else
+        echo "FAIL - $unit started (log line $started) before dracut-cmdline finished (line $cmdline_done)"
+        fail=1
+    fi
+done
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - boot log shows problems (full log: $LOG)"

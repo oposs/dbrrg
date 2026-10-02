@@ -52,13 +52,23 @@ else
 fi
 
 # The full check uses the same detection.
-printf 'Reached target \e[0;1;39mmulti-u\e[1G\e[0Jser.target\n' >"$WORK/full.log"
+HOOKS_IN_ORDER='[  OK  ] Finished \e[0;1;39mdracut-cmdline.service\e[0m - dracut cmdline hook.\n         Starting \e[0;1;39mdracut-pre-mount.service\e[0m - dracut pre-mount hook...\n         Starting \e[0;1;39mdracut-mount.service\e[0m - dracut mount hook...\n'
+printf "$HOOKS_IN_ORDER"'Reached target \e[0;1;39mmulti-u\e[1G\e[0Jser.target\n' >"$WORK/full.log"
 if "$CHECK" "$WORK/full.log" >"$WORK/out" 2>&1; then
     ok "full check passes a log whose target line holds escape sequences"
 else
     bad "full check rejected it: $(grep FAIL "$WORK/out")"
 fi
-printf 'Reached target basic.target\n' >"$WORK/short.log"
+# The dbrrg hooks raced the cmdline hook: pre-mount started first.
+printf '         Starting dracut-pre-mount.service - dracut pre-mount hook...\n[  OK  ] Finished dracut-cmdline.service - dracut cmdline hook.\n         Starting dracut-mount.service - dracut mount hook...\nReached target multi-user.target\n' >"$WORK/race.log"
+if "$CHECK" "$WORK/race.log" >"$WORK/out" 2>&1; then
+    bad "full check passed a boot whose pre-mount hook started before dracut-cmdline finished"
+elif grep -q 'FAIL - dracut-pre-mount started' "$WORK/out"; then
+    ok "full check fails a boot whose pre-mount hook raced dracut-cmdline"
+else
+    bad "race log failed for another reason: $(grep FAIL "$WORK/out")"
+fi
+printf "$HOOKS_IN_ORDER"'Reached target basic.target\n' >"$WORK/short.log"
 if "$CHECK" "$WORK/short.log" >"$WORK/out" 2>&1; then
     bad "full check passed a boot that never reached multi-user"
 else
