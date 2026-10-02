@@ -59,7 +59,7 @@ cat >"$STUBS/curl" <<'STUB'
 echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
 for a in "$@"; do
     case "$a" in
-        data=@*) [ -f "${a#data=@}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
+        data=@*) f=${a#data=@}; [ -f "${f%%;*}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
     esac
 done
 # Stand in for an upload that hangs, so a test can signal the script while it
@@ -449,11 +449,18 @@ setup
 rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
 upload=$(grep -o 'data=@[^ ]*' "$WORK/curl.log" 2>/dev/null | head -1)
 upload=${upload#data=@}
+upload=${upload%%;*}
 if [[ "$rc" == "0" ]] && [[ "$upload" == "$WORK/tmp/"* ]] &&
    grep -q upload-file-exists "$WORK/curl.log"; then
     ok "netboot upload sends a file mktemp made under \$TMPDIR"
 else
     bad "netboot upload sent '$upload' (exit $rc, curl log: $(cat "$WORK/curl.log" 2>/dev/null))"
+fi
+# The server sees a fixed name, not the mktemp one.
+if grep -qF ';filename=home.tar.gz ' "$WORK/curl.log"; then
+    ok "netboot upload names the file home.tar.gz"
+else
+    bad "netboot upload does not name the file home.tar.gz: $(cat "$WORK/curl.log")"
 fi
 if [[ -z "$(ls -A "$WORK/tmp")" ]]; then
     ok "the temporary archive is removed after a successful upload"

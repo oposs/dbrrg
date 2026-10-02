@@ -192,7 +192,10 @@ if [ "" != "$BOOT_SRV" ]; then
   # -f: without it curl exits 0 on an HTTP 4xx/5xx reply (413, 500, full
   # disk) and this script would report "home saved" for an upload the server
   # rejected, breaking the exit-5 contract.
-  if ! curl -f -sS -F "data=@$_dsh_archive" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
+  #
+  # filename= fixes the name the server sees. Without it curl sends the local
+  # basename, which is now whatever mktemp picked.
+  if ! curl -f -sS -F "data=@$_dsh_archive;filename=home.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
     echo "dbrrg: upload to ${BASE_PATH} failed - your home was NOT saved." >&2
     exit 5
   fi
