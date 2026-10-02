@@ -91,6 +91,29 @@ else
     ok "dbrrg_record_boot_mac fails on a missing address file"
 fi
 
+# --- dbrrg_route_iface ---------------------------------------------------
+#
+# The boot MAC comes from the interface holding the default route, not from
+# the first /sys/class/net entry.
+
+routes='default via 10.0.2.2 dev enp0s3 proto dhcp src 10.0.2.15 metric 1024
+default via 192.168.1.1 dev enp1s0 proto dhcp src 192.168.1.9 metric 2048'
+got=$(printf '%s\n' "$routes" | dbrrg_route_iface)
+[[ "$got" == enp0s3 ]] && ok "dbrrg_route_iface picks the first default route's device" \
+    || bad "dbrrg_route_iface returned '$got', want enp0s3"
+if got=$(printf '' | dbrrg_route_iface); then
+    bad "dbrrg_route_iface succeeded with no default route (printed '$got')"
+else
+    ok "dbrrg_route_iface fails with no default route"
+fi
+
+MS_SRC="$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/mount-squashfs.sh"
+if grep -v '^[[:space:]]*#' "$MS_SRC" | grep -qE '\bdhclient\b|/sys/class/net/\*'; then
+    bad "mount-squashfs.sh still runs dhclient or picks the first /sys/class/net entry"
+else
+    ok "mount-squashfs.sh leaves DHCP to networkd and takes the lease's interface"
+fi
+
 # --- dbrrg_restore_home_from_file ---------------------------------------
 
 # Build a home archive the way dbrrg-save-home does: tar czf from inside

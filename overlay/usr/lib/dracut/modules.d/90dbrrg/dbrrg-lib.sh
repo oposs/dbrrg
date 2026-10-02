@@ -135,10 +135,10 @@ dbrrg_home_url() {
 #
 # Before this, both halves derived the MAC independently from kernel ifindex
 # 2 - which agreed only because both ran in the booted system. ifindex
-# follows driver registration order, the initramfs loads a deliberately small
-# driver set, and mount-squashfs.sh picks its interface by /sys/class/net
-# glob order instead; on a machine with two NICs those can name different
-# devices. Recording what was actually used makes the two halves agree by
+# follows driver registration order, which the initramfs need not share; on
+# a machine with two NICs the two could name different devices.
+# mount-squashfs.sh passes the interface holding the default route (see
+# dbrrg_route_iface). Recording what was actually used makes the two halves agree by
 # construction. It is also the better identity: on netboot it is the
 # interface that demonstrably worked, having taken a DHCP lease and served
 # ramroot.sqsh.
@@ -164,6 +164,31 @@ dbrrg_record_boot_mac() {
     fi
 
     return 0
+}
+
+# dbrrg_route_iface
+#
+# Read `ip -o route show default` output on stdin and print the device of the
+# first default route, which is the one the kernel uses (the list is sorted by
+# metric). Prints nothing and returns 1 if there is none.
+#
+# On netboot this names the interface whose DHCP lease systemd-networkd
+# applied, which is what the boot MAC must come from - not the first entry
+# of /sys/class/net, which on a machine with two NICs can be the one without
+# a cable.
+dbrrg_route_iface() {
+    local _dri_line _dri_prev _dri_word
+    while read -r _dri_line; do
+        _dri_prev=""
+        for _dri_word in $_dri_line; do
+            if [ "$_dri_prev" = dev ]; then
+                printf '%s\n' "$_dri_word"
+                return 0
+            fi
+            _dri_prev=$_dri_word
+        done
+    done
+    return 1
 }
 
 # dbrrg_restore_home_from_file <archive> <target-home>

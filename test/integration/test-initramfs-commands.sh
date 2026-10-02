@@ -102,6 +102,16 @@ else
     bad "dbrrg-after-cmdline.conf lacks After=dracut-cmdline.service"
 fi
 
+# Netboot networking: DHCP from systemd-networkd, names from systemd-resolved.
+for f in usr/lib/systemd/systemd-networkd usr/lib/systemd/systemd-networkd-wait-online \
+         usr/lib/systemd/systemd-resolved; do
+    if grep -qx "$f" "$WORK/initrd.list"; then
+        ok "/$f is in the initrd"
+    else
+        bad "/$f is missing - netboot has no network (dracut --add systemd-networkd systemd-resolved)"
+    fi
+done
+
 # --- names that are not files: builtins and shell functions ---------------
 #
 # dracut-lib.sh is taken from the image rather than the dev host: it is the

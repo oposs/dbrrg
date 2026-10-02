@@ -6,8 +6,8 @@ check() {
 }
 
 depends() {
-    # network-legacy is optional - we use it if available, but can work without it
-    # We mainly need basic networking tools (curl, which we install ourselves)
+    # Netboot networking comes from dracut's systemd-networkd and
+    # systemd-resolved modules, added with --add in containers/ubuntu/Dockerfile.
     return 0
 }
 
@@ -28,8 +28,9 @@ install() {
             "$systemdsystemunitdir/$_unit.d/90-dbrrg-after-cmdline.conf"
     done
 
-    # Network tools
-    inst_multiple curl ip dhclient
+    # Network tools. DHCP is systemd-networkd's job (see mount-squashfs.sh);
+    # ip finds the interface that holds the lease.
+    inst_multiple curl ip
 
     # Archive tools for the home restore in restore_home(). GNU tar runs
     # gzip as a separate process for -z, so both are required.

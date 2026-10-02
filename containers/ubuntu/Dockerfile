@@ -292,8 +292,15 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
 # needed NIC drivers (e1000/e1000e/igb/r8169/atlantic/iwlwifi) too, depending on
 # what the build host happens to have loaded - fine on one machine, broken on
 # another. --no-hostonly forces the true generic path this comment always intended.
+#
+# systemd-networkd and systemd-resolved bring up the network for netboot
+# (http ramroot=). dracut 110 has no network-legacy module, and the dbrrg
+# hook's own dhclient call never worked: the initramfs had no dhclient-script.
+# networkd also pulls in kernel-network-modules, so every NIC driver is in the
+# initrd, not only the handful 90dbrrg lists; resolved makes a ramroot URL
+# with a host name resolve.
 RUN KERNEL_VERSION=$(ls /lib/modules | head -1) && \
-    dracut --force --no-hostonly --add "dbrrg plymouth" \
+    dracut --force --no-hostonly --add "dbrrg plymouth systemd-networkd systemd-resolved" \
     --omit "drm dash crypt dmraid multipath iscsi nfs nbd fcoe fcoe-uefi biosdevname dmsquash-live dmsquash-live-ntfs" \
     --omit-drivers "btrfs xfs reiserfs jfs ocfs2 gfs2 f2fs bcachefs cramfs minix hfs hfsplus qnx4 qnx6 ufs nouveau radeon amdgpu i915 vmwgfx qxl virtio-gpu bochs" \
     --compress "zstd -3 -T4" \

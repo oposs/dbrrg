@@ -227,12 +227,35 @@ This allows WiFi credentials, ThinLinc settings, and user customizations to pers
 
 ## Network Boot vs USB Boot
 
-The system detects boot method by checking for `/dev/disk/by-partlabel/EFI-SYSTEM`:
+The boot method follows from `ramroot=` on the kernel command line
+(`is_remote_url` in `dbrrg-lib.sh`):
 
-- **USB Boot**: Partition present → loads ramroot.sqsh from local `tl/ramroot.sqsh`, persists home to partition
-- **Network Boot**: No partition → uses ramroot URL from kernel cmdline, persists home to boot server HTTP endpoint
+- **USB Boot**: a path such as `tl/ramroot.sqsh` → loaded from the
+  `EFI-SYSTEM` partition, home persisted to that partition
+- **Network Boot**: an `http://` URL → downloaded into RAM, home persisted
+  to the boot server over HTTP
 
 Both modes execute identical code paths after SquashFS mount.
+
+Netboot networking in the initramfs is dracut's `systemd-networkd` and
+`systemd-resolved` modules (`--add` in `containers/ubuntu/Dockerfile`).
+`parse-dbrrg.sh` sets `rd.neednet=1` for an http ramroot, so
+`systemd-networkd-wait-online` runs before the hooks; USB boots do not set
+it and do not wait. dracut 110 has no `network-legacy` module, and the
+hook's former `dhclient` call never worked - the initramfs had no
+`dhclient-script`, so every netboot failed with `Download failed` until
+2026-10. `mount-squashfs.sh` records the boot MAC from the interface holding
+the default route, i.e. the one whose lease was applied, not from the first
+`/sys/class/net` entry. A host name in the ramroot URL resolves through the
+resolved stub. Cost: networkd pulls in `kernel-network-modules` (every NIC
+driver), and the initrd grew from 165.6 MB to 179.3 MB.
+
+`make qemu-smoke-netboot` boots the artifacts from a local HTTP server with
+`ramroot=http://_gateway:<port>/ramroot.sqsh` (resolved answers `_gateway`
+itself; it is the host on QEMU's user network) and requires the hostname
+`dbrrg-123456` for MAC 52:54:00:12:34:56 and a `home.pkg` request under that
+MAC. It does not exercise forwarding to a DHCP-supplied DNS server.
+**Not verified on hardware.**
 
 ## Container Build Best Practices
 
@@ -572,7 +595,9 @@ plus dracut's base set, exists there. Shell builtins (`printf`, `test`,
 offline test passes on the dev host - that is how the hostname shipped as
 `dbrrg`, why netboot never recorded the boot MAC, and why every `sync` in
 the `tl.new` upgrade rotation failed. `sync` and `rmdir` are now installed
-explicitly for that rotation. `test/integration/test-initramfs-home.sh` runs
+explicitly for that rotation. `dhclient` is no longer installed: DHCP is
+`systemd-networkd`'s job (see [Network Boot vs USB Boot](#network-boot-vs-usb-boot)).
+`test/integration/test-initramfs-home.sh` runs
 the helpers, `dbrrg_finalize_upgrade` included, with PATH restricted to that
 set. `test/integration/test-initramfs-commands.sh` checks every command the
 90dbrrg hooks call against `lsinitramfs` of the built `initrd.img`, so a new
