@@ -9,10 +9,12 @@ Supports A/B updates for existing dbrrg drives, or fresh install for new drives.
 import atexit
 import glob
 import os
+import pwd
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -22,6 +24,22 @@ from typing import List, Optional, Tuple
 DEFAULT_URL = "https://tobi.oetiker.ch/dbrrg"
 EFI_PARTLABEL = "EFI-SYSTEM"
 FIRMWARE_FILES = ("vmlinuz", "initrd.img", "ramroot.sqsh")
+TLUSER = "tluser"
+HOME_ARCHIVE_NAME = "home.tar.gz"
+# The shipped default exclude list; dbrrg-save-home reads the same file.
+SAVE_HOME_EXCLUDE_DEFAULT = "/etc/dbrrg/save-home-exclude"
+# Per-machine identity, always left out of the copy (appended outside the
+# user-editable exclude list so a ~/.save-home-exclude cannot drop them):
+#  - the SSH host keys: two machines with one host key is a real problem; a
+#    stick without them generates its own on first boot.
+#  - the WireGuard config: it holds the machine's private key, and two peers
+#    sharing one key break both tunnels.
+# ~/.dbrrg-password is deliberately NOT here: the user set it for remote
+# access and it travels with the home on purpose.
+IDENTITY_EXCLUDES = ("./.dbrrg-ssh-host-keys", "./wg0.conf")
+# udev may not have re-read the partition table yet, right after partprobe on
+# a drive that was just written byte for byte.
+EFI_RETRY_SECONDS = 15
 
 # ============ Data Classes ============
 
@@ -474,6 +492,134 @@ def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
         log("Upgrade complete! Previous version saved as fallback.")
 
 
+def load_exclude_patterns(home_dir: str) -> List[str]:
+    """Read the save-home exclude list the way dbrrg-save-home does.
+
+    ~/.save-home-exclude replaces the shipped default (it does not extend it).
+    Blank lines and lines starting with # are skipped.
+    """
+    path = os.path.join(home_dir, ".save-home-exclude")
+    if not os.access(path, os.R_OK):
+        path = SAVE_HOME_EXCLUDE_DEFAULT
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    return [ln for ln in lines if ln and not ln.startswith("#")]
+
+
+def home_archive_argv(home_dir: str, dest: str) -> List[str]:
+    """Build the tar command line for a new stick's home.tar.gz.
+
+    restore_home() in the initramfs unpacks this archive into the home
+    directory itself, so the members must be relative: -C <home> with a bare
+    ".". The excludes are the save-home list plus IDENTITY_EXCLUDES.
+    """
+    excludes = [f"--exclude={p}" for p in load_exclude_patterns(home_dir)]
+    excludes += [f"--exclude={p}" for p in IDENTITY_EXCLUDES]
+    return ["tar", "-C", home_dir, *excludes, "-czf", dest, "."]
+
+
+def copy_home_to_drive(device: str) -> bool:
+    """Write this machine's home directory onto a freshly installed drive.
+
+    Returns True when a verified home.tar.gz is on the drive's EFI partition.
+    Never raises: the install has already succeeded by the time this runs, and
+    a failed copy must not turn a good install into a traceback.
+    """
+    # Never $HOME, ~, Path.home() or SUDO_USER. This process is root by now,
+    # so HOME is /root, and SUDO_USER is unset for a VT root login - which is
+    # reachable because root has no password. The same defect in
+    # dbrrg-save-home archived root's dotfiles over the user's home.
+    try:
+        home_dir = pwd.getpwnam(TLUSER).pw_dir
+    except KeyError:
+        log(f"WARNING: no {TLUSER} account on this system - home not copied")
+        return False
+
+    if not os.path.isdir(home_dir):
+        log(f"WARNING: {home_dir} is not a directory - home not copied")
+        return False
+
+    efi_partition = find_efi_partition(device)
+    waited = 0
+    while efi_partition is None and waited < EFI_RETRY_SECONDS:
+        time.sleep(1)
+        waited += 1
+        efi_partition = find_efi_partition(device)
+    if efi_partition is None:
+        log(f"WARNING: no {EFI_PARTLABEL} partition found on {device} after "
+            f"{waited}s - home not copied")
+        return False
+
+    tmp_mount = tempfile.mkdtemp(prefix="dbrrg-home-")
+    _register_cleanup("dir", tmp_mount)
+    dest = os.path.join(tmp_mount, HOME_ARCHIVE_NAME)
+    ok = False
+    mounted = False
+
+    try:
+        run_cmd(["mount", efi_partition, tmp_mount], capture=True)
+        mounted = True
+        _register_cleanup("mount", tmp_mount)
+
+        log(f"Copying {home_dir} to {device} (without SSH host keys and wg0.conf)")
+        try:
+            run_cmd(home_archive_argv(home_dir, dest), capture=True)
+        except subprocess.CalledProcessError as e:
+            # GNU tar exits 1 for "file changed as we read it" - a socket, a
+            # dangling symlink, a file being written - and still produces a
+            # usable archive. Only 2 and above are real errors.
+            if e.returncode == 1:
+                log("NOTE: some files changed while being archived; the copy "
+                    "is usable")
+            else:
+                raise
+
+        # tar can succeed on a stick that is failing; a bad home.tar.gz may be
+        # accepted by the next boot in place of a good home.
+        run_cmd(["gzip", "-t", dest], capture=True)
+
+        # The archive is in the page cache until this returns. A stick pulled
+        # out before it lands carries an empty or partial file.
+        run_cmd(["sync"], capture=True)
+        ok = True
+    except subprocess.CalledProcessError as e:
+        log(f"WARNING: could not copy the home directory: {e}")
+        if os.path.isfile(dest):
+            # A truncated home.tar.gz is worse than none at all.
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+        ok = False
+    except OSError as e:
+        log(f"WARNING: could not copy the home directory: {e}")
+        ok = False
+    finally:
+        if mounted:
+            try:
+                run_cmd(["umount", tmp_mount], capture=True)
+                _unregister_cleanup("mount", tmp_mount)
+            except subprocess.CalledProcessError as e:
+                log(f"WARNING: could not unmount {tmp_mount}: {e} - the copied "
+                    f"home may be incomplete")
+                ok = False
+        # rmdir, never rmtree: if the unmount failed, the directory is still
+        # the stick, and a recursive delete would wipe the copy (and the
+        # stick's other files). rmdir on a busy mount point just fails.
+        try:
+            os.rmdir(tmp_mount)
+        except OSError:
+            pass
+        _unregister_cleanup("dir", tmp_mount)
+
+    if ok:
+        log(f"Home directory copied to {device}")
+    return ok
+
+
 def do_fresh_install(drive: DriveInfo, base_url: str) -> None:
     """Write fresh image to drive"""
 
@@ -492,6 +638,19 @@ def do_fresh_install(drive: DriveInfo, base_url: str) -> None:
     # Sync and reload partition table
     run_cmd(["sync"])
     run_cmd(["partprobe", drive.device], check=False, capture=True)
+
+    # Offer to carry this machine's configuration across; otherwise the new
+    # stick boots with the shipped default home. Defaults to no (the person
+    # may be building a stick for somebody else). Asked only here - the A/B
+    # upgrade path writes to a drive that already carries its own home.
+    print()
+    print("  This machine's home directory holds its WiFi credentials,")
+    print("  ThinLinc settings and customisations. Copying it onto the new")
+    print("  drive means it boots configured. The SSH host keys and wg0.conf")
+    print("  are not copied, so the new machine keeps its own identity.")
+    print()
+    if confirm("  Copy this machine's home directory to the new drive?"):
+        copy_home_to_drive(drive.device)
 
     log("Fresh install complete!")
 
