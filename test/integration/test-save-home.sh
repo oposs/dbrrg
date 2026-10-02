@@ -40,10 +40,14 @@ mkdir -p "$STUBS"
 cat >"$STUBS/tar" <<'STUB'
 #!/bin/bash
 { echo "tar $*"; echo "PWD=$PWD"; } >>"$DBRRG_TEST_TAR_LOG"
+# Only the argument after a -f / -zcf style flag is an output file; --exclude=
+# patterns also contain slashes and must not be created.
+prev=""
 for a in "$@"; do
-    case "$a" in
-        -|*/*) [ "$a" = "-" ] || : >"$a" ;;
+    case "$prev" in
+        -*f) [ "$a" = "-" ] || : >"$a" ;;
     esac
+    prev="$a"
 done
 exit 0
 STUB
@@ -59,13 +63,31 @@ cat >"$STUBS/ping" <<'STUB'
 exit 0
 STUB
 
-# sudo must not actually run anything here: the script calls it for
-# dbrrg-ssh-hostkeys, mount and dd by absolute path, none of which an
-# unprivileged test may perform.
+# sudo runs only the commands the USB branch uses to write the ESP (tar, gzip,
+# mv, rm, sync), resolved through PATH so the stubbed tar and gzip are used;
+# without that the atomicity test would be vacuous. Everything else, such as
+# dbrrg-ssh-hostkeys --stage, mount and dd, is logged and swallowed because an
+# unprivileged test may not perform it.
 cat >"$STUBS/sudo" <<'STUB'
 #!/bin/bash
 echo "sudo $*" >>"$DBRRG_TEST_SUDO_LOG"
-cat >/dev/null 2>/dev/null || true
+case "${1:-}" in
+    tar|gzip|mv|rm|sync) exec "$@" ;;
+esac
+exit 0
+STUB
+
+# Only -t (test) is used by the script. Report the archive as valid unless the
+# test asked for a corrupt one.
+cat >"$STUBS/gzip" <<'STUB'
+#!/bin/bash
+[ -n "${DBRRG_TEST_GZIP_FAIL:-}" ] && exit 1
+exit 0
+STUB
+
+# The unreachable-server loop sleeps 1s per attempt; do not wait it out.
+cat >"$STUBS/sleep" <<'STUB'
+#!/bin/bash
 exit 0
 STUB
 
@@ -80,6 +102,9 @@ run_save_home() {
     DBRRG_HOME_DIR="$2" \
     DBRRG_STATE_DIR="$WORK/state" \
     DBRRG_CMDLINE="$WORK/cmdline" \
+    DBRRG_EFI_MOUNT="${DBRRG_EFI_MOUNT_OVERRIDE:-/run/dbrrg/storage/efi}" \
+    DBRRG_EXCLUDE_DEFAULT="${DBRRG_EXCLUDE_DEFAULT_OVERRIDE:-/etc/dbrrg/save-home-exclude}" \
+    DBRRG_TEST_GZIP_FAIL="${DBRRG_TEST_GZIP_FAIL:-}" \
     PATH="$STUBS:$PATH" \
         "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err"
     echo $?
@@ -129,6 +154,189 @@ if grep -q "dbrrg-ssh-hostkeys" "$WORK/sudo.log" 2>/dev/null; then
     ok "keeps going on a USB boot that recorded no boot-home-base"
 else
     bad "keeps going on a USB boot that recorded no boot-home-base (exit $rc, stderr: $(head -1 "$WORK/err" 2>/dev/null))"
+fi
+
+# ---------------------------------------------------------------- test 7
+# Every refusal needs its own exit code. The menu switches on these to tell
+# the user what happened; with everything at 0 it can only say "saved".
+setup
+echo failed >"$WORK/state/home-restore"
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "2" ]] && [[ ! -s "$WORK/tar.log" ]]; then
+    ok "exit 2 when this boot's home restore failed"
+else
+    bad "restore-failed refusal exited $rc (wanted 2), tar log $(wc -c <"$WORK/tar.log") bytes"
+fi
+
+# ---------------------------------------------------------------- test 8
+setup
+cat >"$STUBS/ping" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x "$STUBS/ping"
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "3" ]] && [[ ! -s "$WORK/curl.log" ]]; then
+    ok "exit 3 when the boot server is unreachable"
+else
+    bad "unreachable-server refusal exited $rc (wanted 3)"
+fi
+# restore the passing ping for the tests below
+cat >"$STUBS/ping" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod +x "$STUBS/ping"
+
+# ---------------------------------------------------------------- test 9
+# No boot server in the cmdline and no ESP mount: this machine has nowhere to
+# put a home. It used to print "home saved" and exit 0 on this path.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/no-such-mount" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "4" ]] && ! grep -q "home saved" "$WORK/out"; then
+    ok "exit 4 with no 'home saved' when there is nowhere to store the home"
+else
+    bad "no-target branch exited $rc (wanted 4), stdout: $(cat "$WORK/out")"
+fi
+
+# ---------------------------------------------------------------- test 10
+# An attempted save that breaks must not collide with the missing-home
+# refusal, which is exit 1. The menu would otherwise tell the user their home
+# directory does not exist when the upload merely failed.
+setup
+cat >"$STUBS/curl" <<'STUB'
+#!/bin/bash
+echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
+exit 7
+STUB
+chmod +x "$STUBS/curl"
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]]; then
+    ok "exit 5 when the upload was attempted and failed"
+else
+    bad "failed upload exited $rc (wanted 5)"
+fi
+cat >"$STUBS/curl" <<'STUB'
+#!/bin/bash
+echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
+exit 0
+STUB
+chmod +x "$STUBS/curl"
+
+# ---------------------------------------------------------------- test 11
+setup
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q "home saved" "$WORK/out"; then
+    ok "exit 0 and 'home saved' on a successful netboot save"
+else
+    bad "successful save exited $rc, stdout: $(cat "$WORK/out")"
+fi
+
+# --------------------------------------------------------------- test 12
+# The archive is unpacked synchronously by the initramfs on every boot, so an
+# unfiltered home makes every startup slower. A 233MB Claude binary did this.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+printf './.cache\n./.local/share/claude/versions\n' >"$WORK/exclude-default"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$WORK/exclude-default" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if grep -q 'exclude' "$WORK/tar.log" 2>/dev/null; then
+    ok "passes exclude patterns to tar"
+else
+    bad "no --exclude reached tar (exit $rc, tar log: $(cat "$WORK/tar.log" 2>/dev/null))"
+fi
+
+# --------------------------------------------------------------- test 13
+# A user file replaces the shipped defaults.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+printf './my-own-junk\n' >"$WORK/home/tluser/.save-home-exclude"
+printf './.cache\n' >"$WORK/exclude-default"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$WORK/exclude-default" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if grep -q 'my-own-junk' "$WORK/tar.log" 2>/dev/null; then
+    ok "~/.save-home-exclude takes precedence over the shipped defaults"
+else
+    bad "the user's exclude file was ignored (tar log: $(cat "$WORK/tar.log"))"
+fi
+
+# --------------------------------------------------------------- test 14
+# A pattern containing a space must stay one pattern. Word-splitting a line
+# into tar arguments breaks every path with a space in it.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+printf './My Documents/big\n' >"$WORK/home/tluser/.save-home-exclude"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if grep -q 'exclude=./My Documents/big' "$WORK/tar.log" 2>/dev/null; then
+    ok "an exclude pattern containing a space survives as one pattern"
+else
+    bad "a pattern with a space was split (tar log: $(cat "$WORK/tar.log"))"
+fi
+
+# --------------------------------------------------------------- test 15
+# A missing or empty exclude file must not produce a bare --exclude=, which
+# matches nothing or everything depending on the tar version.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+: >"$WORK/home/tluser/.save-home-exclude"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$WORK/nonexistent" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && ! grep -qE 'exclude=($|[[:space:]])' "$WORK/tar.log"; then
+    ok "an empty exclude file produces no bare --exclude="
+else
+    bad "empty exclude file produced '$(grep -o 'exclude=[^ ]*' "$WORK/tar.log" | head -3)' (exit $rc)"
+fi
+
+# --------------------------------------------------------------- test 16
+# Atomicity. The previous archive must survive a failed write - it is the only
+# copy of the user's home and the machine's SSH identity.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+echo "THE GOOD OLD ARCHIVE" >"$WORK/esp/home.tar.gz"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     DBRRG_TEST_GZIP_FAIL=1 \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] &&
+   grep -q "THE GOOD OLD ARCHIVE" "$WORK/esp/home.tar.gz" &&
+   [[ ! -e "$WORK/esp/home.tar.gz.new" ]]; then
+    ok "a corrupt new archive is discarded and the old one survives"
+else
+    bad "atomicity broken: exit $rc, old archive $(head -c40 "$WORK/esp/home.tar.gz" 2>/dev/null), .new $([[ -e "$WORK/esp/home.tar.gz.new" ]] && echo present || echo absent)"
+fi
+
+# --------------------------------------------------------------- test 17
+# It must write to the ESP the initramfs already mounted, never mount
+# by-partlabel again: every dbrrg stick carries that label, so with two sticks
+# plugged in the home can land on the wrong one.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && [[ -f "$WORK/esp/home.tar.gz" ]] &&
+   ! grep -q 'mount' "$WORK/sudo.log" 2>/dev/null; then
+    ok "writes to the existing ESP mount without mounting anything"
+else
+    bad "did not use the existing mount (exit $rc, sudo log: $(cat "$WORK/sudo.log" 2>/dev/null))"
+fi
+
+# --------------------------------------------------------------- test 18
+# And the whole script must no longer name that symlink at all.
+if ! grep -q 'by-partlabel' "$SCRIPT"; then
+    ok "dbrrg-save-home no longer mentions /dev/disk/by-partlabel"
+else
+    bad "dbrrg-save-home still references by-partlabel: $(grep -n by-partlabel "$SCRIPT")"
 fi
 
 exit $fail

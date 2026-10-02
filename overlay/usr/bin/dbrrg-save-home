@@ -6,6 +6,30 @@ set -e
 DBRRG_STATE_DIR="${DBRRG_STATE_DIR:-/run/dbrrg/state}"
 DBRRG_CMDLINE="${DBRRG_CMDLINE:-/proc/cmdline}"
 
+# The ESP the initramfs mounted and deliberately left mounted. mount-squashfs.sh
+# mounts it read-write and dbrrg-cleanup.sh says, in a comment, not to unmount
+# it. It is by construction the partition this boot read, so writing here means
+# the save and the restore cannot disagree.
+#
+# The old code mounted the EFI-SYSTEM partlabel symlink under /dev/disk on
+# /boot/efi instead. Every dbrrg stick carries that partlabel, so with a second
+# stick plugged in the symlink could resolve to the OTHER stick and the user's
+# home was written there. It also mounted the same vfat filesystem a second time.
+DBRRG_EFI_MOUNT="${DBRRG_EFI_MOUNT:-/run/dbrrg/storage/efi}"
+DBRRG_EXCLUDE_DEFAULT="${DBRRG_EXCLUDE_DEFAULT:-/etc/dbrrg/save-home-exclude}"
+
+# Exit codes, read by dbrrg-menu to tell the user what happened:
+#
+#   0  home saved
+#   1  the resolved home directory is missing or is not a directory
+#   2  this boot's home restore failed, so saving would destroy the good copy
+#   3  the boot server is unreachable
+#   4  this machine has no known place to store a home
+#   5  the save was attempted and failed
+#
+# Everything except 1 used to be 0, and the no-target branch printed "home
+# saved" while storing nothing.
+
 # The directory to archive, which is NOT $HOME.
 #
 # upgrade-image re-execs itself under sudo and then calls this script from
@@ -65,6 +89,31 @@ BOOT_SRV=$(cat "$DBRRG_CMDLINE" | sed -n 's/.*ramroot=http.*\/\/\([^/:]*\).*/\1/
 #systemctl --user disable pulseaudio.socket
 cd "$DBRRG_HOME_DIR"
 
+# Build the tar exclude list.
+#
+# The archive is unpacked SYNCHRONOUSLY by the initramfs on every boot, so
+# everything in it is paid for at every startup. A NUC7i3BNK's home held a
+# 233MB Claude Code binary and a large ~/.cache: a 22MB archive became several
+# hundred MB and every boot got slower.
+#
+# `set --` builds a real argument list rather than a string, so a pattern
+# containing a space stays one pattern. A string split by the shell would
+# break every path with a space in it.
+EXCLUDE_FILE="$DBRRG_HOME_DIR/.save-home-exclude"
+[ -r "$EXCLUDE_FILE" ] || EXCLUDE_FILE="$DBRRG_EXCLUDE_DEFAULT"
+set --
+if [ -r "$EXCLUDE_FILE" ]; then
+  while IFS= read -r _dsh_pat || [ -n "$_dsh_pat" ]; do
+    # Skip blanks and comments. An empty pattern would become a bare
+    # --exclude=, which matches nothing or everything depending on tar
+    # version - either way not what the file says.
+    case "$_dsh_pat" in
+      ''|'#'*) continue ;;
+    esac
+    set -- "$@" "--exclude=$_dsh_pat"
+  done <"$EXCLUDE_FILE"
+fi
+
 # Refuse to overwrite a good archive with a home we failed to restore.
 #
 # restore_home cannot abort the boot - a non-zero return there bricks the
@@ -84,7 +133,7 @@ if [ "$DBRRG_RESTORE_STATE" = "failed" ]; then
   echo "dbrrg: home restore FAILED this boot - refusing to save, so the" >&2
   echo "       stored home and SSH host keys are not overwritten with a" >&2
   echo "       default one. Investigate before logging out again." >&2
-  exit 0
+  exit 2
 fi
 
 # Capture the live SSH host keys into the home directory so they travel with
@@ -108,16 +157,63 @@ if [ "" != "$BOOT_SRV" ]; then
     echo "dbrrg: boot server $BOOT_SRV unreachable after ${_dsh_waited}s -" >&2
     echo "       refusing to save. An upload that cannot reach its target" >&2
     echo "       cannot work; retry once the network is back." >&2
-    exit 0
+    exit 3
   fi
-  tar zcf /tmp/$$.tar.gz . && curl -F data=@/tmp/$$.tar.gz ${BASE_PATH}/home.pkg?mac=${MAC_ADDR}
-  rm /tmp/$$.tar.gz
-elif [ -b /dev/disk/by-partlabel/EFI-SYSTEM ]; then
-  sudo mkdir -p /boot/efi
-  sudo mount /dev/disk/by-partlabel/EFI-SYSTEM /boot/efi
-  tar zcf - . | sudo dd of=/boot/efi/home.tar.gz
-  sudo umount /boot/efi
+  if ! tar "$@" -zcf "/tmp/$$.tar.gz" .; then
+    rm -f "/tmp/$$.tar.gz"
+    echo "dbrrg: could not archive $DBRRG_HOME_DIR - nothing was uploaded." >&2
+    exit 5
+  fi
+  if ! curl -F "data=@/tmp/$$.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
+    rm -f "/tmp/$$.tar.gz"
+    echo "dbrrg: upload to ${BASE_PATH} failed - your home was NOT saved." >&2
+    exit 5
+  fi
+  rm -f "/tmp/$$.tar.gz"
+elif [ -d "$DBRRG_EFI_MOUNT" ]; then
+  # Write beside the live archive and rename over it only once the new one is
+  # known good.
+  #
+  # The old code was `tar zcf - . | sudo dd of=/boot/efi/home.tar.gz`, which
+  # truncates the only copy of the user's home BEFORE writing a byte. A power
+  # cut or a full ESP mid-write left a broken archive, and the next boot came
+  # up with an empty home: no SSH host keys, no WireGuard key, no settings.
+  #
+  # Writing tar -f directly also removes a second hole: /bin/sh has no
+  # pipefail, so `tar | dd` only ever tested dd's status, and a tar that died
+  # mid-stream still looked like a successful save.
+  #
+  # Every write to the ESP goes through sudo: the initramfs mounts it with a
+  # plain `mount -t vfat` and no uid= option, so it is root:root 0755 and
+  # tluser cannot create files there. tar still runs in the home directory, so
+  # the members stay relative.
+  _dsh_new="$DBRRG_EFI_MOUNT/home.tar.gz.new"
+  sudo rm -f "$_dsh_new"
+  if ! sudo tar "$@" -zcf "$_dsh_new" .; then
+    sudo rm -f "$_dsh_new"
+    echo "dbrrg: could not write the archive - your home was NOT saved, and" >&2
+    echo "       the previous one is untouched." >&2
+    exit 5
+  fi
+  # Verify before committing. A truncated gzip is exactly what a full ESP
+  # produces, and restore_home would accept a file that merely exists.
+  if ! sudo gzip -t "$_dsh_new"; then
+    sudo rm -f "$_dsh_new"
+    echo "dbrrg: the new archive is corrupt - your home was NOT saved, and" >&2
+    echo "       the previous one is untouched." >&2
+    exit 5
+  fi
+  if ! sudo mv -f "$_dsh_new" "$DBRRG_EFI_MOUNT/home.tar.gz"; then
+    sudo rm -f "$_dsh_new"
+    echo "dbrrg: could not replace the stored archive - your home was NOT" >&2
+    echo "       saved, and the previous one is untouched." >&2
+    exit 5
+  fi
+  sudo sync
 else
-  echo "Sorry, no idea how to store your home persistanly"
+  echo "dbrrg: this machine has no boot server and no mounted EFI partition," >&2
+  echo "       so there is nowhere to store your home directory. Nothing was" >&2
+  echo "       saved." >&2
+  exit 4
 fi
 echo "home saved"
