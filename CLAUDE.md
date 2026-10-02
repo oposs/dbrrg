@@ -221,6 +221,19 @@ The system implements home directory persistence across reboots:
   default one; 3 boot server unreachable; 4 nowhere to store; 5 save
   attempted and failed. `test/integration/test-save-home.sh` guards each.
 
+- `upgrade-image`'s fresh install can copy this machine's home onto the new
+  drive: `home.tar.gz` on its ESP, addressed by device node
+  (`find_efi_partition(device)`), never by partlabel - the new stick carries
+  the same `EFI-SYSTEM` label as the running one. It uses the save-home
+  exclude list and **always** leaves out `~/.dbrrg-ssh-host-keys` and
+  `~/wg0.conf` (`IDENTITY_EXCLUDES`, outside the user-editable list). Those
+  are machine identities: two machines would share one SSH host key or one
+  WireGuard private key, which breaks both tunnels. `~/.dbrrg-password`
+  travels on purpose. Like `dbrrg-save-home`, it refuses when this boot's
+  restore failed (`/run/dbrrg/state/home-restore` is `failed`), since the
+  live home is then a default one. `test/unit/test_upgrade_image.py` guards
+  this, run via `make test-unit`.
+
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.
 
 ## Network Boot vs USB Boot

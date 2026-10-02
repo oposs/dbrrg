@@ -14,6 +14,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -329,9 +330,11 @@ class TestCopyHomeToDrive(unittest.TestCase):
         # tar writes a partial file and then fails, the way a real tar does
         # when the partition fills up, so the real os.unlink is exercised.
         # The check has to happen AT unmount time, not after the call
-        # returns: copy_home_to_drive rmtree's its temporary mount point on
+        # returns: copy_home_to_drive removes its temporary mount point on
         # the way out, so a check afterwards finds the file gone whether the
-        # code removed it or not, and passes vacuously.
+        # code unlinked it or not, and passes vacuously. (It uses os.rmdir,
+        # deliberately: rmtree of a still-mounted directory would wipe the
+        # new stick. See test_a_failed_umount_leaves_the_mount_dir_intact.)
         calls = []
         dest_seen = []
         existed_at_umount = []
@@ -503,6 +506,262 @@ class TestCopyHomeToDrive(unittest.TestCase):
 
     def test_an_oserror_after_a_partial_write_removes_the_partial(self):
         self._partial_then_raise(OSError(28, "No space left on device"))
+
+    # ---- failed umount must never delete what is under the mount point ----
+
+    def test_a_failed_umount_leaves_the_mount_dir_intact(self):
+        # If umount fails, the temporary directory still IS the new stick. A
+        # recursive delete there wipes the stick's firmware. The fake mount
+        # drops a sentinel into the directory the way a real mount would show
+        # the stick's files; it must survive a failed umount.
+        sentinel = []
+
+        def fake_run_cmd(cmd, **kwargs):
+            if cmd[0] == "mount":
+                p = Path(cmd[2]) / "stick-file"
+                p.write_text("firmware")
+                sentinel.append(p)
+            if cmd[0] == "umount":
+                raise subprocess.CalledProcessError(32, cmd)
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui, "run_cmd", side_effect=fake_run_cmd):
+                    with contextlib.redirect_stdout(out):
+                        result = ui.copy_home_to_drive("/dev/sdb")
+        self.assertTrue(sentinel, "mount was never called")
+        self.addCleanup(shutil.rmtree, sentinel[0].parent, True)
+        self.assertFalse(result)
+        self.assertTrue(
+            sentinel[0].exists(),
+            "a failed umount must not delete files under the mount directory",
+        )
+        self.assertIn("could not unmount", out.getvalue())
+
+    # ---- this boot's restore state ----
+
+    def _state(self, content):
+        state = Path(self.work.name) / "state"
+        state.mkdir(exist_ok=True)
+        if content is not None:
+            (state / "home-restore").write_text(content)
+        return mock.patch.object(ui, "STATE_DIR", str(state))
+
+    def test_a_failed_restore_refuses_the_copy_with_a_named_reason(self):
+        out = io.StringIO()
+        with self._as_tluser(), self._state("failed\n"):
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui, "run_cmd") as run_cmd:
+                    with contextlib.redirect_stdout(out):
+                        self.assertFalse(ui.copy_home_to_drive("/dev/sdb"))
+        run_cmd.assert_not_called()
+        self.assertIn("this boot's home restore failed", out.getvalue())
+        self.assertIn("default one", out.getvalue())
+
+    def test_a_missing_or_other_restore_state_proceeds(self):
+        for content in (None, "ok\n", "absent\n"):
+            with self.subTest(content=content):
+                with self._as_tluser(), self._state(content):
+                    with mock.patch.object(ui, "find_efi_partition",
+                                           return_value="/dev/sdb1"):
+                        with mock.patch.object(ui, "run_cmd"):
+                            self.assertTrue(ui.copy_home_to_drive("/dev/sdb"))
+
+    def test_an_unreadable_state_file_proceeds(self):
+        with self._as_tluser(), self._state("failed\n"):
+            with mock.patch("builtins.open", side_effect=PermissionError("no")):
+                self.assertFalse(ui.home_restore_failed())
+
+    # ---- tar's own error is shown ----
+
+    def test_a_tar_failure_shows_tars_stderr_not_the_command_line(self):
+        def fake_run_cmd(cmd, **kwargs):
+            if cmd[0] == "tar":
+                raise subprocess.CalledProcessError(
+                    2, cmd, stderr="tar: ./x: Wrote only 0 of 10: No space left on device\n"
+                )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui, "run_cmd", side_effect=fake_run_cmd):
+                    with contextlib.redirect_stdout(out):
+                        self.assertFalse(ui.copy_home_to_drive("/dev/sdb"))
+        self.assertIn("No space left on device", out.getvalue())
+        self.assertNotIn("--exclude", out.getvalue())
+
+    def test_tar_exit_1_note_includes_stderr(self):
+        def fake_run_cmd(cmd, **kwargs):
+            if cmd[0] == "tar":
+                raise subprocess.CalledProcessError(
+                    1, cmd, stderr="tar: ./sock: socket ignored\n"
+                )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui, "run_cmd", side_effect=fake_run_cmd):
+                    with contextlib.redirect_stdout(out):
+                        self.assertTrue(ui.copy_home_to_drive("/dev/sdb"))
+        self.assertIn("socket ignored", out.getvalue())
+
+    # ---- "never raises" ----
+
+    def test_a_mkdtemp_failure_is_reported_not_raised(self):
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui.tempfile, "mkdtemp",
+                                       side_effect=OSError(28, "No space left")):
+                    with mock.patch.object(ui, "run_cmd") as run_cmd:
+                        with contextlib.redirect_stdout(out):
+                            self.assertFalse(ui.copy_home_to_drive("/dev/sdb"))
+        run_cmd.assert_not_called()
+        self.assertIn("WARNING", out.getvalue())
+        self.assertIn("temporary mount point", out.getvalue())
+
+    def test_ctrl_c_during_the_efi_retry_wait_is_reported_not_raised(self):
+        self.sleep.side_effect = KeyboardInterrupt()
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value=None):
+                with mock.patch.object(ui, "run_cmd") as run_cmd:
+                    with contextlib.redirect_stdout(out):
+                        self.assertFalse(ui.copy_home_to_drive("/dev/sdb"))
+        run_cmd.assert_not_called()
+        self.assertIn("WARNING: home copy interrupted", out.getvalue())
+
+
+def _drive(is_boot=False):
+    return ui.DriveInfo(
+        device="/dev/sdb", size="16G", model="Stick", label="", is_dbrrg=False,
+        efi_partition=None, part_size_mb=0, is_boot=is_boot,
+        has_tl_old=False, has_tl_new=False,
+    )
+
+
+class TestHomeCopyQuestion(unittest.TestCase):
+    """The question is asked on a fresh install only, after the write."""
+
+    def _fresh_install(self, answers):
+        """Run do_fresh_install with scripted input() answers."""
+        events = []
+        prompts = []
+
+        def fake_input(prompt=""):
+            prompts.append(prompt)
+            a = answers.pop(0)
+            if isinstance(a, BaseException):
+                raise a
+            return a
+
+        with mock.patch("builtins.input", side_effect=fake_input), \
+             mock.patch.object(ui, "download_and_write_image",
+                               side_effect=lambda *a: events.append("write")), \
+             mock.patch.object(ui, "run_cmd"), \
+             mock.patch.object(
+                 ui, "copy_home_to_drive",
+                 side_effect=lambda d: events.append("copy") or True) as copy, \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = ui.do_fresh_install(_drive(), "http://x")
+        return result, copy, events, prompts
+
+    def test_yes_copies_after_the_image_is_written(self):
+        result, copy, events, prompts = self._fresh_install(["y", "y"])
+        self.assertEqual(events, ["write", "copy"])
+        copy.assert_called_once_with("/dev/sdb")
+        self.assertTrue(result)
+        self.assertIn("Copy this machine's home", prompts[1])
+
+    def test_no_skips_the_copy(self):
+        result, copy, events, prompts = self._fresh_install(["y", "n"])
+        copy.assert_not_called()
+        self.assertEqual(events, ["write"])
+        self.assertIsNone(result)
+        self.assertEqual(len(prompts), 2, "the question was never asked")
+
+    def test_eof_skips_the_copy(self):
+        result, copy, events, prompts = self._fresh_install(["y", EOFError()])
+        copy.assert_not_called()
+        self.assertIsNone(result)
+
+    def test_a_failed_copy_is_returned_not_hidden(self):
+        with mock.patch("builtins.input", side_effect=["y", "y"]), \
+             mock.patch.object(ui, "download_and_write_image"), \
+             mock.patch.object(ui, "run_cmd"), \
+             mock.patch.object(ui, "copy_home_to_drive", return_value=False), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertIs(ui.do_fresh_install(_drive(), "http://x"), False)
+
+    def test_the_ab_upgrade_never_asks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fw = os.path.join(tmp, "firmware")
+            with mock.patch("builtins.input",
+                            side_effect=AssertionError("asked a question")), \
+                 mock.patch.object(ui.os.path, "ismount", return_value=True), \
+                 mock.patch.object(ui, "download_firmware", return_value=fw), \
+                 mock.patch.object(ui, "run_cmd"), \
+                 mock.patch.object(ui, "copy_home_to_drive") as copy, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                ui.do_ab_upgrade(_drive(is_boot=True), "http://x")
+        copy.assert_not_called()
+
+
+class TestClosingSummary(unittest.TestCase):
+    """The Success screen must say what did not happen."""
+
+    def _main(self, operation, home_copied, save_rc):
+        out = io.StringIO()
+        with mock.patch.object(ui, "ensure_root"), \
+             mock.patch.object(ui, "select_source", return_value="http://x"), \
+             mock.patch.object(ui, "enumerate_drives", return_value=[_drive()]), \
+             mock.patch.object(ui, "show_drives_with_operations",
+                               return_value=(_drive(), operation)), \
+             mock.patch.object(ui, "confirm", return_value=True), \
+             mock.patch.object(ui, "do_fresh_install", return_value=home_copied), \
+             mock.patch.object(ui, "do_ab_upgrade"), \
+             mock.patch.object(ui, "save_home_before_finish", return_value=save_rc), \
+             contextlib.redirect_stdout(out):
+            rc = ui.main()
+        self.assertEqual(rc, 0, "the install itself still counts as succeeded")
+        return out.getvalue()
+
+    def test_copied_and_saved(self):
+        text = self._main("fresh", True, 0)
+        self.assertIn("Home directory copied to the new drive.", text)
+        self.assertIn("Home directory saved.", text)
+        self.assertNotIn("NOT", text)
+
+    def test_a_failed_copy_is_named_on_the_success_screen(self):
+        text = self._main("fresh", False, 0)
+        self.assertIn("Home directory NOT copied", text)
+        self.assertIn("Operation completed successfully!", text)
+
+    def test_a_failed_save_is_named_on_the_success_screen(self):
+        text = self._main("fresh", None, 3)
+        self.assertIn("Home directory NOT saved - see the warning above.", text)
+        self.assertNotIn("Home directory saved.", text)
+
+    def test_no_copy_line_when_the_copy_was_not_asked_for(self):
+        text = self._main("upgrade", None, 0)
+        self.assertNotIn("copied", text)
+        self.assertIn("Home directory saved.", text)
+
+
+class TestSavingAnnounced(unittest.TestCase):
+    def test_a_line_is_printed_before_the_save_runs(self):
+        order = []
+        with mock.patch.object(ui, "log", side_effect=lambda m: order.append("log")), \
+             mock.patch.object(
+                 ui.subprocess, "run",
+                 side_effect=lambda *a, **k: order.append("run")
+                 or subprocess.CompletedProcess([], 0, b"", b"")):
+            ui.save_home_before_finish()
+        self.assertEqual(order[:2], ["log", "run"])
 
 
 if __name__ == "__main__":

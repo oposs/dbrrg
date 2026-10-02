@@ -78,6 +78,7 @@ help:
 	@echo "  ipxe              - Build iPXE network boot loaders"
 	@echo "  image             - Build bootable USB image"
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
+	@echo "  test-unit         - Run offline unit tests (no rootfs needed)"
 	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
 	@echo "  clean             - Remove artifacts"

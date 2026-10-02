@@ -120,6 +120,7 @@ Features:
 - **Drive selection**: Choose which USB to upgrade
 - **Boot USB detection**: Safe additive upgrade when running from the target USB
 - **A/B fallback**: Previous version kept as fallback (type `previous` at boot menu)
+- **Home copy**: A fresh install offers to copy this machine's home onto the new drive (SSH host keys and `wg0.conf` stay behind, so each machine keeps its own identity)
 
 Upgrade modes:
 - **Additive** (boot USB): Writes new firmware to `tl.new/`, keeps `tl/` as fallback

@@ -40,6 +40,9 @@ IDENTITY_EXCLUDES = ("./.dbrrg-ssh-host-keys", "./wg0.conf")
 # udev may not have re-read the partition table yet, right after partprobe on
 # a drive that was just written byte for byte.
 EFI_RETRY_SECONDS = 15
+# Where the initramfs records this boot's home restore outcome; dbrrg-save-home
+# reads the same file. Module constant so tests can point it elsewhere.
+STATE_DIR = "/run/dbrrg/state"
 
 # ============ Data Classes ============
 
@@ -521,6 +524,33 @@ def home_archive_argv(home_dir: str, dest: str) -> List[str]:
     return ["tar", "-C", home_dir, *excludes, "-czf", dest, "."]
 
 
+def _failure_detail(e: subprocess.CalledProcessError) -> str:
+    """What to show for a failed command: its stderr, else the exception text.
+
+    str(e) is the whole command line (every --exclude for tar), which hides
+    the one thing the person needs to see, e.g. "No space left on device".
+    """
+    stderr = e.stderr
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    stderr = (stderr or "").strip()
+    return stderr if stderr else str(e)
+
+
+def home_restore_failed() -> bool:
+    """True when this boot's home restore failed (the home is a default one).
+
+    A missing or unreadable marker means "proceed": it is absent on a first
+    boot and on an initramfs that predates it, same as dbrrg-save-home.
+    """
+    try:
+        with open(os.path.join(STATE_DIR, "home-restore"),
+                  encoding="utf-8", errors="replace") as f:
+            return f.read().strip() == "failed"
+    except OSError:
+        return False
+
+
 def copy_home_to_drive(device: str) -> bool:
     """Write this machine's home directory onto a freshly installed drive.
 
@@ -542,18 +572,35 @@ def copy_home_to_drive(device: str) -> bool:
         log(f"WARNING: {home_dir} is not a directory - home not copied")
         return False
 
-    efi_partition = find_efi_partition(device)
+    # The same refusal dbrrg-save-home makes: after a failed restore the live
+    # home is the shipped default, and copying it would pass that off as the
+    # machine's configuration.
+    if home_restore_failed():
+        log("WARNING: this boot's home restore failed, so the home here is a "
+            "default one - home not copied")
+        return False
+
     waited = 0
-    while efi_partition is None and waited < EFI_RETRY_SECONDS:
-        time.sleep(1)
-        waited += 1
+    try:
         efi_partition = find_efi_partition(device)
+        while efi_partition is None and waited < EFI_RETRY_SECONDS:
+            time.sleep(1)
+            waited += 1
+            efi_partition = find_efi_partition(device)
+    except KeyboardInterrupt:
+        log("WARNING: home copy interrupted - home not copied")
+        return False
     if efi_partition is None:
         log(f"WARNING: no {EFI_PARTLABEL} partition found on {device} after "
             f"{waited}s - home not copied")
         return False
 
-    tmp_mount = tempfile.mkdtemp(prefix="dbrrg-home-")
+    try:
+        tmp_mount = tempfile.mkdtemp(prefix="dbrrg-home-")
+    except OSError as e:
+        log(f"WARNING: could not create a temporary mount point: {e} - "
+            f"home not copied")
+        return False
     _register_cleanup("dir", tmp_mount)
     dest = os.path.join(tmp_mount, HOME_ARCHIVE_NAME)
     ok = False
@@ -572,8 +619,9 @@ def copy_home_to_drive(device: str) -> bool:
             # dangling symlink, a file being written - and still produces a
             # usable archive. Only 2 and above are real errors.
             if e.returncode == 1:
+                detail = _failure_detail(e) if e.stderr else ""
                 log("NOTE: some files changed while being archived; the copy "
-                    "is usable")
+                    "is usable" + (f" ({detail})" if detail else ""))
             else:
                 raise
 
@@ -586,7 +634,7 @@ def copy_home_to_drive(device: str) -> bool:
         run_cmd(["sync"], capture=True)
         ok = True
     except subprocess.CalledProcessError as e:
-        log(f"WARNING: could not copy the home directory: {e}")
+        log(f"WARNING: could not copy the home directory: {_failure_detail(e)}")
         if os.path.isfile(dest):
             # A truncated home.tar.gz is worse than none at all.
             try:
@@ -631,8 +679,12 @@ def copy_home_to_drive(device: str) -> bool:
     return ok
 
 
-def do_fresh_install(drive: DriveInfo, base_url: str) -> None:
-    """Write fresh image to drive"""
+def do_fresh_install(drive: DriveInfo, base_url: str) -> Optional[bool]:
+    """Write fresh image to drive.
+
+    Returns None when the home copy was not asked for or declined, otherwise
+    whether it succeeded. The install itself counts as done either way.
+    """
 
     print_header("WARNING - Data Loss")
     print(f"\n  This will ERASE ALL DATA on {drive.device}!")
@@ -651,19 +703,23 @@ def do_fresh_install(drive: DriveInfo, base_url: str) -> None:
     run_cmd(["partprobe", drive.device], check=False, capture=True)
 
     # Offer to carry this machine's configuration across; otherwise the new
-    # stick boots with the shipped default home. Defaults to no (the person
-    # may be building a stick for somebody else). Asked only here - the A/B
-    # upgrade path writes to a drive that already carries its own home.
+    # stick boots with the shipped default home. Nothing is copied without an
+    # explicit "y": confirm() re-asks on an empty answer and treats EOF or
+    # Ctrl-C as no (the person may be building a stick for somebody else).
+    # Asked only here - the A/B upgrade path writes to a drive that already
+    # carries its own home.
     print()
     print("  This machine's home directory holds its WiFi credentials,")
     print("  ThinLinc settings and customisations. Copying it onto the new")
     print("  drive means it boots configured. The SSH host keys and wg0.conf")
     print("  are not copied, so the new machine keeps its own identity.")
     print()
+    home_copied: Optional[bool] = None
     if confirm("  Copy this machine's home directory to the new drive?"):
-        copy_home_to_drive(drive.device)
+        home_copied = copy_home_to_drive(drive.device)
 
     log("Fresh install complete!")
+    return home_copied
 
 
 # ============ Drive Display ============
@@ -793,6 +849,7 @@ def save_home_before_finish() -> int:
     Never raises: a failed save must not lose the install that just
     succeeded, but it must not be hidden either.
     """
+    log("Saving the home directory (this can take a few minutes on netboot)...")
     try:
         result = subprocess.run(
             ["dbrrg-save-home"],
@@ -823,6 +880,22 @@ def save_home_before_finish() -> int:
 
 # ============ Main ============
 
+def print_outcome_lines(home_copied: Optional[bool], home_saved: bool) -> None:
+    """One line per outcome, so the closing screen cannot contradict a warning.
+
+    The install succeeded either way; these lines say what else did not.
+    """
+    if home_copied is True:
+        print("  Home directory copied to the new drive.")
+    elif home_copied is False:
+        print("  Home directory NOT copied to the new drive - the reason "
+              "was printed above.")
+    if home_saved:
+        print("  Home directory saved.")
+    else:
+        print("  Home directory NOT saved - see the warning above.")
+
+
 def main() -> int:
     """Main entry point"""
     try:
@@ -849,6 +922,7 @@ def main() -> int:
         drive, operation = result
 
         # Step 4: Execute the selected operation
+        home_copied: Optional[bool] = None
         if operation == "upgrade":
             # Confirm upgrade
             print_header("Confirm Upgrade")
@@ -868,14 +942,15 @@ def main() -> int:
             # Fresh install (overwrite)
             if drive.is_boot:
                 die("Cannot overwrite the boot drive while running!")
-            do_fresh_install(drive, base_url)
+            home_copied = do_fresh_install(drive, base_url)
 
         # Save home before a potential reboot. A failure here is reported and
         # does not fail the install, which has already succeeded.
-        save_home_before_finish()
+        home_saved = save_home_before_finish() == 0
 
         print_header("Success")
         print("\n  Operation completed successfully!")
+        print_outcome_lines(home_copied, home_saved)
         if operation == "upgrade" and drive.is_boot:
             print("\n  Reboot to activate the new firmware.")
             print("  If it fails, select 'previous' at boot menu.")
