@@ -189,11 +189,16 @@ fn flag(entry: &Entry, key: &str) -> bool {
 }
 
 fn non_empty(entry: &Entry, key: &str) -> Option<String> {
-    entry
-        .get(key)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|v| v.chars().take(MAX_TEXT_CHARS).collect())
+    // A tile draws each text as one line. A `\n` escape or other control
+    // character becomes a space, so one file cannot paint text down over
+    // the rows below.
+    let v: String = entry
+        .get(key)?
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let v = v.trim();
+    (!v.is_empty()).then(|| v.chars().take(MAX_TEXT_CHARS).collect())
 }
 
 /// Build a tile from one parsed file. `user` restricts the action to `run`.
@@ -698,6 +703,23 @@ mod tests {
         );
         assert_eq!(tiles[0].name.chars().count(), MAX_TEXT_CHARS);
         assert_eq!(tiles[0].comment.as_ref().unwrap().chars().count(), MAX_TEXT_CHARS);
+    }
+
+    #[test]
+    fn text_is_one_line() {
+        let tiles = merge(
+            &[],
+            &[
+                src(
+                    "1.desktop",
+                    "[Desktop Entry]\nName=a\\nb\tc\nComment=\\n\\n\\nlow\nExec=x\n",
+                ),
+                src("2.desktop", "[Desktop Entry]\nName=\\n\\n\\n\nExec=x\n"),
+            ],
+        );
+        assert_eq!(tiles[0].name, "a b c");
+        assert_eq!(tiles[0].comment.as_deref(), Some("low"));
+        assert_eq!(tiles[1].problem.as_deref(), Some("2.desktop has no Name"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use crate::icons::{self, IconRoots};
 use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
+use egui::text::{LayoutJob, TextWrapping};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
 use egui_shadcn::Theme;
 use egui_shadcn::components::button::{Button, ButtonVariant};
@@ -221,20 +222,30 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
     }
     let mut y = icon_rect.bottom() + 12.0;
     let text_w = rect.width() - 24.0;
-    let mut line = |text: &str, font: FontId, color: Color32| {
-        let galley = p.layout(text.to_string(), font, color, text_w);
-        p.galley(pos2(rect.center().x - galley.size().x / 2.0, y), galley.clone(), color);
+    // Name and Comment come from files the user writes. Each is one line,
+    // cut with an ellipsis, and all text is clipped to the tile, so no file
+    // can paint over its neighbours.
+    let clipped = ui.painter_at(rect);
+    let mut line = |text: &str, font: FontId, color: Color32, one_line: bool| {
+        let galley = if one_line {
+            let mut job = LayoutJob::simple_singleline(text.to_string(), font, color);
+            job.wrap = TextWrapping::truncate_at_width(text_w);
+            clipped.layout_job(job)
+        } else {
+            clipped.layout(text.to_string(), font, color, text_w)
+        };
+        clipped.galley(pos2(rect.center().x - galley.size().x / 2.0, y), galley.clone(), color);
         y += galley.size().y + 4.0;
     };
-    line(&tile.name, FontId::proportional(20.0), fg);
+    line(&tile.name, FontId::proportional(20.0), fg, true);
     if let Some(c) = &tile.comment {
-        line(c, FontId::proportional(14.0), t.palette.muted_foreground);
+        line(c, FontId::proportional(14.0), t.palette.muted_foreground, true);
     }
     if let Some(why) = &tile.problem {
-        line(why, FontId::monospace(13.0), WARN);
+        line(why, FontId::monospace(13.0), WARN, false);
     }
     if let Some(note) = &tile.note {
-        line(note, FontId::monospace(12.0), t.palette.muted_foreground);
+        line(note, FontId::monospace(12.0), t.palette.muted_foreground, false);
     }
     if let Origin::Reworded { ignored } = &tile.origin {
         let text = if ignored.is_empty() {
@@ -242,7 +253,7 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
         } else {
             format!("reworded; ignored: {}", ignored.join(", "))
         };
-        line(&text, FontId::monospace(12.0), t.palette.muted_foreground);
+        line(&text, FontId::monospace(12.0), t.palette.muted_foreground, false);
     }
     if tile.origin == Origin::User {
         p.text(
@@ -277,6 +288,60 @@ fn dialog(ui: &Ui, title: &str, body: impl FnOnce(&mut Ui, &Theme)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::tiles::{Action, Grid};
+
+    // Before the fix a long Name wrapped down the screen and the painter was
+    // clipped only to the scroll area, so text ran over the rows below.
+    #[test]
+    fn tile_text_stays_on_one_line_inside_its_tile() {
+        let long = "W".repeat(120);
+        let tile = Tile {
+            file: "1.desktop".into(),
+            name: long.clone(),
+            comment: Some(long.clone()),
+            icon: None,
+            action: Action::Run,
+            argv: vec!["x".into()],
+            terminal: false,
+            save_on_exit: false,
+            origin: Origin::User,
+            problem: None,
+            note: None,
+        };
+        let menu = Menu::new(
+            Grid {
+                tiles: vec![tile],
+                banner: vec![],
+            },
+            false,
+        );
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 720.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            show(ui, &menu, &[None], Instant::now());
+        });
+        // The font atlas upload is not applied anywhere here.
+        out.textures_delta.clear();
+        let texts: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with("WWW") => Some((c.clip_rect, t)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "name and comment drawn");
+        for (clip, t) in texts {
+            assert_eq!(t.galley.rows.len(), 1, "one line");
+            assert!(clip.height() <= 260.0, "clipped to the tile, not {clip:?}");
+            assert!(clip.contains_rect(t.visual_bounding_rect()), "inside its clip");
+        }
+    }
 
     #[test]
     fn elapsed_is_minutes_and_seconds() {
