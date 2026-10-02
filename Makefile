@@ -82,7 +82,7 @@ help:
 	@echo "  qemu-smoke-netboot - Headless HTTP netboot smoke test"
 	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
-	@echo "  clean             - Remove artifacts"
+	@echo "  clean             - Remove artifacts (FORCE=1 if artifacts is a symlink)"
 	@echo "  help              - Show this help"
 	@echo ""
 	@echo "Variables:"
@@ -354,6 +354,7 @@ test: rootfs
 	@test/integration/test-password.sh
 	@test/integration/test-field-report.sh
 	@test/integration/test-container-stamp.sh
+	@test/integration/test-make-clean.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of
@@ -367,8 +368,18 @@ test-runtime: rootfs
 		test/runtime
 	@test/runtime/test-labwc-runtime.sh $(PROJECT_NAME)-runtime-test:$(VERSION)
 
+# A symlinked artifacts directory points somewhere this checkout may not own
+# alone: `rm -rf artifacts/*` follows the link and empties the target, other
+# checkouts' builds included. clean therefore refuses it unless FORCE=1. The
+# stamps are this checkout's own and are always removed.
 clean:
-	rm -rf $(ARTIFACT_DIR)/*
 	rm -f .ubuntu-container .image-builder-container .ipxe-container
+	@if [ -L "$(ARTIFACT_DIR)" ] && [ "$(FORCE)" != 1 ]; then \
+		echo "$(ARTIFACT_DIR) is a symlink to $$(readlink "$(ARTIFACT_DIR)") - not emptying it."; \
+		echo "Removed the container stamps only. To empty the link target too:"; \
+		echo "  make clean FORCE=1"; \
+		exit 1; \
+	fi
+	rm -rf $(ARTIFACT_DIR)/*
 	@echo "✓ Cleaned artifacts"
 
