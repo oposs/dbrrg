@@ -62,6 +62,13 @@ for a in "$@"; do
         data=@*) [ -f "${a#data=@}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
     esac
 done
+# Stand in for an upload that hangs, so a test can signal the script while it
+# waits. The sleep is bounded and in the script's process group, so a signal
+# to the group ends it and nothing outlives the test.
+if [ -n "${DBRRG_TEST_CURL_BLOCK:-}" ]; then
+    : >"$DBRRG_TEST_CURL_BLOCK"
+    /bin/sleep 30
+fi
 exit "${DBRRG_TEST_CURL_RC:-0}"
 STUB
 
@@ -466,6 +473,54 @@ if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
     ok "the temporary archive is removed when tar fails"
 else
     bad "failed tar: exit $rc, left behind: $(ls -A "$WORK/tmp")"
+fi
+
+# --------------------------------------------------------------- test 25
+# Logout can send SIGHUP while the upload is still running. A POSIX sh killed
+# by a signal skips its EXIT trap, so without `trap 'exit 5' HUP INT TERM` the
+# archive - password hash and SSH host private keys - stays behind in $TMPDIR
+# and the menu sees a signal status instead of 5.
+#
+# The script runs in its own process group (setsid) and the whole group gets
+# the signal, as a terminal hangup delivers it. Every wait has a deadline.
+setup
+ready="$WORK/curl-ready"
+rm -f "$ready"
+DBRRG_TEST_TAR_LOG="$WORK/tar.log" \
+DBRRG_TEST_CURL_LOG="$WORK/curl.log" \
+DBRRG_TEST_SUDO_LOG="$WORK/sudo.log" \
+DBRRG_TEST_CURL_BLOCK="$ready" \
+HOME="$WORK/root" \
+DBRRG_HOME_DIR="$WORK/home/tluser" \
+DBRRG_STATE_DIR="$WORK/state" \
+DBRRG_CMDLINE="$WORK/cmdline" \
+TMPDIR="$WORK/tmp" \
+PATH="$STUBS:$PATH" \
+    setsid "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err" &
+pid=$!
+for _ in $(seq 100); do
+    [[ -e "$ready" ]] && break
+    sleep 0.1
+done
+staged=$(ls -A "$WORK/tmp")
+kill -HUP -- "-$pid" 2>/dev/null
+for _ in $(seq 100); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+done
+if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL -- "-$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    bad "SIGHUP during the upload: the script did not end within 10s"
+else
+    wait "$pid"
+    rc=$?
+    if [[ -e "$ready" ]] && [[ -n "$staged" ]] && [[ "$rc" == 5 ]] &&
+       [[ -z "$(ls -A "$WORK/tmp")" ]]; then
+        ok "SIGHUP during the upload exits 5 and removes the archive"
+    else
+        bad "SIGHUP during the upload: exit $rc, staged '$staged', left behind '$(ls -A "$WORK/tmp")', curl reached: $([[ -e "$ready" ]] && echo yes || echo no)"
+    fi
 fi
 
 exit $fail
