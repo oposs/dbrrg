@@ -15,7 +15,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
@@ -255,6 +255,15 @@ impl ApplicationHandler<JobResult> for App {
         window.request_redraw();
     }
 
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
+        if wake_needs_frame(&cause)
+            && let Some(live) = self.live.as_ref()
+        {
+            live.window.request_redraw();
+        }
+    }
+
+    // A finished job arrives here through the proxy, which wakes the loop.
     fn user_event(&mut self, event_loop: &ActiveEventLoop, result: JobResult) {
         let effect = self.cfg.menu.finished(result, Instant::now());
         self.apply(effect, event_loop);
@@ -301,6 +310,14 @@ impl ApplicationHandler<JobResult> for App {
     }
 }
 
+/// Whether a loop wake-up needs a frame. `ControlFlow::WaitUntil` only
+/// ends the wait; winit then reports `ResumeTimeReached` and does nothing
+/// else, so without a redraw here the save timer and the pause before
+/// logout would never advance.
+fn wake_needs_frame(cause: &StartCause) -> bool {
+    matches!(cause, StartCause::ResumeTimeReached { .. })
+}
+
 fn is_input(e: &WindowEvent) -> bool {
     matches!(
         e,
@@ -310,4 +327,21 @@ fn is_input(e: &WindowEvent) -> bool {
             | WindowEvent::CursorMoved { .. }
             | WindowEvent::Touch(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reached_deadline_needs_a_frame() {
+        let now = Instant::now();
+        let reached = StartCause::ResumeTimeReached {
+            start: now,
+            requested_resume: now,
+        };
+        assert!(wake_needs_frame(&reached));
+        assert!(!wake_needs_frame(&StartCause::Poll));
+        assert!(!wake_needs_frame(&StartCause::Init));
+    }
 }

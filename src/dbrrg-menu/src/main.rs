@@ -84,7 +84,7 @@ fn main() -> ExitCode {
         icon_roots,
         debug,
     }) {
-        Ok(code) => ExitCode::from(code as u8),
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => {
             eprintln!("dbrrg-menu: {e}");
             ExitCode::from(1)
