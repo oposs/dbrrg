@@ -33,6 +33,10 @@ install() {
     # Also install fsck.vfat symlink
     inst /sbin/fsck.vfat
     inst_multiple stat dd od tr mkdir mount umount cp ln chmod
+    # finalize-upgrade.sh and dbrrg_finalize_upgrade(): sync orders the FAT
+    # directory updates of the tl.new -> tl rotation, rmdir removes its
+    # temporary mount point. Neither is in dracut's base set.
+    inst_multiple sync rmdir
     inst_multiple udevadm awk grep sed lsblk
 
     # Kernel modules (only what we need)

@@ -587,6 +587,54 @@ else
     bad "helpers failed under the initramfs PATH: hostnames=$(cat "$nr/etc/hostname" "$nr2/etc/hostname" 2>&1 | tr '\n' ' ') stderr=$(cat "$WORK/sb-stderr") warnings=$(cat "$WORK/warnings")"
 fi
 
+# --- dbrrg_finalize_upgrade, inside the same sandbox ---------------------
+#
+# The tl.new -> tl -> tl.old rotation called sync, which the initramfs did not
+# have, so every sync in it failed with "command not found" on the stick.
+
+mkesp() {  # mkesp <name>: fake ESP with tl, tl.old and a complete tl.new
+    local d="$WORK/$1"
+    mkdir -p "$d/tl" "$d/tl.old" "$d/tl.new"
+    echo current >"$d/tl/marker"; echo previous >"$d/tl.old/marker"
+    for f in vmlinuz initrd.img ramroot.sqsh; do echo new >"$d/tl.new/$f"; done
+    echo "$d"
+}
+
+esp=$(mkesp esp-rotate)
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>"$WORK/fu-stderr"; rc=$?
+if [[ $rc -eq 0 && -f "$esp/tl/ramroot.sqsh" && ! -e "$esp/tl.new" \
+   && "$(cat "$esp/tl.old/marker")" == current && ! -s "$WORK/fu-stderr" ]]; then
+    ok "dbrrg_finalize_upgrade rotates tl.new -> tl -> tl.old with only the initramfs's tools"
+else
+    bad "dbrrg_finalize_upgrade under the initramfs PATH: rc=$rc stderr=$(cat "$WORK/fu-stderr") esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+esp=$(mkesp esp-incomplete); rm "$esp/tl.new/ramroot.sqsh"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl.new" && "$(cat "$esp/tl/marker")" == current ]]; then
+    ok "an incomplete tl.new is left alone for the next boot"
+else
+    bad "incomplete tl.new: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+esp="$WORK/esp-none"; mkdir -p "$esp/tl"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl" && ! -e "$esp/tl.old" ]]; then
+    ok "no pending upgrade: nothing is touched"
+else
+    bad "no pending upgrade: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+# finalize-upgrade.sh itself mounts the ESP and so cannot run here; this
+# pins the two commands it was missing.
+for tool in sync rmdir; do
+    if [[ -x "$BIN/$tool" ]]; then
+        ok "module-setup.sh installs $tool"
+    else
+        bad "module-setup.sh does not install $tool, which finalize-upgrade needs"
+    fi
+done
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - initramfs home helpers"

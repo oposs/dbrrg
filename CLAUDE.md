@@ -561,16 +561,17 @@ Do not move the copy into a `dbrrg-local-network.service`.
 `test/integration/test-field-report.sh` asserts that unit does not exist and
 `test/integration/test-session-packages.sh` asserts mode 600 in the image.
 
-### The initramfs has no cut, basename, head, install, sync, rmdir, wc or date
+### The initramfs has no cut, basename, head, install, wc or date
 
 Only what the `inst_multiple` lines in `90dbrrg/module-setup.sh` install,
 plus dracut's base set, exists there. Shell builtins (`printf`, `test`,
 `read`) are fine. A missing command fails silently at boot while every
 offline test passes on the dev host - that is how the hostname shipped as
-`dbrrg` and why netboot never recorded the boot MAC.
-`test/integration/test-initramfs-home.sh` runs the helpers with PATH
-restricted to that set. Known and unfixed: `finalize-upgrade.sh` still calls
-`sync` and `rmdir`.
+`dbrrg`, why netboot never recorded the boot MAC, and why every `sync` in
+the `tl.new` upgrade rotation failed. `sync` and `rmdir` are now installed
+explicitly for that rotation. `test/integration/test-initramfs-home.sh` runs
+the helpers, `dbrrg_finalize_upgrade` included, with PATH restricted to that
+set.
 
 ### /etc/hostname is excluded from the squashfs and written by the initramfs
 
