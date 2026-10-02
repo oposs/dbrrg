@@ -597,7 +597,18 @@ def copy_home_to_drive(device: str) -> bool:
     except OSError as e:
         log(f"WARNING: could not copy the home directory: {e}")
         ok = False
+    except KeyboardInterrupt:
+        log("WARNING: home copy interrupted - home not copied")
+        ok = False
     finally:
+        # Whatever ended the copy early, a partial home.tar.gz must not stay on
+        # the stick: the next boot's restore only checks that the first member
+        # lists, so a truncated archive would unpack a partial home.
+        if mounted and not ok and os.path.isfile(dest):
+            try:
+                os.unlink(dest)
+            except OSError as e:
+                log(f"WARNING: could not remove the partial {dest}: {e}")
         if mounted:
             try:
                 run_cmd(["umount", tmp_mount], capture=True)

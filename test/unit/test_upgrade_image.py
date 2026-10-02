@@ -473,5 +473,37 @@ class TestCopyHomeToDrive(unittest.TestCase):
         self.assertNotIn("unmount", out.getvalue())
 
 
+    def _partial_then_raise(self, exc):
+        existed_at_umount = []
+        dest_seen = []
+
+        def fake_run_cmd(cmd, **kwargs):
+            if cmd[0] == "tar":
+                dest = cmd[cmd.index("-czf") + 1]
+                dest_seen.append(dest)
+                Path(dest).write_text("partial")
+                raise exc
+            if cmd[0] == "umount":
+                existed_at_umount.append(os.path.exists(dest_seen[0]))
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        out = io.StringIO()
+        with self._as_tluser():
+            with mock.patch.object(ui, "find_efi_partition", return_value="/dev/sdb1"):
+                with mock.patch.object(ui, "run_cmd", side_effect=fake_run_cmd):
+                    with contextlib.redirect_stdout(out):
+                        result = ui.copy_home_to_drive("/dev/sdb")
+        self.assertFalse(result)
+        self.assertEqual(existed_at_umount, [False],
+                         "partial archive still on the drive at unmount")
+        self.assertIn("WARNING", out.getvalue())
+
+    def test_ctrl_c_during_tar_removes_the_partial_and_does_not_raise(self):
+        self._partial_then_raise(KeyboardInterrupt())
+
+    def test_an_oserror_after_a_partial_write_removes_the_partial(self):
+        self._partial_then_raise(OSError(28, "No space left on device"))
+
+
 if __name__ == "__main__":
     unittest.main()
