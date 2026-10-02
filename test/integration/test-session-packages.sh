@@ -371,6 +371,85 @@ else
     fail=1
 fi
 
+# --- the NUC7i3BNK field report, in the built image ---
+
+# 1. The KMS wait script and unit must be present.
+present "wait-kms script"           'usr/libexec/dbrrg/wait-kms$'
+present "wait-kms unit"             'etc/systemd/system/dbrrg-wait-kms\.service$'
+present "save-home exclude list"    'etc/dbrrg/save-home-exclude$'
+
+# 2. The wait-kms unit must be enabled (WantedBy=multi-user.target).
+if grep -qE 'etc/systemd/system/multi-user\.target\.wants/dbrrg-wait-kms\.service$' "$LIST"; then
+    echo "ok   - wait-kms is enabled in multi-user.target"
+else
+    echo "FAIL - wait-kms is not enabled (missing from multi-user.target.wants)"
+    fail=1
+fi
+
+# 3. The rejected dbrrg-local-network design must not return.
+absent  "dbrrg-local-network unit" 'etc/systemd/system/dbrrg-local-network\.service$'
+absent  "local-network installer"   'usr/libexec/dbrrg/install-local-network$'
+
+# 4. The container ID must not be baked in; hostname is set by initramfs.
+absent  "baked-in hostname"         '^squashfs-root/etc/hostname$'
+
+# 5. The netplan config must exist and be mode 600 (see test-field-report.sh
+# for the Dockerfile assertion).
+if unsquashfs -no-xattrs -d "$DPKG_TMP/netplan" "$SQSH" \
+        etc/netplan/ethernet.yaml >/dev/null 2>&1 &&
+   [[ -f "$DPKG_TMP/netplan/etc/netplan/ethernet.yaml" ]]; then
+    mode=$(stat -c%a "$DPKG_TMP/netplan/etc/netplan/ethernet.yaml")
+    if [[ "$mode" == "600" ]]; then
+        echo "ok   - ethernet.yaml exists at mode 600"
+    else
+        echo "FAIL - ethernet.yaml is mode $mode, not 600 (netplan: permissions too open)"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract etc/netplan/ethernet.yaml from $SQSH"
+    fail=1
+fi
+
+# 6. The save-home script must avoid the race where the old code would
+# overwrite the home archive while it is being read: check for the atomic
+# .new file pattern and absence of the legacy by-partlabel path.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/saveh" "$SQSH" \
+        usr/bin/dbrrg-save-home >/dev/null 2>&1 &&
+   [[ -f "$DPKG_TMP/saveh/usr/bin/dbrrg-save-home" ]]; then
+    save_home="$DPKG_TMP/saveh/usr/bin/dbrrg-save-home"
+    if grep -q 'home\.tar\.gz\.new' "$save_home"; then
+        echo "ok   - dbrrg-save-home uses atomic .new file writes"
+    else
+        echo "FAIL - dbrrg-save-home does not use home.tar.gz.new (atomic write pattern)"
+        fail=1
+    fi
+    if grep -q 'by-partlabel' "$save_home"; then
+        echo "FAIL - dbrrg-save-home still references by-partlabel (legacy path)"
+        fail=1
+    else
+        echo "ok   - dbrrg-save-home does not reference by-partlabel"
+    fi
+else
+    echo "FAIL - cannot extract usr/bin/dbrrg-save-home from $SQSH"
+    fail=1
+fi
+
+# 7. The autologin drop-in must order getty after wait-kms so the race
+# window cannot open.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/autologin" "$SQSH" \
+        etc/systemd/system/getty@tty1.service.d/autologin.conf >/dev/null 2>&1 &&
+   [[ -f "$DPKG_TMP/autologin/etc/systemd/system/getty@tty1.service.d/autologin.conf" ]]; then
+    if grep -q 'dbrrg-wait-kms' "$DPKG_TMP/autologin/etc/systemd/system/getty@tty1.service.d/autologin.conf"; then
+        echo "ok   - autologin drop-in pulls in wait-kms"
+    else
+        echo "FAIL - autologin drop-in does not reference dbrrg-wait-kms"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract getty@tty1 autologin drop-in from $SQSH"
+    fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"

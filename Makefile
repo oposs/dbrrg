@@ -308,6 +308,7 @@ test: rootfs
 	@test/integration/test-ssh-hostkeys.sh
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh
+	@test/integration/test-field-report.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of
