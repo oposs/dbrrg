@@ -13,10 +13,10 @@ meshes with its own CPU rasteriser into a softbuffer surface, so it needs no
 GPU, GL or Vulkan. All decisions (tile parsing, the reword rules, icon lookup,
 the one-action-at-a-time state machine, save exit codes) live in modules
 with no window, and are unit tested on the host. `dbrrg-session` runs the
-menu where it ran `tlclient` and acts on its exit status: `0` saves the home
-and logs out, anything else is a failure that is shown and not saved. The
-login script stops restarting the session after three consecutive menu
-failures.
+menu where it ran `tlclient` and no longer saves: the Log out tile saves
+the home behind the menu's dialog and exits `0` only afterwards, and any
+other status is a failure that is shown and not saved. The login script
+stops restarting the session after three consecutive menu failures.
 
 **Tech Stack:** Rust 1.96.0 (edition 2024), egui / egui-winit 0.36.2,
 winit 0.30.13 (Wayland only, dlopen), softbuffer 0.4.8, resvg 0.48.1, a
@@ -31,7 +31,7 @@ and poweroff) is out of scope; this plan leaves the two places it extends
 named in code (`Action` in `tiles.rs`, the `case` in `dbrrg-session`).
 
 **Every line of Rust in this plan was compiled and its tests run** against
-the versions above on 2026-10-02 (48 unit tests green, `cargo clippy
+the versions above on 2026-10-02 (52 unit tests green, `cargo clippy
 --all-targets -- -D warnings` clean, `cargo fmt --check` clean). The release
 binary was run under headless labwc inside `localhost/dbrrg-ubuntu:3.0.0`:
 it mapped at 1280x720, rastered its first frame in 21 ms, and `--check`
@@ -86,14 +86,38 @@ and the current code disagree, this plan does the following:
    counts as one failure.
 10. **The binary is 9 MB**, not the 15 to 25 MB the spec estimated.
 
-## Open questions for the user
+The user accepted all ten deltas on 2026-10-02.
 
-1. **A save that fails at logout is reported only in the session log.**
-   On exit 0 `dbrrg-session` runs `dbrrg-save-home` and the session ends at
-   once, as it does today after `tlclient`. The plan keeps that contract.
-   The alternative is for the Log out tile to run the save behind the dialog
-   first, show the result, and only then exit, which changes the exit-code
-   contract the spec fixed. Not decided here.
+## Decided 2026-10-02: Log out saves in the menu first
+
+The spec had `dbrrg-session` save after the menu exits 0. A save that failed
+there was visible only in the session log, because the session ended at
+once. Decided by the user instead:
+
+- **The Log out tile runs `dbrrg-save-home` behind the menu's dialog**, the
+  same job and dialog as Back up home, titled "Saving your home directory
+  before logging out", with the elapsed timer.
+- **Saved (`0`):** the dialog says "Home directory saved. Logging out." for
+  1.5 s, then the menu exits `0`.
+- **Not saved (`1` to `5`, any other status, or a signal):** the dialog says
+  why, using the same sentences as the Back up home result, adds "If you log
+  out now, the changes since the last save are lost", and offers **Stay**
+  and **Log out anyway**. Stay returns to the grid with the reason as the
+  notice. Log out anyway exits `0`. The dialog never decides by itself.
+- **This boot's restore failed** (`/run/dbrrg/state/home-restore` is
+  `failed`): no save is attempted, since `dbrrg-save-home` would refuse with
+  `2`; the same question appears at once with that reason.
+- **`dbrrg-session` never saves any more.** Exit `0` means "log out, the
+  save is already done or was declined at the machine"; saving again would
+  repeat the result or overwrite what the person chose not to wait for.
+  Any other status is a failure: no save, as before. There is no other way
+  a session ends without the menu: ThinLinc and oxulnk are tiles whose save
+  on exit the menu also does, behind the same dialog.
+
+The new exit-code contract, in one line: **`dbrrg-menu` exits `0` only
+after its own logout save (or the person's "Log out anyway"), and
+`dbrrg-session` saves on no status at all.** Item 3 follows the same rule
+for `10` and `11`: save in the menu, then exit.
 
 ## Global Constraints
 
@@ -128,10 +152,15 @@ Every task's reviewer gets this section verbatim.
   `repaint_delay`; skip raster and present when the primitive fingerprints
   are unchanged; dim the grid once when the save dialog opens; rasterise
   icons once at startup.
-- **Exit-status contract**, `dbrrg-menu` to `dbrrg-session`: `0` = log out
-  (save, then return). Any other status = the menu failed: do **not** save,
-  show why, hold. Failure is the default branch. Item 3 adds `10` reboot
-  and `11` poweroff; nothing in this plan may give those numbers a meaning.
+- **Exit-status contract**, `dbrrg-menu` to `dbrrg-session` (decided
+  2026-10-02): `0` = log out, and the menu has already saved the home
+  behind its dialog or the person chose "Log out anyway" after a failed
+  save. `dbrrg-session` does not save on `0` or on anything else. Any other
+  status = the menu failed: show why, hold. Failure is the default branch.
+  Item 3 adds `10` reboot and `11` poweroff, also saved by the menu first;
+  nothing in this plan may give those numbers a meaning.
+- **A failed logout save never logs out by itself.** The dialog offers
+  Stay and Log out anyway and waits.
 - **`dbrrg-save-home` exit codes** (shipped, `overlay/usr/bin/dbrrg-save-home:21-31`):
   `0` saved, `1` home missing, `2` this boot's restore failed, `3` boot
   server unreachable, `4` nowhere to store, `5` attempted and failed.
@@ -1018,9 +1047,10 @@ impl Action {
         }
     }
 
-    /// The exit status that hands this action to dbrrg-session, for the
-    /// actions that end the menu. Anything else dbrrg-menu exits with is a
-    /// failure, and dbrrg-session must not save on it.
+    /// The status the menu exits with once this action is done, for the
+    /// actions that end the menu. The menu saves the home itself before it
+    /// exits, so dbrrg-session saves on none of them. Any other status
+    /// dbrrg-menu exits with is a failure.
     pub fn exit_code(self) -> Option<i32> {
         match self {
             Action::Logout => Some(0),
@@ -2548,18 +2578,32 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `jobs::Paths { save_home, state_dir: PathBuf }`,
     `jobs::save(&Paths) -> SaveOutcome`,
     `jobs::run(name: &str, argv: &[String], save_on_exit: bool) -> JobResult`.
-  - `menu::Busy::{Idle, Running { name }, Saving { since: Instant }}`,
+  - `menu::SaveFor::{Backup, Logout}`,
+    `menu::Busy::{Idle, Running { name }, Saving { since: Instant, purpose:
+    SaveFor }, LogoutFailed { message: String }, LoggingOut { until:
+    Instant }}` with `Busy::dialog()` (the grid is frozen behind a dialog)
+    and `Busy::refuses_input()` (`Saving`, `LoggingOut`: input dropped;
+    `LogoutFailed` takes clicks for its buttons),
+    `menu::Choice::{LogOutAnyway, Stay}`,
     `menu::Job::{Save, Run { name, argv, save_on_exit }}`,
     `menu::Effect::{Start(Job), Exit(i32)}`,
     `menu::Menu { tiles, banner, busy, notice }` with
     `new(Grid, restore_failed: bool)`,
     `activate(&mut self, index: usize, now: Instant) -> Option<Effect>`,
-    `finished(&mut self, JobResult, now: Instant) -> Option<Effect>`;
-    `menu::RESTORE_FAILED_REASON`.
+    `finished(&mut self, JobResult, now: Instant) -> Option<Effect>`,
+    `choose(&mut self, Choice) -> Option<Effect>`,
+    `tick(&mut self, now: Instant) -> Option<Effect>` (called every frame;
+    `Exit(0)` once `LoggingOut.until` has passed);
+    `menu::LOGOUT_PAUSE` (1.5 s), `menu::RESTORE_FAILED_REASON`.
 
 **Why:** "one action at a time, enforced by the menu refusing input, not by
 blocking the loop". `activate` refuses while busy; the work itself runs on
-a worker thread (Task 6). No test writes a script and then executes it:
+a worker thread (Task 6). Log out saves here first and exits only
+afterwards (see "Decided 2026-10-02" above); its four tests are
+`logout_saves_first_then_exits_zero_after_the_pause`,
+`failed_logout_save_asks_and_stay_returns_to_the_grid`,
+`failed_logout_save_can_log_out_anyway` and
+`logout_after_a_failed_restore_asks_without_saving`. No test writes a script and then executes it:
 another test thread forking in between holds the write descriptor and the
 exec fails with "Text file busy", which made an earlier draft flaky.
 
@@ -2698,9 +2742,66 @@ mod tests {
     }
 
     #[test]
-    fn logout_exits_zero() {
+    fn logout_saves_first_then_exits_zero_after_the_pause() {
         let mut m = Menu::new(grid(), false);
-        assert_eq!(m.activate(3, Instant::now()), Some(Effect::Exit(0)));
+        let now = Instant::now();
+        assert_eq!(m.activate(3, now), Some(Effect::Start(Job::Save)));
+        assert_eq!(
+            m.busy,
+            Busy::Saving {
+                since: now,
+                purpose: SaveFor::Logout
+            }
+        );
+        assert_eq!(m.finished(JobResult::Saved(SaveOutcome::Saved), now), None);
+        assert_eq!(m.tick(now), None, "the result is shown first");
+        assert_eq!(m.tick(now + LOGOUT_PAUSE), Some(Effect::Exit(0)));
+    }
+
+    #[test]
+    fn failed_logout_save_asks_and_stay_returns_to_the_grid() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        m.activate(3, now);
+        m.finished(JobResult::Saved(SaveOutcome::ServerUnreachable), now);
+        assert_eq!(
+            m.busy,
+            Busy::LogoutFailed {
+                message: SaveOutcome::ServerUnreachable.message()
+            }
+        );
+        assert_eq!(m.tick(now + LOGOUT_PAUSE * 10), None, "never exits by itself");
+        assert_eq!(m.activate(1, now), None, "the grid is refused while asking");
+        assert_eq!(m.choose(Choice::Stay), None);
+        assert_eq!(m.busy, Busy::Idle);
+        assert_eq!(
+            m.notice.as_deref(),
+            Some("Not saved: the boot server cannot be reached.")
+        );
+    }
+
+    #[test]
+    fn failed_logout_save_can_log_out_anyway() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        m.activate(3, now);
+        m.finished(JobResult::Saved(SaveOutcome::Failed), now);
+        assert_eq!(m.choose(Choice::LogOutAnyway), Some(Effect::Exit(0)));
+    }
+
+    #[test]
+    fn logout_after_a_failed_restore_asks_without_saving() {
+        let mut m = Menu::new(grid(), true);
+        assert_eq!(m.activate(3, Instant::now()), None, "no save job started");
+        assert!(matches!(m.busy, Busy::LogoutFailed { .. }));
+        assert_eq!(m.choose(Choice::LogOutAnyway), Some(Effect::Exit(0)));
+    }
+
+    #[test]
+    fn choice_outside_the_question_is_ignored() {
+        let mut m = Menu::new(grid(), false);
+        assert_eq!(m.choose(Choice::LogOutAnyway), None);
+        assert_eq!(m.busy, Busy::Idle);
     }
 
     #[test]
@@ -2720,7 +2821,7 @@ mod tests {
         );
         assert_eq!(m.busy, Busy::Idle);
         assert_eq!(m.notice, None);
-        assert_eq!(m.activate(3, now), Some(Effect::Exit(0)));
+        assert_eq!(m.activate(3, now), Some(Effect::Start(Job::Save)));
     }
 
     #[test]
@@ -2737,7 +2838,13 @@ mod tests {
             now,
         );
         assert_eq!(e, Some(Effect::Start(Job::Save)));
-        assert_eq!(m.busy, Busy::Saving { since: now });
+        assert_eq!(
+            m.busy,
+            Busy::Saving {
+                since: now,
+                purpose: SaveFor::Backup
+            }
+        );
         m.finished(JobResult::Saved(SaveOutcome::ServerUnreachable), now);
         assert_eq!(m.busy, Busy::Idle);
         assert_eq!(
@@ -2924,16 +3031,67 @@ Above `#[cfg(test)]` in `menu.rs`:
 //! activated, what activating it starts, and what a finished job leaves on
 //! screen. One action at a time, enforced here by refusing activation, not
 //! by blocking the event loop.
+//!
+//! Log out saves the home directory here, behind the dialog, before the
+//! menu exits (decided 2026-10-02). dbrrg-session no longer saves after a
+//! logout: by the time the menu exits 0 the save has been done, or it
+//! failed and the person at the machine chose to log out anyway.
 
 use crate::jobs::{JobResult, SaveOutcome};
 use crate::tiles::{Action, Grid, Tile};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long "Home directory saved. Logging out." stays on screen.
+pub const LOGOUT_PAUSE: Duration = Duration::from_millis(1500);
+
+/// Why a save is running: a backup returns to the grid, a logout exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveFor {
+    Backup,
+    Logout,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Busy {
     Idle,
-    Running { name: String },
-    Saving { since: Instant },
+    Running {
+        name: String,
+    },
+    Saving {
+        since: Instant,
+        purpose: SaveFor,
+    },
+    /// The logout save did not happen. The dialog shows `message` and asks.
+    LogoutFailed {
+        message: String,
+    },
+    /// Saved; the menu exits 0 at `until`.
+    LoggingOut {
+        until: Instant,
+    },
+}
+
+impl Busy {
+    /// Whether the dialog is up, so the grid behind it is frozen and dimmed.
+    pub fn dialog(&self) -> bool {
+        matches!(
+            self,
+            Busy::Saving { .. } | Busy::LogoutFailed { .. } | Busy::LoggingOut { .. }
+        )
+    }
+
+    /// Whether input is dropped before egui sees it. The failed-logout
+    /// dialog has buttons, so it takes input; the others have none.
+    pub fn refuses_input(&self) -> bool {
+        matches!(self, Busy::Saving { .. } | Busy::LoggingOut { .. })
+    }
+}
+
+/// The two answers to a failed logout save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    LogOutAnyway,
+    Stay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3004,9 +3162,6 @@ impl Menu {
         }
         let tile = self.tiles.get(index).filter(|t| t.usable())?.clone();
         self.notice = None;
-        if let Some(code) = tile.action.exit_code() {
-            return Some(Effect::Exit(code));
-        }
         match tile.action {
             Action::Run => {
                 self.busy = Busy::Running {
@@ -3019,16 +3174,49 @@ impl Menu {
                 }))
             }
             Action::SaveHome => {
-                self.busy = Busy::Saving { since: now };
+                self.busy = Busy::Saving {
+                    since: now,
+                    purpose: SaveFor::Backup,
+                };
                 Some(Effect::Start(Job::Save))
             }
-            Action::Logout => unreachable!("handled by exit_code"),
+            Action::Logout => {
+                // A save that is refused anyway is not attempted: the person
+                // is asked straight away.
+                if self.restore_failed {
+                    self.busy = Busy::LogoutFailed {
+                        message: SaveOutcome::RestoreFailed.message(),
+                    };
+                    return None;
+                }
+                self.busy = Busy::Saving {
+                    since: now,
+                    purpose: SaveFor::Logout,
+                };
+                Some(Effect::Start(Job::Save))
+            }
         }
     }
 
     pub fn finished(&mut self, result: JobResult, now: Instant) -> Option<Effect> {
         match result {
             JobResult::Saved(outcome) => {
+                let purpose = match self.busy {
+                    Busy::Saving { purpose, .. } => purpose,
+                    _ => SaveFor::Backup,
+                };
+                if purpose == SaveFor::Logout {
+                    self.busy = if outcome.saved() {
+                        Busy::LoggingOut {
+                            until: now + LOGOUT_PAUSE,
+                        }
+                    } else {
+                        Busy::LogoutFailed {
+                            message: outcome.message(),
+                        }
+                    };
+                    return None;
+                }
                 let prior = self.notice.take();
                 self.notice = Some(join(prior, outcome.message()));
                 self.busy = Busy::Idle;
@@ -3050,9 +3238,36 @@ impl Menu {
                     self.busy = Busy::Idle;
                     return None;
                 }
-                self.busy = Busy::Saving { since: now };
+                self.busy = Busy::Saving {
+                    since: now,
+                    purpose: SaveFor::Backup,
+                };
                 Some(Effect::Start(Job::Save))
             }
+        }
+    }
+
+    /// The answer to a failed logout save. Ignored in any other state.
+    pub fn choose(&mut self, choice: Choice) -> Option<Effect> {
+        let Busy::LogoutFailed { message } = &self.busy else {
+            return None;
+        };
+        match choice {
+            Choice::LogOutAnyway => Action::Logout.exit_code().map(Effect::Exit),
+            Choice::Stay => {
+                self.notice = Some(message.clone());
+                self.busy = Busy::Idle;
+                None
+            }
+        }
+    }
+
+    /// Called on every frame: ends the menu once the "saved" message has
+    /// been shown for `LOGOUT_PAUSE`.
+    pub fn tick(&mut self, now: Instant) -> Option<Effect> {
+        match self.busy {
+            Busy::LoggingOut { until } if now >= until => Action::Logout.exit_code().map(Effect::Exit),
+            _ => None,
         }
     }
 }
@@ -3060,7 +3275,7 @@ impl Menu {
 
 - [ ] **Step 5: Run the tests**
 
-Expected: `jobs::` 5 passed, `menu::` 6 passed, whole suite green. Run it
+Expected: `jobs::` 5 passed, `menu::` 10 passed, whole suite green. Run it
 five times in a row; it must be green every time (the "Text file busy"
 race shows up about one run in six when it is present). Clippy and fmt
 silent.
@@ -3069,7 +3284,7 @@ silent.
 
 ```bash
 git add src/dbrrg-menu/src/jobs.rs src/dbrrg-menu/src/menu.rs src/dbrrg-menu/src/lib.rs
-git commit -m "feat(menu): one action at a time, save exit codes mapped to messages
+git commit -m "feat(menu): one action at a time, logout saves first, save exit codes mapped
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3085,8 +3300,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: everything from Tasks 1 to 5.
 - Produces: the `dbrrg-menu` binary.
-  - `dbrrg-menu` draws the grid; exit `0` = Log out; `1` = it could not
-    start (no Wayland, no surface); a panic is `101`.
+  - `ui::UiEvent::{Tile(usize), Chose(Choice)}`, returned by
+    `ui::show(ui, &Menu, &icons, now) -> Option<UiEvent>`. The dialog draws
+    three states: saving (title by `SaveFor`), "Home directory saved", and
+    the failed-logout question with the shadcn `Button`s **Stay** and
+    **Log out anyway** (`ButtonVariant::Destructive`).
+  - `dbrrg-menu` draws the grid; exit `0` = Log out after the menu's own
+    save (or "Log out anyway"); `1` = it could not start (no Wayland, no
+    surface); a panic is `101`.
   - `dbrrg-menu --check` prints one line per tile
     (`file<TAB>name<TAB>action<TAB>ok|DISABLED (why)<TAB>icon: path|letter fallback`)
     and exits `1` when a shipped tile is unusable or has no icon.
@@ -3131,10 +3352,11 @@ Above `#[cfg(test)]` in `ui.rs`:
 //! lives in menu.rs; this file only paints it and reports clicks.
 
 use crate::icons::{self, IconRoots};
-use crate::menu::{Busy, Menu};
+use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
 use egui_shadcn::Theme;
+use egui_shadcn::components::button::{Button, ButtonVariant};
 use std::time::{Duration, Instant};
 
 pub const COLUMNS: usize = 3;
@@ -3167,16 +3389,70 @@ fn elapsed(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Draw one frame. Returns the index of a clicked tile.
-pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Instant) -> Option<usize> {
+/// What the person did this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiEvent {
+    Tile(usize),
+    Chose(Choice),
+}
+
+/// Draw one frame.
+pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Instant) -> Option<UiEvent> {
     // No background fill here: the canvas restores the page colour itself,
-    // and while saving it holds the frozen grid, which a fill would erase.
-    if let Busy::Saving { since } = menu.busy {
-        // Only the dialog is drawn. The grid behind it is the frozen,
-        // dimmed copy in the canvas background.
-        save_dialog(ui, now.duration_since(since));
-        ui.ctx().request_repaint_after(Duration::from_secs(1));
-        return None;
+    // and while the dialog is up it holds the frozen grid, which a fill
+    // would erase. Only the dialog is drawn then.
+    match &menu.busy {
+        Busy::Saving { since, purpose } => {
+            let title = match purpose {
+                SaveFor::Backup => "Backing up your home directory",
+                SaveFor::Logout => "Saving your home directory before logging out",
+            };
+            dialog(ui, title, |ui, t| {
+                ui.label(
+                    egui::RichText::new(elapsed(now.duration_since(*since)))
+                        .size(28.0)
+                        .monospace()
+                        .color(t.palette.ring),
+                );
+                ui.label(
+                    egui::RichText::new("On a network-booted machine this can take a minute.")
+                        .color(t.palette.muted_foreground),
+                );
+            });
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+            return None;
+        }
+        Busy::LoggingOut { until } => {
+            dialog(ui, "Home directory saved", |ui, t| {
+                ui.label(egui::RichText::new("Logging out.").color(t.palette.muted_foreground));
+            });
+            ui.ctx().request_repaint_after(until.saturating_duration_since(now));
+            return None;
+        }
+        Busy::LogoutFailed { message } => {
+            let mut chose = None;
+            dialog(ui, "Your home directory was not saved", |ui, t| {
+                ui.label(egui::RichText::new(message).color(WARN));
+                ui.label(
+                    egui::RichText::new("If you log out now, the changes since the last save are lost.")
+                        .color(t.palette.muted_foreground),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.add(Button::new("Stay")).clicked() {
+                        chose = Some(Choice::Stay);
+                    }
+                    if ui
+                        .add(Button::new("Log out anyway").variant(ButtonVariant::Destructive))
+                        .clicked()
+                    {
+                        chose = Some(Choice::LogOutAnyway);
+                    }
+                });
+            });
+            return chose.map(UiEvent::Chose);
+        }
+        Busy::Idle | Busy::Running { .. } => {}
     }
     let mut clicked = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -3214,7 +3490,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
                         resp.has_focus(),
                     );
                     if resp.clicked() {
-                        clicked = Some(index);
+                        clicked = Some(UiEvent::Tile(index));
                     }
                 }
             });
@@ -3317,9 +3593,10 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
     }
 }
 
-fn save_dialog(ui: &Ui, took: Duration) {
+/// A centred card over the frozen grid.
+fn dialog(ui: &Ui, title: &str, body: impl FnOnce(&mut Ui, &Theme)) {
     let t = Theme::current(ui.ctx());
-    egui::Area::new(egui::Id::new("save-dialog"))
+    egui::Area::new(egui::Id::new("dialog"))
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
@@ -3328,18 +3605,9 @@ fn save_dialog(ui: &Ui, took: Duration) {
                 .corner_radius(t.radius_lg())
                 .inner_margin(24.0)
                 .show(ui, |ui| {
-                    ui.set_width(420.0);
-                    ui.label(egui::RichText::new("Backing up your home directory").size(18.0));
-                    ui.label(
-                        egui::RichText::new(elapsed(took))
-                            .size(28.0)
-                            .monospace()
-                            .color(t.palette.ring),
-                    );
-                    ui.label(
-                        egui::RichText::new("On a network-booted machine this can take a minute.")
-                            .color(t.palette.muted_foreground),
-                    );
+                    ui.set_width(460.0);
+                    ui.label(egui::RichText::new(title).size(18.0));
+                    body(ui, &t);
                 });
         });
 }
@@ -3361,7 +3629,7 @@ Run the suite: `ui::tests::elapsed_is_minutes_and_seconds ... ok`.
 use crate::damage::Tracker;
 use crate::icons::IconRoots;
 use crate::jobs::{self, JobResult, Paths};
-use crate::menu::{Busy, Effect, Job, Menu};
+use crate::menu::{Effect, Job, Menu};
 use crate::raster::{Background, Canvas, Textures};
 use crate::ui;
 use egui::{TextureHandle, ViewportId};
@@ -3467,15 +3735,15 @@ impl App {
         egui_shadcn::Theme::dark().apply(&self.ctx);
         let input = live.egui.take_egui_input(&live.window);
         let now = Instant::now();
-        let mut clicked = None;
+        let mut event = None;
         let out = self.ctx.run_ui(input, |ui| {
-            clicked = ui::show(ui, &self.cfg.menu, &live.icons, now);
+            event = ui::show(ui, &self.cfg.menu, &live.icons, now);
         });
         live.egui.handle_platform_output(&live.window, out.platform_output);
 
         // The dialog dims the grid once, when it opens, and un-freezes it
         // when it closes. Either way every pixel must be redrawn once.
-        let saving = matches!(self.cfg.menu.busy, Busy::Saving { .. });
+        let saving = self.cfg.menu.busy.dialog();
         let mut force_full = false;
         if saving != self.frozen {
             if saving {
@@ -3521,8 +3789,12 @@ impl App {
             _ => event_loop.set_control_flow(ControlFlow::Wait),
         }
 
-        if let Some(i) = clicked {
-            let effect = self.cfg.menu.activate(i, now);
+        let effect = match event {
+            Some(ui::UiEvent::Tile(i)) => self.cfg.menu.activate(i, now),
+            Some(ui::UiEvent::Chose(c)) => self.cfg.menu.choose(c),
+            None => self.cfg.menu.tick(now),
+        };
+        if effect.is_some() || event.is_some() {
             self.apply(effect, event_loop);
             if let Some(live) = self.live.as_ref() {
                 live.window.request_redraw();
@@ -3631,7 +3903,7 @@ impl ApplicationHandler<JobResult> for App {
             _ => {}
         }
         // While the dialog is up, input is refused rather than handled.
-        if matches!(self.cfg.menu.busy, Busy::Saving { .. }) && is_input(&event) {
+        if self.cfg.menu.busy.refuses_input() && is_input(&event) {
             return;
         }
         let resp = live.egui.on_window_event(&live.window, &event);
@@ -3781,7 +4053,7 @@ readelf -d "$B" | grep NEEDED
 grep -acE 'libvulkan\.so|libEGL\.so|libGL\.so|libGLESv2' "$B"
 ```
 
-Expected: `test result: ok. 48 passed`; `NEEDED` lists only `libgcc_s`,
+Expected: `test result: ok. 52 passed`; `NEEDED` lists only `libgcc_s`,
 `libm`, `libc`, `ld-linux-x86-64`; the `grep -c` prints `0`.
 
 - [ ] **Step 6: `--check` against a fixture**
@@ -3856,9 +4128,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces:
   - `dbrrg-session` runs `$DBRRG_MENU` (default `/usr/bin/dbrrg-menu`),
     writes its status to `$DBRRG_SESSION_STATUS` (default
-    `${XDG_RUNTIME_DIR:-/tmp}/dbrrg-session.status`), runs
-    `$DBRRG_SAVE_HOME` only on `0`, otherwise opens a `foot` window with
-    the status and exits with it.
+    `${XDG_RUNTIME_DIR:-/tmp}/dbrrg-session.status`), and never runs
+    `dbrrg-save-home`: on `0` it returns, otherwise it opens a `foot` window
+    with the status and exits with it.
   - `/usr/libexec/dbrrg/session-verdict STATUS_FILE COUNTER_FILE`: exit `0`
     = start a fresh session; exit `1` = stop, and it prints the menu's
     status. Limit `DBRRG_SESSION_FAILURE_LIMIT`, default `3`.
@@ -3880,7 +4152,8 @@ login shell learns what labwc does not tell it.
 #!/bin/bash
 # Offline: the exit-status contract between dbrrg-menu and dbrrg-session,
 # and the restart limit in session-verdict. No image, no compositor; the
-# menu, dbrrg-save-home and foot are stubs on PATH.
+# menu and foot are stubs, and a save stub records any call: since
+# 2026-10-02 the menu saves before it exits, so the session must never save.
 #
 # Usage: test/integration/test-session-lifecycle.sh
 
@@ -3929,7 +4202,7 @@ run_session() {
 run_session 'exit 0'
 rc=$?
 [[ $rc -eq 0 ]] && ok "logout: session exits 0" || bad "logout: session exited $rc"
-[[ -e "$WORK/saved" ]] && ok "logout: home saved" || bad "logout: home not saved"
+[[ ! -e "$WORK/saved" ]] && ok "logout: the session does not save again" || bad "logout: the session saved after the menu"
 [[ "$(cat "$WORK/dbrrg-session.status" 2>/dev/null)" == 0 ]] && ok "logout: status 0 recorded" || bad "logout: status file wrong"
 [[ ! -e "$WORK/foot.args" ]] && ok "logout: no failure window" || bad "logout: failure window shown"
 
@@ -3943,6 +4216,14 @@ for code in 1 101 127; do
     grep -q -- "-- sh -c" "$WORK/foot.args" 2>/dev/null && grep -q " $code " "$WORK/foot.args" \
         && ok "menu exit $code: failure window names the status" || bad "menu exit $code: no failure window"
 done
+
+# The stub only catches a call through DBRRG_SAVE_HOME. A hard-coded
+# /usr/bin/dbrrg-save-home would slip past it, so check the code as well.
+if grep -v '^[[:space:]]*#' "$SESSION" | grep -q 'dbrrg-save-home'; then
+    bad "dbrrg-session still calls dbrrg-save-home; the menu saves before it exits"
+else
+    ok "dbrrg-session never calls dbrrg-save-home"
+fi
 
 # Killed by a signal: the shell reports 128+N. Still a failure, still no save.
 run_session 'kill -9 $$'
@@ -4015,8 +4296,9 @@ chmod 755 test/integration/test-session-lifecycle.sh
 TMPDIR=/scratch/oetiker/claude-tmp/dbrrg-test test/integration/test-session-lifecycle.sh; echo "rc=$?"
 ```
 
-Expected: `FAIL` lines (the current script runs `/opt/thinlinc/bin/tlclient`
-and ignores `DBRRG_MENU`; `session-verdict` does not exist) and `rc=1`.
+Expected: `FAIL` lines (the current script runs `/opt/thinlinc/bin/tlclient`,
+ignores `DBRRG_MENU` and calls `dbrrg-save-home`; `session-verdict` does not
+exist) and `rc=1`.
 
 - [ ] **Step 3: Add the verdict helper**
 
@@ -4070,16 +4352,16 @@ exit 1
 The full new file. Compared with today's it changes the header comment,
 the comment above the `.dbrrg-sessionrc` source, and replaces the last two
 lines (`tlclient`, then `dbrrg-save-home`) with the menu and the status
-`case`; the sessionrc, helper, waybar and swayidle blocks are unchanged.
+`case`, which saves on no branch; the sessionrc, helper, waybar and swayidle blocks are unchanged.
 
 ```sh
 #!/bin/sh
 # Body of the graphical session, run by labwc via 'labwc -S'.
 #
 # The body of the session is dbrrg-menu, the tile grid. ThinLinc is one of
-# its tiles. The menu never ends the session itself: it exits with a status
-# and this script carries that out, because dbrrg-save-home needs a live
-# session (see the end of this file).
+# its tiles. The menu saves the home directory itself before it exits, so
+# this script no longer saves; it reads the menu's exit status (see the end
+# of this file).
 #
 # When this script returns, labwc terminates and the tty1 login starts a
 # fresh session. Leaving the compositor running would strand the user on a
@@ -4171,10 +4453,9 @@ if [ "$DBRRG_IDLE_TIMEOUT" -gt 0 ] 2>/dev/null &&
     HELPER_PIDS="$HELPER_PIDS $!"
 fi
 
-# The programs this script runs, overridable so
-# test/integration/test-session-lifecycle.sh can run it unprivileged.
+# The menu, overridable so test/integration/test-session-lifecycle.sh can
+# run this script unprivileged.
 DBRRG_MENU="${DBRRG_MENU:-/usr/bin/dbrrg-menu}"
-DBRRG_SAVE_HOME="${DBRRG_SAVE_HOME:-/usr/bin/dbrrg-save-home}"
 # Where the menu's exit status is left for 10-dbrrg-session.sh. labwc always
 # exits 0 whatever this script returns, so this file is the only way the
 # login shell learns that the menu failed.
@@ -4195,21 +4476,25 @@ dbrrg_hold() {
         exec sh' dbrrg-hold "$1" "${DBRRG_SESSION_LOG:-unknown}"
 }
 
-# The menu's exit status is a request:
+# The menu's exit status:
 #
-#   0          log out: save the home directory, then return
+#   0          log out. The menu has already saved the home directory
+#              behind its dialog, or the save failed and the person at the
+#              machine chose "Log out anyway". Do not save again: a second
+#              save would only repeat the first one's result, or overwrite
+#              what the person just declined to keep waiting for.
 #   any other  the menu failed: do NOT save, show why, hold
 #
 # Failure is the default branch on purpose. A Rust panic exits 101, a
 # segfault 139, a failed exec 126 or 127; reading those as logout would make
-# a crash silent and archive the home once per respawn. Item 3 of the tile
-# menu spec adds 10 (reboot) and 11 (poweroff) as further cases here.
+# a crash silent, and saving on them would archive the home once per
+# respawn. Item 3 of the tile menu spec adds 10 (reboot) and 11 (poweroff),
+# which the menu likewise exits with only after its own save.
 "$DBRRG_MENU"
 menu_rc=$?
 echo "$menu_rc" >"$DBRRG_SESSION_STATUS" 2>/dev/null || true
 case "$menu_rc" in
     0)
-        "$DBRRG_SAVE_HOME"
         exit 0
         ;;
     *)
@@ -4285,7 +4570,7 @@ TMPDIR=/scratch/oetiker/claude-tmp/dbrrg-test test/integration/test-field-report
 sh -n overlay/usr/bin/dbrrg-session overlay/usr/libexec/dbrrg/session-verdict overlay/etc/profile.d/10-dbrrg-session.sh
 ```
 
-Expected: 24 `ok` lines and `rc=0`; the three existing labwc retry checks
+Expected: 25 `ok` lines and `rc=0`; the three existing labwc retry checks
 in `test-field-report.sh` still `ok` (the verdict helper is absent on the
 host's `/usr/libexec`, and the missing-helper branch keeps the old
 behaviour); `sh -n` silent.
@@ -4304,7 +4589,7 @@ In `Makefile`, add to the `test:` recipe after
 ```bash
 git add test/integration/test-session-lifecycle.sh overlay/usr/libexec/dbrrg/session-verdict \
         overlay/usr/bin/dbrrg-session overlay/etc/profile.d/10-dbrrg-session.sh Makefile
-git commit -m "feat(session): run dbrrg-menu and save only on its logout status
+git commit -m "feat(session): run dbrrg-menu, which saves before it exits
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -4694,8 +4979,9 @@ Make these changes, in the file's existing voice:
    the crate at `src/dbrrg-menu/`, and that `MENU_FILES`/`MENU_DIRS` make it
    a prerequisite of `.ubuntu-container`.
 2. **Boot Flow, step 5 (Home Persistence)** and **Persistent Home
-   Directory, "On logout"**: the home is saved when the Log out tile ends
-   the menu with status 0 (by `dbrrg-session`), after a tile with
+   Directory, "On logout"**: the home is saved by the menu, behind its
+   dialog: by the Log out tile before the menu exits 0 (a failed save asks
+   Stay / Log out anyway), after a tile with
    `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) exits (by the menu,
    behind its dialog), and from the Back up home tile. The menu greys the
    save tile out when `/run/dbrrg/state/home-restore` says `failed`.
@@ -4711,10 +4997,12 @@ Make these changes, in the file's existing voice:
      have no Vulkan ICD (`/usr/share/vulkan/icd.d` does not exist), and GL
      would make the menu's start depend on EGL. `test-session-packages.sh`
      fails on a GPU library linked or named.
-   - *dbrrg-session saves only on menu status 0.* Failure is the default
-     branch; a panic (101), segfault (139) or failed exec (126/127) read as
-     logout would be silent and would archive the home on every respawn.
-     `test-session-lifecycle.sh` guards it.
+   - *dbrrg-session never saves; dbrrg-menu saves before it exits 0.*
+     Decided 2026-10-02 so a failed logout save is shown at the machine and
+     answered there (Stay / Log out anyway). Failure is the default branch:
+     a panic (101), segfault (139) or failed exec (126/127) read as logout
+     would be silent, and saving on them would archive the home on every
+     respawn. `test-session-lifecycle.sh` guards both.
 5. **Debugging, "A session body that fails to start does so silently":**
    rewrite for the new mechanism: `dbrrg-session` writes the menu's status
    to `$XDG_RUNTIME_DIR/dbrrg-session.status`, shows a `foot` window on
@@ -4727,8 +5015,8 @@ Make these changes, in the file's existing voice:
 7. **Known Limitations:** the grid is on one monitor (the span patch is
    Xwayland-only); a tile whose program never exits and opens no window
    keeps the menu busy with no way to cancel; clicking a tile is not
-   covered by the headless runtime test (no input devices); a failed save
-   at logout is visible only in the session log.
+   covered by the headless runtime test (no input devices), so the logout
+   dialog's two buttons are proven by unit tests of the state machine only.
 
 - [ ] **Step 2: README**
 
@@ -4755,6 +5043,30 @@ taken", replace the bullet that begins "**`dbrrg-save-home` stops trusting
   "Corrected 2026-10-02" under Copying a home onto a new stick.)
 ```
 
+Then record the logout decision in the spec. In "Session lifecycle",
+replace the bullet `` - `0`: Save the home directory and return. getty
+starts a fresh session. `` with:
+
+```markdown
+- `0`: Log out. The menu has already saved the home directory behind its
+  dialog, or the save failed and the person at the machine chose "Log out
+  anyway". dbrrg-session does not save. getty starts a fresh session.
+```
+
+and append to "Settled 2026-10-02" under "Decisions taken":
+
+```markdown
+- **Log out saves in the menu first.** The Log out tile runs
+  `dbrrg-save-home` behind the same dialog as Back up home and exits 0 only
+  after it. A failed or refused save shows the reason and offers Stay or
+  Log out anyway; it never logs out by itself. A boot whose restore failed
+  is asked at once, without a save attempt. `dbrrg-session` no longer saves
+  on any status, so exit 0 means the save is done or was declined at the
+  machine. Item 3's reboot and poweroff follow the same rule.
+```
+
+The bullets for `10` and `11` stay as they are; item 3 rewrites them.
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -4774,7 +5086,7 @@ a task report:
 ```bash
 cd /home/oetiker/checkouts/dbrrg
 export TMPDIR=/scratch/oetiker/claude-tmp/dbrrg-test
-make test-unit                                   # Python suite + 48 cargo tests
+make test-unit                                   # Python suite + 52 cargo tests
 (cd src/dbrrg-menu && CARGO_BUILD_JOBS=4 cargo clippy --locked -j 4 --all-targets -- -D warnings && cargo fmt --check)
 flock /scratch/oetiker/claude-tmp/dbrrg-build.lock make test          # image suite incl. --check
 flock /scratch/oetiker/claude-tmp/dbrrg-build.lock make test-runtime  # labwc headless
@@ -4782,5 +5094,7 @@ flock /scratch/oetiker/claude-tmp/dbrrg-build.lock make test-runtime  # labwc he
 
 Then on hardware, which no test here reaches: boot, see the grid, open
 ThinLinc, quit it and watch the save dialog, open the Terminal tile, log
-out and see the grid come back. Record the result in CLAUDE.md the way
+out and see the save dialog, then the grid come back. Pull the network on a
+netbooted machine and log out: the question must appear, and Stay must
+return to the grid. Record the result in CLAUDE.md the way
 "Confirmed on hardware" entries are recorded there.
