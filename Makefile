@@ -276,13 +276,18 @@ qemu-test: $(QCOW2_BOOT_IMAGE) $(QCOW2_TARGET_IMAGE) $(QCOW2_EMPTY_IMAGE)
 # the kernel, the initramfs, the dbrrg dracut module, the squashfs mount, the
 # overlay setup and systemd startup. Syslinux itself is covered by the
 # interactive qemu-test target.
+#
+# scripts/run-qemu-smoke.sh stops the VM QEMU_SMOKE_GRACE seconds after the
+# boot reaches multi-user.target; a boot that never does runs into
+# QEMU_SMOKE_TIMEOUT and is failed by check-boot-smoke.sh.
 QEMU_SMOKE_LOG := $(IMAGE_DIR)/qemu-smoke.log
 QEMU_SMOKE_TIMEOUT ?= 300
+QEMU_SMOKE_GRACE ?= 15
 
 qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 	@echo "Running headless boot smoke test..."
-	@rm -f $(QEMU_SMOKE_LOG)
-	-timeout $(QEMU_SMOKE_TIMEOUT) qemu-system-x86_64 \
+	scripts/run-qemu-smoke.sh $(QEMU_SMOKE_LOG) $(QEMU_SMOKE_TIMEOUT) $(QEMU_SMOKE_GRACE) -- \
+		qemu-system-x86_64 \
 		-machine type=q35,accel=kvm \
 		-cpu host,migratable=off \
 		-smp $(BUILD_JOBS) \
@@ -295,8 +300,7 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-drive file=$(QCOW2_BOOT_IMAGE),format=qcow2,if=virtio \
 		-kernel $(KERNEL) \
 		-initrd $(INITRD) \
-		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console" \
-		-serial file:$(QEMU_SMOKE_LOG)
+		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console"
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
 
 test: rootfs
