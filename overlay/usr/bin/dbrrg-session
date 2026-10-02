@@ -109,12 +109,12 @@ DBRRG_SESSION_STATUS="${DBRRG_SESSION_STATUS:-${XDG_RUNTIME_DIR:-/tmp}/dbrrg-ses
 dbrrg_hold() {
     foot --title "dbrrg: the menu failed" -- sh -c '
         echo "dbrrg-menu exited with status $1, so the session stopped."
-        echo "Your home directory was NOT saved."
+        echo "This session did not save your home directory when it ended."
         echo ""
         echo "Last lines of the session log ($2):"
         tail -n 20 "$2" 2>/dev/null
         echo ""
-        echo "Close this window to start a new session."
+        echo "Close this window to continue."
         exec sh' dbrrg-hold "$1" "${DBRRG_SESSION_LOG:-unknown}"
 }
 

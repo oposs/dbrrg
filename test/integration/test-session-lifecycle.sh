@@ -70,6 +70,17 @@ for code in 1 101 127; do
         && ok "menu exit $code: failure window names the status" || bad "menu exit $code: no failure window"
 done
 
+# The failure window must claim only what it knows: the menu may have saved
+# before it failed, and the third failure in a row ends at the console
+# failure screen, not in a new session.
+if grep -q -e 'NOT saved' -e 'start a new session' "$WORK/foot.args" 2>/dev/null; then
+    bad "failure window claims the home was not saved or that a new session follows"
+elif grep -q 'did not save your home directory' "$WORK/foot.args" 2>/dev/null; then
+    ok "failure window says only that this session did not save"
+else
+    bad "failure window does not mention the save"
+fi
+
 # The stub does not catch an absolute /usr/bin/dbrrg-save-home, so check
 # the code as well.
 if grep -v '^[[:space:]]*#' "$SESSION" | grep -q 'dbrrg-save-home'; then
