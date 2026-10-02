@@ -11,7 +11,14 @@ type info >/dev/null 2>&1 || . /lib/dracut-lib.sh
 . /lib/dbrrg-lib.sh
 
 # Only run for USB boot (not network boot)
-ramroot=$(cat /tmp/dbrrg-ramroot 2>/dev/null)
+# Read ramroot= from the kernel command line, not from /tmp/dbrrg-ramroot.
+# dracut-pre-mount.service is ordered only after dracut-initqueue.service,
+# which is not part of the boot transaction here, so this hook runs in
+# parallel with the cmdline hook that writes that file - measured with
+# rd.debug, half a second before it. The file was therefore missing, a
+# netboot was taken for a USB boot, and the boot waited 60s for an ESP
+# that does not exist.
+ramroot=$(getarg ramroot=)
 if is_remote_url "$ramroot"; then
     dbrrg_log "finalize-upgrade: Network boot - skipping"
     exit 0

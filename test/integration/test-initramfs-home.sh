@@ -625,6 +625,16 @@ else
     bad "no pending upgrade: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
 fi
 
+# The pre-mount hook runs in parallel with the cmdline hook that writes
+# /tmp/dbrrg-ramroot, so it must read ramroot= from the command line itself.
+# Reading the file made every netboot wait 60s for an ESP.
+if grep -v '^[[:space:]]*#' "$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/finalize-upgrade.sh" \
+        | grep -q '/tmp/dbrrg-ramroot'; then
+    bad "finalize-upgrade.sh reads /tmp/dbrrg-ramroot, which may not exist yet in pre-mount"
+else
+    ok "finalize-upgrade.sh does not depend on the cmdline hook's /tmp/dbrrg-ramroot"
+fi
+
 # finalize-upgrade.sh itself mounts the ESP and so cannot run here; this
 # pins the two commands it was missing.
 for tool in sync rmdir; do
