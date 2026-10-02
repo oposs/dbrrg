@@ -367,6 +367,7 @@ test: test-unit rootfs
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh
 	@test/integration/test-field-report.sh
+	@test/integration/test-session-lifecycle.sh
 	@test/integration/test-container-stamp.sh
 	@test/integration/test-make-clean.sh
 

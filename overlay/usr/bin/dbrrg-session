@@ -1,8 +1,10 @@
 #!/bin/sh
 # Body of the graphical session, run by labwc via 'labwc -S'.
 #
-# Ordering matches the Xsession.d hook this replaces for its second half:
-#   90dbrrg-start-thinlinc -> tlclient, then save-home
+# The body of the session is dbrrg-menu, the tile grid. ThinLinc is one of
+# its tiles. The menu saves the home directory itself before it exits, so
+# this script does not save; it reads the menu's exit status (see the end
+# of this file).
 #
 # When this script returns, labwc terminates and the tty1 login starts a
 # fresh session. Leaving the compositor running would strand the user on a
@@ -33,7 +35,7 @@
 # Sourced rather than executed, matching ~/.xsessionrc semantics: no execute
 # bit needed, and it can export variables into the session.
 #
-# It runs BEFORE tlclient because the ThinLinc client reads the monitor
+# It runs BEFORE the menu, and so before any tile starts tlclient, because the ThinLinc client reads the monitor
 # layout once at startup - a rotation applied afterwards would leave the
 # client believing a portrait screen is still landscape.
 if [ -r "$HOME/.dbrrg-sessionrc" ]; then
@@ -93,5 +95,52 @@ if [ "$DBRRG_IDLE_TIMEOUT" -gt 0 ] 2>/dev/null &&
     HELPER_PIDS="$HELPER_PIDS $!"
 fi
 
-/opt/thinlinc/bin/tlclient
-/usr/bin/dbrrg-save-home
+# The menu, overridable so test/integration/test-session-lifecycle.sh can
+# run this script unprivileged.
+DBRRG_MENU="${DBRRG_MENU:-/usr/bin/dbrrg-menu}"
+# Where the menu's exit status is left for 10-dbrrg-session.sh. labwc always
+# exits 0 whatever this script returns, so this file is the only way the
+# login shell learns that the menu failed.
+DBRRG_SESSION_STATUS="${DBRRG_SESSION_STATUS:-${XDG_RUNTIME_DIR:-/tmp}/dbrrg-session.status}"
+
+# Show why the menu failed, in a window, and keep the compositor alive while
+# it is open. Returning straight away would let getty restart the session
+# and the reason would never be on screen.
+dbrrg_hold() {
+    foot --title "dbrrg: the menu failed" -- sh -c '
+        echo "dbrrg-menu exited with status $1, so the session stopped."
+        echo "Your home directory was NOT saved."
+        echo ""
+        echo "Last lines of the session log ($2):"
+        tail -n 20 "$2" 2>/dev/null
+        echo ""
+        echo "Close this window to start a new session."
+        exec sh' dbrrg-hold "$1" "${DBRRG_SESSION_LOG:-unknown}"
+}
+
+# The menu's exit status:
+#
+#   0          log out. The menu has already saved the home directory
+#              behind its dialog, or the save failed and the person at the
+#              machine chose "Log out anyway". Do not save again: a second
+#              save would only repeat the first one's result, or overwrite
+#              what the person just declined to keep waiting for.
+#   any other  the menu failed: do NOT save, show why, hold
+#
+# Failure is the default branch on purpose. A Rust panic exits 101, a
+# segfault 139, a failed exec 126 or 127; reading those as logout would make
+# a crash silent, and saving on them would archive the home once per
+# respawn. 10 and 11 are reserved and have no meaning here.
+"$DBRRG_MENU"
+menu_rc=$?
+echo "$menu_rc" >"$DBRRG_SESSION_STATUS" 2>/dev/null || true
+case "$menu_rc" in
+    0)
+        exit 0
+        ;;
+    *)
+        echo "dbrrg: dbrrg-menu exited with status $menu_rc - the home directory was not saved" >&2
+        dbrrg_hold "$menu_rc"
+        exit "$menu_rc"
+        ;;
+esac

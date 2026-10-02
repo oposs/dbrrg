@@ -31,6 +31,17 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
         DBRRG_SESSION_LOG=/tmp/dbrrg-session.log
     fi
 
+    # dbrrg-session leaves dbrrg-menu's exit status in DBRRG_SESSION_STATUS.
+    # labwc always exits 0 whatever its -S command returned, so without this
+    # file a failing menu restarts in a loop with nothing on screen.
+    # session-verdict counts consecutive failures in DBRRG_SESSION_FAILURES,
+    # which must outlive this login; XDG_RUNTIME_DIR does not, /tmp is per
+    # boot. dbrrg-session reads both exported names.
+    DBRRG_SESSION_STATUS="${XDG_RUNTIME_DIR:-/tmp}/dbrrg-session.status"
+    DBRRG_SESSION_FAILURES="${DBRRG_SESSION_FAILURES:-/tmp/dbrrg-session-failures.$(id -u)}"
+    DBRRG_SESSION_VERDICT="${DBRRG_SESSION_VERDICT:-/usr/libexec/dbrrg/session-verdict}"
+    export DBRRG_SESSION_LOG DBRRG_SESSION_STATUS
+
     # Put the session environment into OUR environment before launching, so
     # the variables are present in labwc's process environment at exec time.
     #
@@ -119,6 +130,7 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # Without this redirection it lands on tty1 and is erased when getty
     # restarts the session seconds later.
     dbrrg_run_labwc() {
+        rm -f "$DBRRG_SESSION_STATUS"
         labwc -C "$LABWC_CONFIG_DIR" -S /usr/bin/dbrrg-session \
             >>"$DBRRG_SESSION_LOG" 2>&1
     }
@@ -150,8 +162,17 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     fi
 
     if [ "$DBRRG_SESSION_RC" -eq 0 ]; then
-        # Normal logout: exit so getty starts a fresh session.
-        exit 0
+        # labwc came up and went away again. Whether the session inside it
+        # ended cleanly is in the status file, not in labwc's status. A
+        # logout, or a menu failure below the limit, exits so getty starts
+        # a fresh session. A missing helper keeps the old behaviour.
+        if [ ! -x "$DBRRG_SESSION_VERDICT" ] ||
+           DBRRG_MENU_RC=$("$DBRRG_SESSION_VERDICT" \
+                "$DBRRG_SESSION_STATUS" "$DBRRG_SESSION_FAILURES"); then
+            exit 0
+        fi
+        echo "dbrrg: the menu failed several sessions in a row."
+        DBRRG_SESSION_RC=$DBRRG_MENU_RC
     fi
 
     # Failure. Deliberately do NOT exit - getty would restart us and the

@@ -236,6 +236,8 @@ run_profile() {   # $1 = scripted statuses, space separated
     env -i PATH="$WORK/ps/bin:/usr/bin:/bin" HOME="$WORK/ps/home" \
         XDG_RUNTIME_DIR="$WORK/ps/run" \
         STUB_COUNT="$WORK/ps/count" STUB_SEQ="$WORK/ps/seq" \
+        DBRRG_SESSION_VERDICT="$REPO/overlay/usr/libexec/dbrrg/session-verdict" \
+        DBRRG_SESSION_FAILURES="$WORK/ps/failures" \
         sh "$PROFILE" >"$WORK/ps/out" 2>&1
     ps_rc=$?
     ps_calls=$(wc -l <"$WORK/ps/count")
