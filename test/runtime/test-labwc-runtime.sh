@@ -4,6 +4,8 @@
 # Also asserts that Xwayland binds the keyboard-grab manager, and that
 # labwc's environment-file parser lets a later duplicate assignment win
 # (the assumption dbrrg-compose-labwc-config's merge depends on).
+# Finally asserts that dbrrg-menu, a native Wayland client, maps at the full
+# output size, rasterises on the CPU and keeps running.
 #
 # Not part of 'make test': it needs network (python3-xlib) and runs a
 # compositor. Use 'make test-runtime'.
@@ -164,6 +166,51 @@ else
     echo "FAIL - a later duplicate assignment did not win (got $dup_geom, expected 1280x720)"
     echo "--- compositor output ---"
     echo "$dup_out"
+    fail=1
+fi
+
+# dbrrg-menu is a native Wayland client, so x11-probe cannot see it; it
+# prints its own configure size under DBRRG_MENU_DEBUG. One output, so the
+# maximized grid must get all of it. timeout ends the menu after 10s: exit
+# 124 means it was still running, i.e. it neither crashed nor exited on its
+# own, and an exit 0 here would be a logout nobody asked for.
+MENU_CONTAINER_NAME="dbrrg-runtime-test-menu-$$"
+
+menu_out=$(timeout --kill-after=10 "$RUNTIME_TIMEOUT" podman run --rm --name "$MENU_CONTAINER_NAME" \
+    -e WLR_BACKENDS=headless \
+    -e WLR_HEADLESS_OUTPUTS=1 \
+    -e WLR_RENDERER=pixman \
+    -e XDG_RUNTIME_DIR=/tmp/xdg \
+    "$IMAGE" \
+    sh -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg &&
+           labwc -C /etc/dbrrg/labwc -S "sh -c \"DBRRG_MENU_DEBUG=1 timeout 10 dbrrg-menu; echo menu-rc=\$?\""' 2>&1)
+menu_rc=$?
+
+if [[ $menu_rc -eq 124 || $menu_rc -eq 137 ]]; then
+    echo "FAIL - podman run timed out after ${RUNTIME_TIMEOUT}s (labwc hang during menu startup)"
+    echo "$menu_out"
+    podman rm -f "$MENU_CONTAINER_NAME" >/dev/null 2>&1
+    exit 1
+fi
+
+if echo "$menu_out" | grep -q 'dbrrg-menu: configure 1280x720'; then
+    echo "ok   - dbrrg-menu maps at the full output size (1280x720)"
+else
+    echo "FAIL - dbrrg-menu did not configure at 1280x720"
+    echo "$menu_out"
+    fail=1
+fi
+if echo "$menu_out" | grep -q 'dbrrg-menu: raster'; then
+    echo "ok   - dbrrg-menu rasterised a frame on the CPU"
+else
+    echo "FAIL - dbrrg-menu never rasterised a frame"
+    echo "$menu_out"
+    fail=1
+fi
+if echo "$menu_out" | grep -q 'menu-rc=124'; then
+    echo "ok   - dbrrg-menu kept running until stopped"
+else
+    echo "FAIL - dbrrg-menu exited on its own: $(echo "$menu_out" | grep menu-rc)"
     fail=1
 fi
 
