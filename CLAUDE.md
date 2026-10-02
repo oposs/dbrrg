@@ -105,7 +105,7 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - Taskbar: `overlay/etc/dbrrg/waybar/` (`config.jsonc`, `style.css`) - a
   single `wlr/taskbar` module, launched by `dbrrg-session`. It exists
   because labwc draws an iconify button and, with zero keybindings and no
-  menu, a minimized window would otherwise be unreachable for the rest of
+  window list, a minimized window would otherwise be unreachable for the rest of
   the session. Kept outside `$HOME` for the same reason `rc.xml` is.
   Note a fullscreen ThinLinc client covers the bar - wlroots puts
   fullscreen surfaces above the layer-shell top layer and ignores exclusive
@@ -201,7 +201,8 @@ The system implements home directory persistence across reboots:
   the menu exits 0; a failed save asks Stay / Log out anyway), a tile with
   `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program exits, and
   the Back up home tile. The menu greys the save tile out when
-  `/run/dbrrg/state/home-restore` says `failed`.
+  `/run/dbrrg/state/home-restore` says `failed`; after a Save-On-Exit tile
+  exits on such a boot, the save is skipped with a notice.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd
   tluser`, never from `$HOME`, and every read of a recorded value under
   `/run/dbrrg/state` ends in `|| true`. Both are load-bearing. `sudo` on this
@@ -774,8 +775,9 @@ therefore writes the menu's exit status to `$XDG_RUNTIME_DIR/dbrrg-session.statu
 and, on any status but 0, opens a `foot` window with the status and the last
 lines of the session log. `overlay/usr/libexec/dbrrg/session-verdict`, called
 from `overlay/etc/profile.d/10-dbrrg-session.sh`, reads that file after labwc
-returns. It stops the restarts and shows the failure screen after three
-consecutive failed sessions, counted in `/tmp/dbrrg-session-failures.<uid>`.
+returns. After three consecutive failed sessions, counted in
+`/tmp/dbrrg-session-failures.<uid>`, it reports the status and
+`10-dbrrg-session.sh` stops the restarts and shows the failure screen.
 
 The session log also carries labwc's own line:
 `[ERROR] [../src/server.c:167] spawned child 12 exited with 10`.

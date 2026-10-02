@@ -139,10 +139,12 @@ Add a tile for one machine as a `.desktop` file in `~/.config/dbrrg/menu/`:
 ```ini
 [Desktop Entry]
 Type=Application
-Name=Wiki
-Icon=/home/tluser/wiki.png
-Exec=firefox https://wiki.example.com
+Name=Screenshot
+Exec=grim /home/tluser/screenshot.png
 ```
+
+Without an `Icon` the tile shows the first letter of `Name`. The program must
+be in the image; a tile whose program is not installed is drawn grey.
 
 - `Name`, `Icon`, `Exec`: Label, icon and command of the tile.
 - `Terminal=true`: Run the command in a terminal window.

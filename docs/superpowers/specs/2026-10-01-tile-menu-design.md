@@ -181,8 +181,8 @@ The menu never shuts the machine down itself. It asks by exit code, and
 - `0`: Log out. The menu has already saved the home directory behind its
   dialog, or the save failed and the person at the machine chose "Log out
   anyway". dbrrg-session does not save. getty starts a fresh session.
-- `10`: Save the home directory, then `sudo systemctl reboot`.
-- `11`: Save the home directory, then `sudo systemctl poweroff`.
+- `10` (item 3; until then a failure): Save the home directory, then `sudo systemctl reboot`.
+- `11` (item 3; until then a failure): Save the home directory, then `sudo systemctl poweroff`.
 - Anything else: the menu failed. Do **not** save, print a diagnostic, and
   hold rather than returning.
 
