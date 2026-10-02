@@ -118,9 +118,36 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # The compositor's stderr is the only record of why a session failed.
     # Without this redirection it lands on tty1 and is erased when getty
     # restarts the session seconds later.
-    labwc -C "$LABWC_CONFIG_DIR" -S /usr/bin/dbrrg-session \
-        >>"$DBRRG_SESSION_LOG" 2>&1
+    dbrrg_run_labwc() {
+        labwc -C "$LABWC_CONFIG_DIR" -S /usr/bin/dbrrg-session \
+            >>"$DBRRG_SESSION_LOG" 2>&1
+    }
+    dbrrg_run_labwc
     DBRRG_SESSION_RC=$?
+
+    # Retry once if labwc itself could not start.
+    #
+    # labwc always exits 0 whatever its -S command returned, so a non-zero
+    # status here means labwc could not come up at all - almost always no
+    # usable DRM device. dbrrg-wait-kms.service covers the known i915 coldplug
+    # race before login; this covers what it cannot: a late hotplug, a GPU
+    # reset, or hardware slower than its 20s budget.
+    #
+    # Exactly once, guarded by an exported variable, because a loop on a
+    # machine with no GPU would spin forever and fill the journal. The retry
+    # runs inline: re-sourcing this file would be a no-op, since
+    # DBRRG_SESSION_ATTEMPTED is already set. Before the fix that added this,
+    # a 273ms timing miss on a NUC7i3BNK cost the entire boot: the failure
+    # shell below is held, never exited, and nothing retried.
+    if [ "$DBRRG_SESSION_RC" -ne 0 ] && [ -z "${DBRRG_SESSION_RETRIED:-}" ]; then
+        echo "dbrrg: the compositor did not start (status $DBRRG_SESSION_RC)."
+        echo "dbrrg: waiting for a graphics driver and trying once more..."
+        /usr/libexec/dbrrg/wait-kms || true
+        DBRRG_SESSION_RETRIED=1
+        export DBRRG_SESSION_RETRIED
+        dbrrg_run_labwc
+        DBRRG_SESSION_RC=$?
+    fi
 
     if [ "$DBRRG_SESSION_RC" -eq 0 ]; then
         # Normal logout: exit so getty starts a fresh session.
@@ -132,10 +159,10 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     # in view so the failure is diagnosable at the machine itself.
     #
     # This is INTENTIONAL PRODUCTION BEHAVIOUR, kept on purpose - do not
-    # remove it as leftover debugging. The trade was made knowingly: a
-    # failing session shows the operator what went wrong instead of retrying
-    # invisibly, at the cost of leaving a shell prompt on screen rather than
-    # continuing to attempt the client.
+    # remove it as leftover debugging. The trade was made knowingly: once the
+    # single retry above has also failed, the session shows the operator what
+    # went wrong instead of retrying invisibly forever, at the cost of leaving
+    # a shell prompt on screen rather than continuing to attempt the client.
     #
     # Consequence worth knowing: because this holds the shell, getty does not
     # restart on failure at all, so the StartLimitIntervalSec/RestartSec

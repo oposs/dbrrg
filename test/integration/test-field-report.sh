@@ -188,4 +188,79 @@ else
     bad "dbrrg-local-network.service exists; it runs too late for the netplan generator"
 fi
 
+# --- 3. retry the session once on a GPU failure --------------------------
+
+PROFILE="overlay/etc/profile.d/10-dbrrg-session.sh"
+
+if grep -q 'DBRRG_SESSION_RETRIED' "$PROFILE"; then
+    ok "the session script guards its retry with DBRRG_SESSION_RETRIED"
+else
+    bad "no retry guard - a GPU not ready at login still loses the whole boot"
+fi
+
+if grep -q 'wait-kms' "$PROFILE"; then
+    ok "the retry waits for a KMS driver before trying again"
+else
+    bad "the retry does not wait for a KMS driver, so it would fail the same way"
+fi
+
+# Exactly one retry. A loop here spins forever on a machine with no GPU and
+# fills the journal.
+retries=$(grep -c 'DBRRG_SESSION_RETRIED' "$PROFILE")
+if [[ "$retries" -ge 2 ]]; then
+    ok "the guard is both set and tested ($retries references)"
+else
+    bad "DBRRG_SESSION_RETRIED appears $retries time(s) - it must be set and tested"
+fi
+
+# Behaviour: run the real profile script under sh with stub tty and labwc.
+# wait-kms does not exist on the dev host; the retry must survive that.
+mkdir -p "$WORK/ps/bin" "$WORK/ps/home" "$WORK/ps/run"
+cat >"$WORK/ps/bin/tty" <<'STUB'
+#!/bin/sh
+echo /dev/tty1
+STUB
+cat >"$WORK/ps/bin/labwc" <<'STUB'
+#!/bin/sh
+# Record the call, then exit with the next scripted status (default 1).
+echo x >>"$STUB_COUNT"
+rc=$(head -n 1 "$STUB_SEQ" 2>/dev/null)
+sed -i 1d "$STUB_SEQ" 2>/dev/null
+exit "${rc:-1}"
+STUB
+chmod +x "$WORK/ps/bin/tty" "$WORK/ps/bin/labwc"
+
+run_profile() {   # $1 = scripted statuses, space separated
+    : >"$WORK/ps/count"
+    printf '%s\n' $1 >"$WORK/ps/seq"
+    env -i PATH="$WORK/ps/bin:/usr/bin:/bin" HOME="$WORK/ps/home" \
+        XDG_RUNTIME_DIR="$WORK/ps/run" \
+        STUB_COUNT="$WORK/ps/count" STUB_SEQ="$WORK/ps/seq" \
+        sh "$PROFILE" >"$WORK/ps/out" 2>&1
+    ps_rc=$?
+    ps_calls=$(wc -l <"$WORK/ps/count")
+}
+
+run_profile "1 0"
+if [[ "$ps_rc" == "0" && "$ps_calls" == "2" ]] &&
+   ! grep -q 'graphical session exited' "$WORK/ps/out"; then
+    ok "labwc failing once is retried, and the retry's success ends the session cleanly"
+else
+    bad "fail-then-succeed: exit $ps_rc, labwc called $ps_calls time(s): $(cat "$WORK/ps/out")"
+fi
+
+run_profile "1 1 1 1"
+if [[ "$ps_calls" == "2" ]] && grep -q 'graphical session exited with status 1' "$WORK/ps/out"; then
+    ok "labwc failing twice is tried exactly twice, then the failure banner shows"
+else
+    bad "always-fail: labwc called $ps_calls time(s) (want 2): $(cat "$WORK/ps/out")"
+fi
+
+run_profile "0"
+if [[ "$ps_rc" == "0" && "$ps_calls" == "1" ]]; then
+    ok "labwc succeeding first time is not retried"
+else
+    bad "first-time success: exit $ps_rc, labwc called $ps_calls time(s) (want 1)"
+fi
+
 exit $fail
