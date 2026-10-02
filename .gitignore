@@ -12,3 +12,6 @@ __pycache__
 # OS files
 .DS_Store
 Thumbs.db
+
+# dbrrg-menu build output, when CARGO_TARGET_DIR is not set
+/src/dbrrg-menu/target/

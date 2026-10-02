@@ -342,11 +342,18 @@ qemu-smoke-netboot: $(KERNEL) $(INITRD) $(SQUASHFS) | $(IMAGE_DIR)
 		-object rng-random,filename=/dev/urandom,id=rng0 \
 		-device virtio-rng-pci,rng=rng0
 
-# Host-side tests. No image, no container, no network: these run in under a
-# second and are the fast feedback loop for the scripts in overlay/usr/bin.
+# Host-side tests. No image, no container, no network: the fast feedback
+# loop for the scripts in overlay/usr/bin and for dbrrg-menu's rules.
 # Deliberately not dependent on 'rootfs'.
+#
+# MEMCAP bounds the cargo tests: the tile-file and icon tests feed
+# deliberately oversized input, and a broken bound must fail the test rather
+# than take the machine's memory. Set MEMCAP= where systemd-run is missing.
+MENU_DIR := src/dbrrg-menu
+MEMCAP ?= systemd-run --user --scope -q -p MemoryMax=2G --
 test-unit:
 	@python3 -m unittest discover -s test/unit -v
+	cd $(MENU_DIR) && CARGO_BUILD_JOBS=$(BUILD_JOBS) $(MEMCAP) cargo test --locked -j $(BUILD_JOBS)
 
 test: test-unit rootfs
 	@test/integration/test-firmware.sh
