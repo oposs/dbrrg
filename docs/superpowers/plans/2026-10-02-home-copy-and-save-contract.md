@@ -2,6 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **SUPERSEDED IN PART, 2026-10-02.** Tasks 1, 2 and 3 are obsolete and must
+> not be implemented from this file. A field report
+> (`docs/reports/2026-10-01-nuc7i3bnk-first-boot.md`, §4.3) disproved the
+> premise they rest on: the boot ESP **is** mounted, read-write, at
+> `/run/dbrrg/storage/efi`, and `dbrrg-cleanup.sh` leaves it mounted on
+> purpose. So no `boot-efi-dev` breadcrumb is needed — the save writes to the
+> existing mount. Those three tasks, plus the exclude list and the atomic
+> write the same report found, are now Task 4 of
+> `docs/superpowers/plans/2026-10-02-nuc7-field-report-fixes.md`, which runs
+> first.
+>
+> **Tasks 4, 5 and 6 still stand** — the `upgrade-image` home copy and its
+> save-call fix are untouched by the correction. Resume from Task 4 once the
+> field-report plan has landed, and note that Task 6's assertions about
+> `boot-efi-dev` must be dropped.
+
 **Goal:** `upgrade-image` can copy this machine's home directory onto a
 freshly installed drive, and `dbrrg-save-home` reports what it did through
 distinct exit codes instead of always exiting 0.
