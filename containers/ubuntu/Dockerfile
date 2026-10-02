@@ -272,6 +272,7 @@ RUN rm -f /etc/ssh/ssh_host_*_key* && \
     systemctl enable un-dockerize.service || true && \
     systemctl enable systemd-networkd && \
     systemctl enable systemd-resolved && \
+    systemctl enable dbrrg-wait-kms.service || true && \
     systemctl mask systemd-hwdb-update.service || true
 
 # Build initramfs with dracut
