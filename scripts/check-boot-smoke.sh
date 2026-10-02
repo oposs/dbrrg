@@ -25,9 +25,29 @@ set -uo pipefail
 # the default target is reached, and is not subject to that race. Either one
 # proves userspace came up; both are absent on a boot that genuinely hung, so
 # this still fails closed.
+#
+# In practice "Startup finished" does not reach the serial log, so the
+# "Reached target" line carries the check alone, and agetty's escape
+# sequences have landed inside it: a boot that came up with ssh running and
+# no ordering cycle failed here once and passed on a rerun of the same image.
+# So the escape sequences (CSI, OSC, DCS) and carriage returns are stripped
+# before matching, and make qemu-smoke masks serial-getty@ttyS0 so that
+# nothing else writes to the console while systemd reports the target.
+strip_terminal_codes() {
+    # CSI (ESC [ ... final), OSC (ESC ] ... BEL or ST), DCS (ESC P ... ST),
+    # any other two-byte ESC sequence, then CR. LC_ALL=C makes the [@-~]
+    # style ranges byte ranges; in a UTF-8 locale they silently match nothing.
+    LC_ALL=C sed -E \
+        -e 's#\x1b\[[0-9;?!>=]*[ -/]*[@-~]##g' \
+        -e 's#\x1b\][^\x07\x1b]*(\x07|\x1b\\)##g' \
+        -e 's#\x1bP[^\x1b]*\x1b\\##g' \
+        -e 's#\x1b[@-_]##g' \
+        -e 's#\r##g' \
+        "$1"
+}
 reached_multi_user() {
-    grep -qaE -- 'Reached target.*[Mm]ulti-[Uu]ser' "$1" ||
-        grep -qaE -- 'Startup finished in' "$1"
+    strip_terminal_codes "$1" |
+        grep -aE -- 'Reached target.*[Mm]ulti-[Uu]ser|Startup finished in' >/dev/null
 }
 
 if [[ "${1:-}" == "--reached" ]]; then

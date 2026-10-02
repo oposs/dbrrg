@@ -283,6 +283,12 @@ qemu-test: $(QCOW2_BOOT_IMAGE) $(QCOW2_TARGET_IMAGE) $(QCOW2_EMPTY_IMAGE)
 QEMU_SMOKE_LOG := $(IMAGE_DIR)/qemu-smoke.log
 QEMU_SMOKE_TIMEOUT ?= 300
 QEMU_SMOKE_GRACE ?= 15
+# serial-getty@ttyS0 is masked because agetty's terminal reset, written to the
+# same serial line, has landed inside systemd's "Reached target
+# multi-user.target" line and failed a good boot. Nothing in the smoke test
+# logs in on the serial console.
+QEMU_SMOKE_APPEND := console=ttyS0,115200 systemd.unit=multi-user.target rd.info \
+	systemd.log_target=console systemd.mask=serial-getty@ttyS0.service
 
 qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 	@echo "Running headless boot smoke test..."
@@ -300,7 +306,7 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-drive file=$(QCOW2_BOOT_IMAGE),format=qcow2,if=virtio \
 		-kernel $(KERNEL) \
 		-initrd $(INITRD) \
-		-append "ramroot=tl/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console"
+		-append "ramroot=tl/ramroot.sqsh $(QEMU_SMOKE_APPEND)"
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
 
 test: rootfs
@@ -310,6 +316,7 @@ test: rootfs
 	@test/integration/test-labwc-config-merge.sh
 	@test/integration/test-initramfs-home.sh
 	@test/integration/test-initramfs-commands.sh
+	@test/integration/test-boot-smoke-check.sh
 	@test/integration/test-ssh-hostkeys.sh
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh
