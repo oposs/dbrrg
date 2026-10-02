@@ -574,6 +574,15 @@ the design spec for why it is unnecessary.
 without that dependency would not trigger a rebuild, leaving `make test` and
 `make test-runtime` validating a stale image while still reporting green.
 
+The same false green has a second source: the image tag. `.ubuntu-container`
+belongs to one checkout, but every checkout builds `dbrrg-ubuntu:$(VERSION)`,
+so another checkout's build replaces the image under this checkout's stamp.
+Each container stamp therefore holds the image ID its build produced, and the
+`Makefile` drops it at parse time when the tag names a different image or
+none. Build with a distinct `VERSION` per checkout, or two checkouts rebuild
+over each other. `test/integration/test-container-stamp.sh` guards this - run
+via `make test`.
+
 ### Per-machine network config is installed by the initramfs, never by a unit
 
 The netplan systemd generator creates `netplan-wpa-<if>.service` when the

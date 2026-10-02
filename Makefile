@@ -116,10 +116,21 @@ OVERLAY_FILES := $(shell find overlay -type f ! -name '*~' 2>/dev/null)
 # changed.
 PATCH_FILES := $(wildcard containers/ubuntu/patches/*.patch)
 
-# Remove stale stamp files if container images don't exist (checked at parse time)
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(UBUNTU_IMAGE) 2>/dev/null || echo missing),$(shell rm -f .ubuntu-container))
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(IMAGE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .image-builder-container))
-$(if $(shell $(CONTAINER_RUNTIME) image exists $(IPXE_BUILDER) 2>/dev/null || echo missing),$(shell rm -f .ipxe-container))
+# Each container stamp holds the ID of the image its build produced, and is
+# removed at parse time unless the tag still names exactly that image.
+#
+# The stamp is per checkout, but the tag is not: every checkout of this repo
+# builds dbrrg-ubuntu:$(VERSION). The old check only asked whether the tag
+# existed, so after another checkout built and re-tagged the image, this
+# checkout's stamp still said "up to date" and `make test` ran its guards
+# against the other checkout's image and reported green. A stamp from before
+# this check is empty and so is dropped once. Build with a distinct VERSION
+# per checkout, or two checkouts will keep rebuilding over each other.
+image_id = $(CONTAINER_RUNTIME) image inspect --format '{{.Id}}' $(1)
+drop_stale_stamp = $(shell id=$$($(call image_id,$(1)) 2>/dev/null); [ -n "$$id" ] && [ "$$id" = "$$(cat $(2) 2>/dev/null)" ] || rm -f $(2))
+$(call drop_stale_stamp,$(UBUNTU_IMAGE),.ubuntu-container)
+$(call drop_stale_stamp,$(IMAGE_BUILDER),.image-builder-container)
+$(call drop_stale_stamp,$(IPXE_BUILDER),.ipxe-container)
 
 ifeq ($(strip $(OXULNK_DEB)),)
 # Nothing to refresh from, so the staged copy is the whole input. No
@@ -143,7 +154,7 @@ endif
 		-t $(UBUNTU_IMAGE) \
 		-f containers/ubuntu/Dockerfile \
 		.
-	@touch $@
+	$(call image_id,$(UBUNTU_IMAGE)) >$@
 
 $(KERNEL) $(INITRD) $(SQUASHFS): .ubuntu-container | $(ROOTFS_DIR)
 	@echo "Exporting rootfs artifacts..."
@@ -167,7 +178,7 @@ rootfs: $(KERNEL) $(INITRD) $(SQUASHFS)
 		-t $(IPXE_BUILDER) \
 		-f containers/ipxe/Dockerfile \
 		containers/ipxe
-	@touch $@
+	$(call image_id,$(IPXE_BUILDER)) >$@
 
 $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI): .ipxe-container | $(ROOTFS_DIR)
 	@echo "Exporting iPXE boot loaders..."
@@ -184,7 +195,7 @@ ipxe: $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI)
 		-t $(IMAGE_BUILDER) \
 		-f containers/image-builder/Dockerfile \
 		containers/image-builder
-	@touch $@
+	$(call image_id,$(IMAGE_BUILDER)) >$@
 
 $(USB_IMAGE): rootfs .image-builder-container | $(IMAGE_DIR)
 	@echo "Creating bootable USB image..."
@@ -342,6 +353,7 @@ test: rootfs
 	@test/integration/test-save-home.sh
 	@test/integration/test-password.sh
 	@test/integration/test-field-report.sh
+	@test/integration/test-container-stamp.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
 # test-only image) and runs a compositor, so it is deliberately not part of
