@@ -232,12 +232,19 @@ Both sets are sorted together by file name, so the shipped files are named
 `10-thinlinc.desktop`, `20-oxulnk.desktop` and so on, leaving gaps for user
 files to sort between them.
 
-The user directory is additive, and four further rules make that a guarantee
-rather than a principle. A restored home is re-restored on every boot, so one
-bad file must not be able to make the machine unusable:
+The user directory adds tiles and may reword the shipped ones, and four
+further rules keep that from becoming a way to break the machine. A restored
+home is re-restored on every boot, so one bad file must not be able to make
+the machine unusable:
 
-- A user file whose name matches a shipped file is ignored, and the grid shows
-  why on the tile it would have replaced. Name matching is case sensitive, so
+- A user file whose name matches a shipped file **rewords that tile rather
+  than replacing it.** Only `Name`, `Comment` and `Icon` are taken from the
+  user file. `Exec`, `X-DBRRG-Action`, `Terminal` and
+  `X-DBRRG-Save-On-Exit` always come from the shipped file and are ignored in
+  the user file, so a user file can make a tile read wrong but never make it
+  unlaunchable, and the shutdown contract with `dbrrg-session` stays out of
+  reach of a restored home. The grid shows on the tile that it was reworded,
+  and names any key it ignored. Name matching is case sensitive, so
   `10-ThinLinc.desktop` does not collide with `10-thinlinc.desktop`; it is
   accepted as an ordinary user tile and sorts next to the real one.
 - At most 32 user files are read, and only regular files in a real directory.
@@ -274,6 +281,20 @@ A user file may use the `run` action only. A user file that names any other
 action is rejected and reported on the tile, because the shutdown contract
 between the menu and `dbrrg-session` is not something a restored home should
 be able to redefine.
+
+Which keys a user file may set depends on whether it stands alone or rewords a
+shipped tile:
+
+| key | own tile | rewording a shipped tile |
+| --- | --- | --- |
+| `Name`, `Comment`, `Icon` | set by the user | set by the user |
+| `Exec`, `Terminal` | set by the user | ignored, shipped value wins |
+| `X-DBRRG-Action` | `run` only | ignored, shipped value wins |
+| `X-DBRRG-Save-On-Exit` | set by the user | ignored, shipped value wins |
+
+An ignored key is not an error. The file still rewords the tile, and the grid
+names the keys it dropped so the difference between "my file was ignored" and
+"those keys are not mine to set" is visible at the machine.
 
 ### Icons
 
@@ -351,7 +372,10 @@ as the fourth.
 `30-terminal` runs `foot`. `tluser` has passwordless sudo, so this is a route
 to a root shell for anyone at the keyboard. The same route already exists over
 SSH and from a VT, so the tile makes it visible rather than making it
-possible.
+possible. Confirmed with the user on 2026-10-02: passwordless sudo for
+`tluser` is the intended design, because the person at the keyboard of a thin
+client is the person who administers it, and both `upgrade-image` and
+`dbrrg-save-home` already depend on it. Do not propose removing it.
 
 `50-upgrade-image` runs `sudo upgrade-image` in `foot`. The existing text
 interface is kept.
@@ -477,12 +501,18 @@ is what that harness can actually run.
 
 A new `make test-unit` target runs `cargo test` on the host for the parser
 rules: desktop entry parsing, name ordering across the two directories, a user
-file not replacing a shipped one, a user file not claiming an action other
-than `run`, `X-DBRRG-Save-On-Exit` ignored outside `run`, the 32 file cap, the
-icon resolution order including the fallback, and the pointer routing
+file rewording a shipped tile's `Name`, `Comment` and `Icon`, the same file's
+`Exec`, `Terminal`, `X-DBRRG-Action` and `X-DBRRG-Save-On-Exit` being ignored
+in favour of the shipped values, a standalone user file not claiming an action
+other than `run`, `X-DBRRG-Save-On-Exit` ignored outside `run`, the 32 file
+cap, the icon resolution order including the fallback, and the pointer routing
 predicate headless against a `RawInput`. These are the rules that keep a
 restored home from making a machine unusable, so they are the tests that must
 not be the ones that get skipped.
+
+The reword path needs one test that is easy to leave out and is the whole
+point of the rule: a user file that rewords `10-thinlinc.desktop` *and* names
+a broken `Exec` still launches the shipped `tlclient`.
 
 `test/integration/test-session-packages.sh` gains, in the shape it already
 uses for `usr/bin/labwc`:
@@ -508,9 +538,23 @@ asserts on that.
 
 ## Decisions taken
 
-The three things this spec left open were settled on 2026-10-01. Each one is
-written into the section that implements it; this list exists so a reader does
-not have to hunt for them.
+The three things this spec left open were settled on 2026-10-01, and two more
+on 2026-10-02. Each one is written into the section that implements it; this
+list exists so a reader does not have to hunt for them.
+
+Settled 2026-10-02:
+
+- **Tile text on the shipped tiles is approved as the mockup draws it**, and a
+  user file may reword a shipped tile without rebuilding the image. The
+  override covers `Name`, `Comment` and `Icon` and nothing else. See Tile
+  sources and Tile file format.
+- **`tluser` keeps passwordless sudo.** It is how `upgrade-image` and
+  `dbrrg-save-home` escalate today, and the terminal tile is meant to make
+  that route visible rather than add it. The person at the keyboard of a thin
+  client is the person who administers it. This is the intended design, not a
+  tolerated gap. See Shipped tiles.
+
+Settled 2026-10-01:
 
 - **Icon set: Lucide.** The five SVGs ship in the crate and install to
   `/usr/share/dbrrg/icons/`, from `lucide-static@1.49.0` with its ISC licence
@@ -532,10 +576,13 @@ a user tile sorting between them), the three failure states drawn on the tile
 itself, the save modal with its elapsed timer, and the exit codes handed back
 to `dbrrg-session`. It is a picture, not the program.
 
-Two things it does not settle. The `Name` and `Comment` text on every tile is
-invented, because this spec fixes none of it, and that text is what the person
-at the machine reads. The ThinLinc and oxulnk tiles show a placeholder rather
-than the logos their own packages install.
+The `Name` and `Comment` text it draws was approved on 2026-10-02 and is the
+shipped wording. A machine can reword any of it from
+`~/.config/dbrrg/menu/` without an image rebuild; see Tile sources.
+
+One thing it does not settle: the ThinLinc and oxulnk tiles show a placeholder
+rather than the logos their own packages install, and nobody has looked at
+what those artwork files are at tile size.
 
 ## Known limits
 
