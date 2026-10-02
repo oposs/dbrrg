@@ -159,10 +159,12 @@ else
     bad "setup-overlay.sh must call install_local_network after restore_home (restore=$l_restore net=$l_net)"
 fi
 
-if [[ "$(stat -c%a overlay/etc/netplan/ethernet.yaml)" == 600 ]]; then
-    ok "ethernet.yaml ships mode 600"
+# git cannot carry mode 0600, so assert the Dockerfile sets it; the mode of
+# the built image is checked in test-session-packages.sh.
+if grep -Eq 'chmod 600 /etc/netplan/\*\.yaml' containers/ubuntu/Dockerfile; then
+    ok "Dockerfile sets /etc/netplan/*.yaml to mode 600"
 else
-    bad "ethernet.yaml must be mode 600 (netplan: permissions too open)"
+    bad "Dockerfile must chmod 600 /etc/netplan/*.yaml (netplan: permissions too open)"
 fi
 
 RC=overlay/home/tluser/.dbrrg-sessionrc

@@ -49,6 +49,8 @@ _DBRRG_LIB_LOADED=""
 
 # shellcheck source=/dev/null
 . "$LIB"
+# The library redefines dbrrg_log to write to /dev/console; silence it again.
+dbrrg_log() { :; }
 
 # --- dbrrg_home_url ------------------------------------------------------
 
@@ -434,6 +436,15 @@ if [[ $rc -eq 0 && ! -e "$nr/etc/netplan/wifi.yaml" \
     ok "wg0.conf alone installs the WireGuard half only"
 else
     bad "wg0.conf alone: rc=$rc, wrong result"
+fi
+
+nr=$(mkhome net-template)
+cp "$REPO/overlay/home/tluser/wifi.yaml" "$nr/home/tluser/wifi.yaml"
+install_local_network "$nr"; rc=$?
+if [[ $rc -eq 0 && ! -e "$nr/etc/netplan/wifi.yaml" ]]; then
+    ok "unedited wifi.yaml template is not installed, returns 0"
+else
+    bad "template wifi.yaml was installed or rc=$rc"
 fi
 
 nr=$(mkhome net-symlink)

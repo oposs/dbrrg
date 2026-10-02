@@ -182,7 +182,10 @@ RUN adduser --disabled-password --gecos "ThinUser" tluser && \
 
 # Apply overlay
 ADD overlay/ /__overlay
-RUN tar cf - --exclude="*~" -C /__overlay . | tar xf - && rm -rf /__overlay
+# netplan refuses world-readable config ("Permissions for ... are too open")
+# and git cannot store mode 0600, so set it here.
+RUN tar cf - --exclude="*~" -C /__overlay . | tar xf - && rm -rf /__overlay \
+    && chmod 600 /etc/netplan/*.yaml
 RUN chown -R tluser:tluser /home/tluser
 
 # Generate locale

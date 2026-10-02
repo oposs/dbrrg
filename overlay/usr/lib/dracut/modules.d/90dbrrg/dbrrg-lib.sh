@@ -400,7 +400,12 @@ install_local_network() {
     local _iln_home="$_iln_root/home/tluser"
     local _iln_wants="$_iln_root/etc/systemd/system/multi-user.target.wants"
 
-    if [ -f "$_iln_home/wifi.yaml" ] && [ ! -L "$_iln_home/wifi.yaml" ]; then
+    if [ -f "$_iln_home/wifi.yaml" ] && [ ! -L "$_iln_home/wifi.yaml" ] && \
+       grep -q -F 'device name of your wifi card' "$_iln_home/wifi.yaml"; then
+        # The image ships this placeholder; installing it would only make
+        # netplan complain about an interface that does not exist.
+        dbrrg_log "dbrrg: ~/wifi.yaml is the unedited template, skipping"
+    elif [ -f "$_iln_home/wifi.yaml" ] && [ ! -L "$_iln_home/wifi.yaml" ]; then
         dbrrg_log "dbrrg: installing wifi.yaml into /etc/netplan"
         # netplan ignores a file others can read, hence 600.
         if mkdir -p "$_iln_root/etc/netplan" && \
