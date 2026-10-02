@@ -450,6 +450,47 @@ else
     fail=1
 fi
 
+# 8. upgrade-image: the save before finishing and the home copy onto a fresh
+# drive. A stale image would keep the old 60 s save whose bare except hid a
+# failed save, and would copy no home at all.
+if unsquashfs -no-xattrs -d "$DPKG_TMP/upg" "$SQSH" usr/bin/upgrade-image >/dev/null 2>&1 &&
+   [[ -f "$DPKG_TMP/upg/usr/bin/upgrade-image" ]]; then
+    UPG="$DPKG_TMP/upg/usr/bin/upgrade-image"
+    if grep -q 'def save_home_before_finish' "$UPG" && grep -q 'SAVE_HOME_TIMEOUT = 600' "$UPG"; then
+        echo "ok   - upgrade-image saves the home with a 600 s bound and reports failure"
+    else
+        echo "FAIL - upgrade-image has no save_home_before_finish with SAVE_HOME_TIMEOUT = 600"
+        fail=1
+    fi
+    if grep -qE 'timeout=60[,)]' "$UPG"; then
+        echo "FAIL - upgrade-image still calls dbrrg-save-home with timeout=60 (kills a netboot upload)"
+        fail=1
+    else
+        echo "ok   - upgrade-image no longer uses the 60 s save timeout"
+    fi
+    if grep -q 'def copy_home_to_drive' "$UPG"; then
+        echo "ok   - upgrade-image can copy the home onto a fresh drive"
+    else
+        echo "FAIL - upgrade-image has no copy_home_to_drive"
+        fail=1
+    fi
+    # Both identity files must never travel to another machine.
+    if grep -q '"./.dbrrg-ssh-host-keys"' "$UPG"; then
+        echo "ok   - home copy excludes the SSH host keystore"
+    else
+        echo "FAIL - home copy does not exclude ./.dbrrg-ssh-host-keys (two machines would share a host key)"
+        fail=1
+    fi
+    if grep -q '"./wg0.conf"' "$UPG"; then
+        echo "ok   - home copy excludes wg0.conf"
+    else
+        echo "FAIL - home copy does not exclude ./wg0.conf (two machines would share a WireGuard identity)"
+        fail=1
+    fi
+else
+    echo "FAIL - cannot extract usr/bin/upgrade-image from $SQSH"
+    fail=1
+fi
 if [[ $fail -ne 0 ]]; then
     echo ""
     echo "FAILED - session stack is not as expected"
