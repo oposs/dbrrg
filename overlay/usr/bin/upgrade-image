@@ -596,6 +596,61 @@ def show_drives_with_operations(drives: List[DriveInfo]) -> Optional[Tuple[Drive
             return None
 
 
+# ============ Home Save ============
+
+# dbrrg-save-home's own bound on waiting for the boot server is 60 seconds,
+# and the tar and upload come after it. A 60 second timeout here therefore
+# killed the child while it was uploading, and the bare `except Exception:
+# pass` around it discarded both the timeout and any failure, so a user whose
+# home was not saved was told the operation completed successfully.
+SAVE_HOME_TIMEOUT = 600
+
+# Exit codes from dbrrg-save-home. See the table at the top of that script.
+SAVE_HOME_MESSAGES = {
+    0: None,  # saved; nothing to say
+    1: "the home directory could not be found",
+    2: "this boot's home restore had failed, so saving was refused",
+    3: "the boot server could not be reached",
+    4: "this machine has nowhere to store a home directory",
+    5: "the save was attempted and failed",
+}
+
+
+def save_home_before_finish() -> int:
+    """Save the home directory before the user reboots.
+
+    Returns dbrrg-save-home's exit status, or -1 if it could not be run.
+    Never raises: a failed save must not lose the install that just
+    succeeded, but it must not be hidden either.
+    """
+    try:
+        result = subprocess.run(
+            ["dbrrg-save-home"],
+            capture_output=True,
+            timeout=SAVE_HOME_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"WARNING: saving the home directory timed out after "
+            f"{SAVE_HOME_TIMEOUT}s - it may be incomplete")
+        return -1
+    except (FileNotFoundError, OSError) as e:
+        log(f"WARNING: could not run dbrrg-save-home: {e}")
+        return -1
+
+    if result.returncode == 0:
+        return 0
+
+    reason = SAVE_HOME_MESSAGES.get(
+        result.returncode, f"it exited {result.returncode}"
+    )
+    log(f"WARNING: your home directory was NOT saved - {reason}")
+    stderr = result.stderr.decode("utf-8", "replace").strip()
+    if stderr:
+        for line in stderr.splitlines():
+            print(f"    {line}", file=sys.stderr)
+    return result.returncode
+
+
 # ============ Main ============
 
 def main() -> int:
@@ -645,11 +700,9 @@ def main() -> int:
                 die("Cannot overwrite the boot drive while running!")
             do_fresh_install(drive, base_url)
 
-        # Try to save home before potential reboot
-        try:
-            subprocess.run(["dbrrg-save-home"], capture_output=True, timeout=60)
-        except Exception:
-            pass
+        # Save home before a potential reboot. A failure here is reported and
+        # does not fail the install, which has already succeeded.
+        save_home_before_finish()
 
         print_header("Success")
         print("\n  Operation completed successfully!")

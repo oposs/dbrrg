@@ -64,7 +64,7 @@ endif
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test test-runtime help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke test-unit test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
@@ -299,7 +299,13 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 		-serial file:$(QEMU_SMOKE_LOG)
 	@scripts/check-boot-smoke.sh $(QEMU_SMOKE_LOG)
 
-test: rootfs
+# Host-side tests. No image, no container, no network: these run in under a
+# second and are the fast feedback loop for the scripts in overlay/usr/bin.
+# Deliberately not dependent on 'rootfs'.
+test-unit:
+	@python3 -m unittest discover -s test/unit -v
+
+test: test-unit rootfs
 	@test/integration/test-firmware.sh
 	@test/integration/test-wifi-stack.sh
 	@test/integration/test-session-packages.sh
