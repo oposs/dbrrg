@@ -49,7 +49,7 @@ for a in "$@"; do
     esac
     prev="$a"
 done
-exit 0
+exit "${DBRRG_TEST_TAR_RC:-0}"
 STUB
 
 cat >"$STUBS/curl" <<'STUB'
@@ -64,15 +64,16 @@ exit 0
 STUB
 
 # sudo runs only the commands the USB branch uses to write the ESP (tar, gzip,
-# mv, rm, sync), resolved through PATH so the stubbed tar and gzip are used;
+# mv, rm), resolved through PATH so the stubbed tar and gzip are used;
 # without that the atomicity test would be vacuous. Everything else, such as
-# dbrrg-ssh-hostkeys --stage, mount and dd, is logged and swallowed because an
+# dbrrg-ssh-hostkeys --stage, mount, dd and sync (a real sync would flush the
+# shared host), is logged and swallowed because an
 # unprivileged test may not perform it.
 cat >"$STUBS/sudo" <<'STUB'
 #!/bin/bash
 echo "sudo $*" >>"$DBRRG_TEST_SUDO_LOG"
 case "${1:-}" in
-    tar|gzip|mv|rm|sync) exec "$@" ;;
+    tar|gzip|mv|rm) exec "$@" ;;
 esac
 exit 0
 STUB
@@ -105,6 +106,7 @@ run_save_home() {
     DBRRG_EFI_MOUNT="${DBRRG_EFI_MOUNT_OVERRIDE:-/run/dbrrg/storage/efi}" \
     DBRRG_EXCLUDE_DEFAULT="${DBRRG_EXCLUDE_DEFAULT_OVERRIDE:-/etc/dbrrg/save-home-exclude}" \
     DBRRG_TEST_GZIP_FAIL="${DBRRG_TEST_GZIP_FAIL:-}" \
+    DBRRG_TEST_TAR_RC="${DBRRG_TEST_TAR_RC:-0}" \
     PATH="$STUBS:$PATH" \
         "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err"
     echo $?
@@ -337,6 +339,34 @@ if ! grep -q 'by-partlabel' "$SCRIPT"; then
     ok "dbrrg-save-home no longer mentions /dev/disk/by-partlabel"
 else
     bad "dbrrg-save-home still references by-partlabel: $(grep -n by-partlabel "$SCRIPT")"
+fi
+
+# --------------------------------------------------------------- test 19
+# GNU tar exits 1 for "file changed as we read it". A live home triggers that,
+# so status 1 with a complete archive must still be a successful save.
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" DBRRG_TEST_TAR_RC=1 \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && [[ -f "$WORK/esp/home.tar.gz" ]] &&
+   [[ ! -e "$WORK/esp/home.tar.gz.new" ]]; then
+    ok "tar exit 1 (file changed) still saves"
+else
+    bad "tar exit 1 broke the save (exit $rc)"
+fi
+
+# --------------------------------------------------------------- test 20
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp"
+echo "THE GOOD OLD ARCHIVE" >"$WORK/esp/home.tar.gz"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" DBRRG_TEST_TAR_RC=2 \
+     run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "5" ]] && grep -q "THE GOOD OLD ARCHIVE" "$WORK/esp/home.tar.gz"; then
+    ok "tar exit 2 is a failed save and keeps the old archive"
+else
+    bad "tar exit 2 gave exit $rc"
 fi
 
 exit $fail
