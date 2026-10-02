@@ -4,5 +4,7 @@ pub mod bounded;
 pub mod damage;
 pub mod desktop;
 pub mod icons;
+pub mod jobs;
+pub mod menu;
 pub mod raster;
 pub mod tiles;
