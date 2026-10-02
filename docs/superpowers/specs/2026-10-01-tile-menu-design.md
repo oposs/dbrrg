@@ -400,15 +400,27 @@ carry `PARTLABEL=EFI-SYSTEM`, the same PARTUUID and the same FAT label, and
 that symlink resolves to whichever udev saw last. `dbrrg-save-home:84-88`
 mounts exactly that symlink, so a save after a fresh install can land on the
 wrong stick. Closing that for the save path as well was decided on
-2026-10-01, by recording the node rather than by consulting a mount table:
-nothing mounts the EFI partition during a normal session, so there is no
-mounted partition to prefer. `dbrrg_wait_for_efi()` records what the symlink
-resolved to as `<state-dir>/boot-efi-dev`, on each of its two successful
-returns, next to `boot-mac` and `boot-home-base` and for the same reason those
-exist: the save then addresses the partition the restore actually read, so the
-two cannot disagree. `dbrrg-save-home` mounts that node, keeps the symlink as
-the fallback for a boot that recorded nothing, and reads the file with the
-`|| true` that every other read of that directory now carries.
+2026-10-01.
+
+**Corrected 2026-10-02.** The first version of this paragraph said the save
+should record the device node in the initramfs and mount it again at logout,
+"by recording the node rather than by consulting a mount table: nothing mounts
+the EFI partition during a normal session, so there is no mounted partition to
+prefer". **That premise was false.** The boot ESP is mounted read-write at
+`/run/dbrrg/storage/efi` by `mount-squashfs.sh:71` and deliberately left
+mounted: `dbrrg-cleanup.sh` says "Do NOT unmount squashfs, EFI partition,
+ZRAM, or overlay! They are needed for the running system." The mount survives
+the pivot, which `dbrrg-save-home` already proves by reading
+`/run/dbrrg/state/boot-mac` successfully in the booted system.
+
+A field report from a NUC7i3BNK
+(`docs/reports/2026-10-01-nuc7i3bnk-first-boot.md`, §4.3) found this, and it
+is right. So the save writes to `/run/dbrrg/storage/efi`, which is by
+construction the partition this boot read — the goal the breadcrumb was
+invented to reach, without the breadcrumb, and without mounting the same vfat
+filesystem a second time. `/dev/disk/by-partlabel/EFI-SYSTEM` stays only as
+the fallback for a boot that left nothing mounted. No `boot-efi-dev` state
+file is written, and `dbrrg_wait_for_efi()` is unchanged.
 
 On yes it writes `home.tar.gz` to the new drive's EFI partition, which is the
 file `restore_home()` reads at boot, so the new stick comes up with the user's
