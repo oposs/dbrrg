@@ -117,14 +117,21 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   a program. A user file named like a shipped one may reword `Name`, `Comment`
   and `Icon` only; its other keys are ignored. The files travel with the home
   directory through `save-home`.
-  `Icon=` is user data the menu parses on every boot, so an SVG is refused
-  (the tile draws its first letter) when it nests deeper than 64 elements,
-  has more than 10000, declares entities, or uses filters: usvg and resvg
-  recurse per level and per reference, and a stack overflow aborts the menu
-  past any `catch_unwind`; one `feTurbulence` rendered for over a minute.
-  Icons render off the UI thread, 2 s each and 5 s for all of them; a
-  render that misses its time draws the letter and its thread is abandoned.
-  Limits and guards are in `src/dbrrg-menu/src/icons.rs`.
+  `Icon=` is user data the menu parses on every boot, so each icon renders
+  in a child process, `dbrrg-menu --render-icon`, one at a time, under
+  `RLIMIT_AS` 256 MiB, `RLIMIT_STACK` 256 MiB, `RLIMIT_CPU` 3 s,
+  `RLIMIT_FSIZE` 0 and `RLIMIT_NOFILE` 16. The menu kills and reaps it
+  after 2 s, or when the 5 s for all icons are used up. Any failure draws
+  the tile's first letter. In-process guards cannot bound memory: a
+  700-byte SVG of nested `<pattern>`s asked resvg for 2.88 GB, and the
+  thread the deadline abandoned kept allocating until the OOM killer
+  ended the menu. A release renderer needs 64 MiB for every legitimate
+  icon measured, and the debug build (the tests) needs 192 MiB. Before
+  rendering, the child still refuses an SVG that nests deeper than 64
+  elements, has more than 10000, declares entities or uses filters (one
+  `feTurbulence` ran for over a minute). Limits and guards are in
+  `src/dbrrg-menu/src/icons.rs`, and `src/dbrrg-menu/tests/render_icon.rs`
+  renders through the real binary.
 - Session startup: `overlay/usr/bin/dbrrg-session`, `overlay/etc/profile.d/10-dbrrg-session.sh`
 - **Per-machine user customisation:** `overlay/home/tluser/.dbrrg-sessionrc` — the Wayland replacement for `~/.xsessionrc`. Sourced by `dbrrg-session` after the home restore and before the menu, and so before any tile starts `tlclient`. Because it lives in `$HOME` it is captured by `save-home` and restored each boot, so a user can configure an individual machine without rebuilding the image. This is where display layout goes: **`wlr-randr` replaces `xrandr`** (`--output DP-1 --transform 90 --pos 1920,0`), and `kanshi` is available for layouts that must survive hotplug or DPMS wake. It must run before `tlclient`, because the client reads the monitor layout once at startup.
   It is also where screen blanking is tuned: `DBRRG_IDLE_TIMEOUT=<seconds>` (default `300`, `0` disables blanking entirely) is read by `dbrrg-session` right after this file is sourced.
@@ -720,6 +727,8 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
   filters are refused: 15 of 70 Adwaita `scalable` and 53 of 425 hicolor
   `scalable` icons on a desktop host. Every Adwaita symbolic icon, the
   shipped Lucide set and the image's `foot.svg` render.
+- Each icon costs one process start at menu startup, and the icons render
+  one after another, so that at most one renderer holds its 256 MiB.
 - None of the menu has been run on hardware yet.
 
 ### Screen blanking had to be rebuilt after the X11 removal
@@ -794,7 +803,8 @@ returns. After three consecutive failed sessions, counted in
 The session log also carries labwc's own line:
 `[ERROR] [../src/server.c:167] spawned child 12 exited with 10`.
 
-From a VT, `dbrrg-menu --check` lists every tile and why one is grey.
+From a VT, `dbrrg-menu --check` lists every tile, why one is grey, and why
+an icon draws its letter.
 
 ### The session waits for the GPU before it starts
 

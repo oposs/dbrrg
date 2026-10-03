@@ -8,7 +8,8 @@ use dbrrg_menu::app::{self, Config};
 use dbrrg_menu::icons::{self, IconRoots};
 use dbrrg_menu::jobs::{self, Paths};
 use dbrrg_menu::menu::Menu;
-use dbrrg_menu::tiles;
+use dbrrg_menu::{tiles, ui};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -41,8 +42,8 @@ fn build_menu() -> (Menu, Paths, IconRoots) {
     (menu, paths, IconRoots::system())
 }
 
-/// `dbrrg-menu --check`: print every tile and how its icon resolves, and
-/// fail if a shipped tile is unusable or has no icon. For the image tests,
+/// `dbrrg-menu --check`: print every tile and how its icon draws, and fail
+/// if a shipped tile is unusable or draws its letter. For the image tests,
 /// and for an operator at a VT asking why a tile is grey.
 fn check() -> ExitCode {
     let (menu, _, roots) = build_menu();
@@ -50,19 +51,20 @@ fn check() -> ExitCode {
     for line in &menu.banner {
         println!("banner: {line}");
     }
-    for t in &menu.tiles {
-        let icon = t.icon.as_deref().and_then(|i| icons::resolve(i, &roots));
+    let icons = ui::render_icons(&menu.tiles, &roots);
+    for (t, icon) in menu.tiles.iter().zip(icons) {
         let shipped = t.origin != tiles::Origin::User;
         let state = match &t.problem {
             Some(p) => format!("DISABLED ({p})"),
             None => "ok".to_string(),
         };
-        let icon_text = icon
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "letter fallback".into());
+        let (icon_text, drawn) = match icon {
+            None => ("letter fallback".to_string(), false),
+            Some((path, Ok(_))) => (path.display().to_string(), true),
+            Some((path, Err(e))) => (format!("letter fallback ({}: {e})", path.display()), false),
+        };
         println!("{}\t{}\t{:?}\t{}\ticon: {}", t.file, t.name, t.action, state, icon_text);
-        if shipped && (t.problem.is_some() || icon.is_none()) {
+        if shipped && (t.problem.is_some() || !drawn) {
             bad = true;
         }
     }
@@ -70,7 +72,11 @@ fn check() -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("--check") {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == icons::RENDER_ICON_ARG) {
+        return icons::render_icon_main(&args[2..]);
+    }
+    if args.get(1).is_some_and(|a| a == "--check") {
         return check();
     }
     let (menu, paths, icon_roots) = build_menu();

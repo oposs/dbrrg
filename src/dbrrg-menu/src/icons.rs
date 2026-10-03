@@ -4,11 +4,13 @@
 use crate::bounded::read_bounded;
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use resvg::usvg;
+use std::ffi::OsString;
 use std::fs;
-use std::panic::{self, AssertUnwindSafe};
+use std::io::{self, Read, Write};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -156,14 +158,14 @@ fn skip_past(b: &[u8], from: usize, needle: &[u8]) -> usize {
         .map_or(b.len(), |at| from + at + needle.len())
 }
 
-/// Refuse an SVG whose shape alone can kill the process, before any parser
+/// Refuse an SVG whose shape alone can overflow the stack, before any parser
 /// sees it. Parsing and rendering recurse once per nesting level and per
-/// `url(#…)` reference followed, and running out of stack is an
-/// abort that no `catch_unwind` and no deadline can turn into a letter: the
-/// menu would die on every boot. The depth limit covers nesting; the element
-/// limit bounds how long a chain of references can be, and RENDER_STACK is
-/// sized for the longest one it lets through. An entity can expand into
-/// markup this scan never sees, and icons have no use for entities.
+/// `url(#…)` reference followed. The overflow would only kill the renderer
+/// process, but this costs one pass over the text instead of a process
+/// that dies. The depth limit covers nesting; the element limit bounds how
+/// long a chain of references can be, and ICON_STACK is sized for the
+/// longest one it lets through. An entity can expand into markup this scan
+/// never sees, and icons have no use for entities.
 ///
 /// The scan only has to be right for files roxmltree would accept: a file
 /// it misreads is either refused here or rejected by the parser.
@@ -290,54 +292,293 @@ pub fn render(path: &Path, side: u32, rgb: [u8; 3], symbolic: bool) -> Result<eg
 pub const ICON_DEADLINE: Duration = Duration::from_secs(2);
 /// How long the first frame may wait for all icons together.
 pub const ICONS_BUDGET: Duration = Duration::from_secs(5);
-/// usvg and resvg recurse once per level of nesting and per `url(#…)`
-/// reference they follow. A thread's default 2 MiB overflows on a chain of
-/// about 1000 patterns. A release build renders the 5000-pattern chain
-/// MAX_SVG_ELEMENTS allows in 64 MiB, a debug build (the tests) does not, so
-/// this has room for both. Only the pages a render touches cost memory.
-const RENDER_STACK: usize = 256 * 1024 * 1024;
+/// Address space of one renderer process. Nothing in-process bounds what
+/// usvg and resvg allocate: a 700-byte SVG of nested patterns asked for
+/// 2.88 GB. The kernel refuses the allocation at this size, the renderer
+/// aborts, and the tile draws its letter. A release build renders every
+/// shipped icon, an 880 KB theme icon and the longest chain MAX_SVG_ELEMENTS
+/// lets through in 64 MiB; the debug build (the tests) needs 192 MiB for
+/// the chain.
+pub const ICON_MEMORY: u64 = 256 * 1024 * 1024;
+/// Stack of the renderer's main thread. usvg and resvg recurse once per
+/// level of nesting and per `url(#…)` reference they follow; the longest
+/// chain MAX_SVG_ELEMENTS lets through needs 32 MiB in a release build and
+/// 128 MiB in a debug build. Only the pages a render touches count against
+/// ICON_MEMORY.
+pub const ICON_STACK: u64 = 256 * 1024 * 1024;
+/// CPU seconds of one renderer process, a backstop for the wall-clock
+/// deadline should the menu itself stop before it kills the renderer.
+const ICON_CPU_SECONDS: u64 = 3;
+/// The argument that makes dbrrg-menu a renderer process.
+pub const RENDER_ICON_ARG: &str = "--render-icon";
 
-/// Run `render` on every job, each on a thread of its own and one at a time,
-/// and give each its result or why it has none.
+const REPLY_IMAGE: &[u8; 4] = b"RGBA";
+const REPLY_ERROR: &[u8; 4] = b"FAIL";
+const NO_IMAGE: &str = "the renderer returned no usable image";
+/// Longest error message read back from a renderer.
+const MAX_ERROR_BYTES: usize = 1024;
+
+/// One icon to rasterise: what a renderer process gets on its command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconJob {
+    pub path: PathBuf,
+    pub side: u32,
+    pub rgb: [u8; 3],
+    pub symbolic: bool,
+}
+
+impl IconJob {
+    fn args(&self) -> Vec<OsString> {
+        let [r, g, b] = self.rgb;
+        vec![
+            self.side.to_string().into(),
+            format!("{r:02x}{g:02x}{b:02x}").into(),
+            if self.symbolic { "1" } else { "0" }.into(),
+            self.path.clone().into_os_string(),
+        ]
+    }
+
+    fn from_args(args: &[OsString]) -> Option<IconJob> {
+        let [side, rgb, symbolic, path] = args else {
+            return None;
+        };
+        let side: u32 = side.to_str()?.parse().ok().filter(|s| (1..=1024).contains(s))?;
+        let rgb = rgb.to_str().filter(|s| s.len() == 6)?;
+        let byte = |i: usize| u8::from_str_radix(rgb.get(i..i + 2)?, 16).ok();
+        let symbolic = match symbolic.to_str()? {
+            "1" => true,
+            "0" => false,
+            _ => return None,
+        };
+        Some(IconJob {
+            path: PathBuf::from(path),
+            side,
+            rgb: [byte(0)?, byte(2)?, byte(4)?],
+            symbolic,
+        })
+    }
+}
+
+/// `dbrrg-menu --render-icon SIDE RRGGBB SYMBOLIC PATH`: the renderer
+/// process. It runs under the limits `render_all` set before exec and
+/// answers on stdout: `RGBA`, width and height as little-endian u32, then
+/// the premultiplied pixels; or `FAIL` and why, with exit status 1.
+pub fn render_icon_main(args: &[OsString]) -> ExitCode {
+    let result = IconJob::from_args(args)
+        .ok_or_else(|| "usage: dbrrg-menu --render-icon SIDE RRGGBB 0|1 PATH".to_string())
+        .and_then(|job| render(&job.path, job.side, job.rgb, job.symbolic));
+    let mut reply = Vec::new();
+    let status = match result {
+        Ok(img) => {
+            reply.extend_from_slice(REPLY_IMAGE);
+            reply.extend_from_slice(&(img.size[0] as u32).to_le_bytes());
+            reply.extend_from_slice(&(img.size[1] as u32).to_le_bytes());
+            reply.extend_from_slice(img.as_raw());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            reply.extend_from_slice(REPLY_ERROR);
+            reply.extend_from_slice(e.as_bytes());
+            ExitCode::from(1)
+        }
+    };
+    let mut out = std::io::stdout().lock();
+    if out.write_all(&reply).and_then(|_| out.flush()).is_err() {
+        return ExitCode::from(1);
+    }
+    status
+}
+
+/// Set both limits of `resource` to `value`, or to the hard limit already
+/// in force if that is lower: only root may raise it.
+fn set_limit(resource: libc::__rlimit_resource_t, value: u64) -> io::Result<()> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit and setrlimit only touch the struct they are given,
+    // and both are async-signal-safe, which code between fork and exec has
+    // to be.
+    if unsafe { libc::getrlimit(resource, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let value = value.min(limit.rlim_max);
+    limit = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    if unsafe { libc::setrlimit(resource, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Runs in the forked child before exec. A limit the kernel refuses fails
+/// the spawn, and the tile draws its letter.
+fn limit_renderer() -> io::Result<()> {
+    set_limit(libc::RLIMIT_AS, ICON_MEMORY)?;
+    set_limit(libc::RLIMIT_STACK, ICON_STACK)?;
+    set_limit(libc::RLIMIT_CPU, ICON_CPU_SECONDS)?;
+    // The renderer writes no files and opens one; the dynamic loader opens
+    // the libraries one at a time.
+    set_limit(libc::RLIMIT_FSIZE, 0)?;
+    set_limit(libc::RLIMIT_NOFILE, 16)
+}
+
+/// A renderer process that is killed and reaped when this goes out of
+/// scope, on every path: no renderer outlives `render_one`, none is left a
+/// zombie.
+struct Renderer(Child);
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        // Both are no-ops on a child that has already been reaped.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Check a renderer's reply and exit status. Anything but a well-formed
+/// image of at most `side` x `side` is an error.
+fn parse_reply(reply: &[u8], said: &[u8], status: ExitStatus, side: u32) -> Result<egui::ColorImage, String> {
+    // What a failed renderer wrote to stderr, such as Rust's "memory
+    // allocation of 1474560000 bytes failed", on one line.
+    let said: Vec<&str> = std::str::from_utf8(said)
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("note: "))
+        .collect();
+    let said = if said.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", said.join(" "))
+    };
+    if let Some(signal) = status.signal() {
+        return Err(format!("the renderer was killed by signal {signal}{said}"));
+    }
+    if let Some(message) = reply.strip_prefix(REPLY_ERROR)
+        && status.code() == Some(1)
+    {
+        let end = message.len().min(MAX_ERROR_BYTES);
+        return Err(String::from_utf8_lossy(&message[..end]).into_owned());
+    }
+    let malformed = || NO_IMAGE.to_string();
+    if !status.success() {
+        return Err(format!("the renderer failed with {status}{said}"));
+    }
+    let pixels = reply.strip_prefix(REPLY_IMAGE).ok_or_else(malformed)?;
+    let (w, rest) = pixels.split_first_chunk::<4>().ok_or_else(malformed)?;
+    let (h, data) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
+    let (w, h) = (u32::from_le_bytes(*w), u32::from_le_bytes(*h));
+    if !(1..=side).contains(&w) || !(1..=side).contains(&h) || data.len() as u64 != w as u64 * h as u64 * 4 {
+        return Err(malformed());
+    }
+    Ok(egui::ColorImage::from_rgba_premultiplied(
+        [w as usize, h as usize],
+        data,
+    ))
+}
+
+/// Rasterise one icon in a renderer process started from `program`, and
+/// kill it once `wait` has passed.
+fn render_one(program: &Path, job: &IconJob, wait: Duration) -> Result<egui::ColorImage, NoImage> {
+    let end = Instant::now() + wait;
+    let mut command = Command::new(program);
+    command
+        .arg(RENDER_ICON_ARG)
+        .args(job.args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        // A pipe, not the menu's stderr: that is the session log, a file,
+        // and RLIMIT_FSIZE kills a renderer that writes to a file.
+        .stderr(Stdio::piped());
+    // SAFETY: limit_renderer only calls getrlimit and setrlimit.
+    unsafe { command.pre_exec(limit_renderer) };
+    let mut renderer = Renderer(
+        command
+            .spawn()
+            .map_err(|e| NoImage::Failed(format!("cannot start the renderer: {e}")))?,
+    );
+    let no_pipe = || NoImage::Failed("no pipe to the renderer".into());
+    // Never more than the largest valid reply, plus one byte to tell a
+    // reply that is too long.
+    let max = (12 + job.side as u64 * job.side as u64 * 4).max(4 + MAX_ERROR_BYTES as u64) + 1;
+    let reply = read_aside(renderer.0.stdout.take().ok_or_else(no_pipe)?, max)?;
+    let said = read_aside(renderer.0.stderr.take().ok_or_else(no_pipe)?, MAX_ERROR_BYTES as u64)?;
+    let reply = reply
+        .recv_timeout(end.saturating_duration_since(Instant::now()))
+        .map_err(|_| NoImage::Late)?;
+    if reply.len() as u64 == max {
+        return Err(NoImage::Failed(NO_IMAGE.to_string()));
+    }
+    // The renderer closes its stdout when it exits.
+    let status = loop {
+        if let Some(status) = renderer.0.try_wait().map_err(|e| NoImage::Failed(e.to_string()))? {
+            break status;
+        }
+        if Instant::now() >= end {
+            return Err(NoImage::Late);
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    // The renderer has exited, so its stderr is at its end.
+    let said = said
+        .recv_timeout(end.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
+    parse_reply(&reply, &said, status, job.side).map_err(NoImage::Failed)
+}
+
+/// Read at most `max` bytes from a renderer's pipe on a thread of its own,
+/// since the read blocks. Killing the renderer closes the pipe and ends the
+/// thread.
+fn read_aside(pipe: impl Read + Send + 'static, max: u64) -> Result<mpsc::Receiver<Vec<u8>>, NoImage> {
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("dbrrg-menu-icon".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.take(max).read_to_end(&mut bytes);
+            let _ = tx.send(bytes);
+        })
+        .map_err(|e| NoImage::Failed(e.to_string()))?;
+    Ok(rx)
+}
+
+/// Why `render_one` has no image: its time ran out, or something else.
+enum NoImage {
+    Late,
+    Failed(String),
+}
+
+/// Rasterise every job, each in a renderer process of its own started from
+/// `program` (dbrrg-menu itself), one at a time, and give each its image or
+/// why it has none.
 ///
-/// The renderers parse files the user can write, so a render can run
-/// forever and the first frame must not wait for it. A render that misses
-/// `per_icon`, or the `budget` all of them share, is abandoned: its thread is
-/// left running detached and its tile draws the letter. Rendering one at a
-/// time leaves at most `budget / per_icon` such threads behind.
-pub fn render_all<J, T, F>(jobs: Vec<J>, per_icon: Duration, budget: Duration, render: F) -> Vec<Result<T, String>>
-where
-    J: Send + 'static,
-    T: Send + 'static,
-    F: Fn(J) -> Result<T, String> + Send + Sync + 'static,
-{
-    let render = Arc::new(render);
+/// The renderers parse files the user can write. The kernel bounds each
+/// one's memory, stack and CPU time (`limit_renderer`); this bounds the
+/// wall-clock time: a renderer that misses `per_icon`, or the `budget` all
+/// of them share, is killed and reaped and its tile draws the letter. One at
+/// a time, at most one renderer holds ICON_MEMORY.
+pub fn render_all(
+    program: &Path,
+    jobs: &[IconJob],
+    per_icon: Duration,
+    budget: Duration,
+) -> Vec<Result<egui::ColorImage, String>> {
     let end = Instant::now() + budget;
-    jobs.into_iter()
+    jobs.iter()
         .map(|job| {
             let wait = per_icon.min(end.saturating_duration_since(Instant::now()));
             if wait.is_zero() {
                 return Err("no time left at startup".to_string());
             }
-            let (tx, rx) = mpsc::channel();
-            let render = render.clone();
-            thread::Builder::new()
-                .name("dbrrg-menu-icon".into())
-                .stack_size(RENDER_STACK)
-                .spawn(move || {
-                    // A panic in usvg or resvg is a tile drawing its letter,
-                    // not a reason to lose the menu. This needs the default
-                    // panic = "unwind"; Cargo.toml must not set "abort".
-                    let result = panic::catch_unwind(AssertUnwindSafe(|| render(job)))
-                        .unwrap_or_else(|_| Err("the renderer panicked".to_string()));
-                    let _ = tx.send(result);
-                })
-                .map_err(|e| e.to_string())?;
-            match rx.recv_timeout(wait) {
-                Ok(result) => result,
-                Err(RecvTimeoutError::Timeout) if wait < per_icon => Err("no time left at startup".to_string()),
-                Err(RecvTimeoutError::Timeout) => Err(format!("took longer than {per_icon:?}")),
-                Err(RecvTimeoutError::Disconnected) => Err("the renderer stopped without a result".to_string()),
+            match render_one(program, job, wait) {
+                Ok(img) => Ok(img),
+                Err(NoImage::Late) if wait < per_icon => Err("no time left at startup".to_string()),
+                Err(NoImage::Late) => Err(format!("took longer than {per_icon:?}")),
+                Err(NoImage::Failed(e)) => Err(e),
             }
         })
         .collect()
@@ -554,19 +795,6 @@ mod tests {
         );
     }
 
-    // The worst chain the element limit lets through must fit the render
-    // thread's stack; RENDER_STACK is sized from this.
-    #[test]
-    fn the_longest_allowed_chain_renders_on_the_icon_thread() {
-        let (_dir, r) = roots("chain-max");
-        let p = r.dbrrg.join("x.svg");
-        fs::write(&p, pattern_chain((MAX_SVG_ELEMENTS - 4) / 2)).unwrap();
-        let out = render_all(vec![p], Duration::from_secs(60), Duration::from_secs(60), |p| {
-            render(&p, 24, [0; 3], false)
-        });
-        assert!(out[0].is_ok(), "{:?}", out[0].as_ref().err());
-    }
-
     #[test]
     fn every_shipped_icon_passes_the_guards_and_draws() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("icons");
@@ -581,27 +809,6 @@ mod tests {
             let img = render(&p, 96, [255, 255, 255], true).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
             assert!(img.pixels.iter().any(|c| c.a() > 200), "{} drew nothing", p.display());
         }
-    }
-
-    // Before the guard the turbulence file rendered for more than a minute;
-    // the deadline keeps a regression from hanging the test run.
-    #[test]
-    fn filters_are_refused() {
-        let turbulence = svg(
-            r#"<filter id="f"><feTurbulence baseFrequency="0.01" numOctaves="100000000"/></filter><rect width="24" height="24" filter="url(#f)"/>"#,
-        );
-        let css = svg(r#"<rect width="24" height="24" style="filter: blur(2px)"/>"#);
-        let (_dir, r) = roots("filter");
-        let mut jobs = Vec::new();
-        for (name, text) in [("turbulence", turbulence), ("css", css)] {
-            let p = r.dbrrg.join(format!("{name}.svg"));
-            fs::write(&p, text).unwrap();
-            jobs.push(p);
-        }
-        let out = render_all(jobs, Duration::from_secs(10), Duration::from_secs(20), |p| {
-            render(&p, 24, [0; 3], false).map(|_| ())
-        });
-        assert_eq!(out, vec![Err("SVG uses filters".to_string()); 2]);
     }
 
     #[test]
@@ -621,63 +828,180 @@ mod tests {
         assert_eq!(svg_shape(&svg(body), 3, 3), Err("more than 3 elements".to_string()));
     }
 
-    fn instant(job: u32) -> Result<u32, String> {
-        Ok(job)
+    #[test]
+    fn a_job_survives_the_command_line() {
+        let job = IconJob {
+            path: PathBuf::from("/usr/share/dbrrg/icons/usb.svg"),
+            side: 96,
+            rgb: [0xfa, 0x0b, 0x01],
+            symbolic: true,
+        };
+        assert_eq!(job.args()[1], "fa0b01");
+        assert_eq!(IconJob::from_args(&job.args()), Some(job.clone()));
+        let mut bad = job.args();
+        bad[0] = "0".into();
+        assert_eq!(IconJob::from_args(&bad), None, "side 0");
+        assert_eq!(IconJob::from_args(&job.args()[..3]), None, "no path");
     }
 
-    // The slow render sleeps far past every deadline here, so the test only
-    // passes when the deadline gave up on it; the sleeping thread is left
-    // behind and ends with the test process.
+    /// A stand-in for dbrrg-menu --render-icon: a shell script that acts on
+    /// the name of the icon it is asked for. A renderer that lingers leaves
+    /// its pid next to that name, so the test can see it was reaped; as a
+    /// symlink, since RLIMIT_FSIZE kills a renderer that writes a file.
+    fn fake_renderer(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("renderer");
+        fs::write(
+            &p,
+            r#"#!/bin/sh
+case "$5" in
+*ok) printf 'RGBA\002\000\000\000\001\000\000\000\377\000\000\377\377\000\000\377' ;;
+*hang) ln -s $$ "$5.pid"; exec sleep 60 ;;
+*closed) ln -s $$ "$5.pid"; exec sleep 60 >&- ;;
+*endless) exec cat /dev/zero ;;
+*garbage) printf 'hello' ;;
+*wide) printf 'RGBA\005\000\000\000\001\000\000\000' ;;
+*short) printf 'RGBA\002\000\000\000\001\000\000\000\377' ;;
+*long) printf 'RGBA\001\000\000\000\001\000\000\000\377\377\377\377\377' ;;
+*fail) printf 'FAILno such icon'; exit 1 ;;
+*panic) exit 101 ;;
+*stderr) echo 'out of luck' >&2; echo 'note: ignored' >&2; exit 3 ;;
+*killed) kill -TERM $$ ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    fn fake_jobs(dir: &Path, names: &[&str]) -> Vec<IconJob> {
+        names
+            .iter()
+            .map(|n| IconJob {
+                path: dir.join(n),
+                side: 4,
+                rgb: [0; 3],
+                symbolic: false,
+            })
+            .collect()
+    }
+
+    /// The renderer that wrote `<name>.pid` is gone: killed and reaped, not
+    /// left running and not a zombie.
+    fn assert_reaped(dir: &Path, name: &str) {
+        let pid = fs::read_link(dir.join(format!("{name}.pid"))).unwrap();
+        let proc = Path::new("/proc").join(&pid);
+        assert!(!proc.exists(), "renderer {} of {name} is still there", pid.display());
+    }
+
     #[test]
-    fn a_slow_render_times_out_into_the_letter() {
-        let start = std::time::Instant::now();
+    fn a_well_formed_reply_is_the_icon() {
+        let dir = TestDir::new("icons", "child-ok");
         let out = render_all(
-            vec![1, 2, 3],
-            Duration::from_millis(200),
-            Duration::from_secs(2),
-            |job| {
-                if job == 2 {
-                    std::thread::sleep(Duration::from_secs(60));
-                }
-                instant(job)
-            },
+            &fake_renderer(&dir),
+            &fake_jobs(&dir, &["ok"]),
+            ICON_DEADLINE,
+            ICONS_BUDGET,
+        );
+        let img = out[0].as_ref().unwrap();
+        assert_eq!(img.size, [2, 1]);
+        assert_eq!(img.pixels[0], egui::Color32::from_rgba_premultiplied(255, 0, 0, 255));
+    }
+
+    #[test]
+    fn a_bad_reply_draws_the_letter() {
+        let dir = TestDir::new("icons", "child-bad");
+        let names = [
+            "garbage", "wide", "short", "long", "endless", "fail", "panic", "stderr", "killed",
+        ];
+        let start = Instant::now();
+        let out = render_all(
+            &fake_renderer(&dir),
+            &fake_jobs(&dir, &names),
+            ICON_DEADLINE,
+            ICONS_BUDGET,
         );
         assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
-        assert_eq!(out[0], Ok(1));
-        assert_eq!(out[1], Err("took longer than 200ms".to_string()));
-        assert_eq!(out[2], Ok(3), "the icons after a slow one still render");
+        let unusable = Err("the renderer returned no usable image".to_string());
+        let errors: Vec<_> = out.into_iter().map(|r| r.map(|_| ())).collect();
+        assert_eq!(
+            errors,
+            vec![
+                unusable.clone(),
+                unusable.clone(),
+                unusable.clone(),
+                unusable.clone(),
+                unusable,
+                Err("no such icon".to_string()),
+                Err("the renderer failed with exit status: 101".to_string()),
+                Err("the renderer failed with exit status: 3 (out of luck)".to_string()),
+                Err("the renderer was killed by signal 15".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_renderer_that_cannot_start_draws_the_letter() {
+        let dir = TestDir::new("icons", "child-missing");
+        let out = render_all(
+            &dir.join("nothing"),
+            &fake_jobs(&dir, &["ok"]),
+            ICON_DEADLINE,
+            ICONS_BUDGET,
+        );
+        assert!(out[0].as_ref().unwrap_err().starts_with("cannot start the renderer"));
+    }
+
+    // The hanging renderers sleep far past every deadline here, so the test
+    // only passes when the deadline killed them.
+    #[test]
+    fn a_slow_renderer_is_killed_and_reaped_at_the_deadline() {
+        let dir = TestDir::new("icons", "child-slow");
+        let start = Instant::now();
+        let out = render_all(
+            &fake_renderer(&dir),
+            &fake_jobs(&dir, &["ok", "hang", "closed", "ok"]),
+            Duration::from_millis(200),
+            Duration::from_secs(2),
+        );
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+        let errors: Vec<_> = out.into_iter().map(|r| r.map(|_| ())).collect();
+        assert_eq!(
+            errors,
+            vec![
+                Ok(()),
+                Err("took longer than 200ms".to_string()),
+                Err("took longer than 200ms".to_string()),
+                Ok(()),
+            ],
+            "the icons after a slow one still render"
+        );
+        assert_reaped(&dir, "hang");
+        assert_reaped(&dir, "closed");
     }
 
     #[test]
     fn the_startup_budget_bounds_the_wait_for_all_icons() {
-        let start = std::time::Instant::now();
+        let dir = TestDir::new("icons", "child-budget");
+        let start = Instant::now();
         let out = render_all(
-            vec![1, 2, 3, 4],
+            &fake_renderer(&dir),
+            &fake_jobs(&dir, &["1-hang", "2-hang", "3-hang", "4-hang"]),
             Duration::from_millis(300),
             Duration::from_millis(500),
-            |job| {
-                std::thread::sleep(Duration::from_secs(60));
-                instant(job)
-            },
         );
         assert!(start.elapsed() < Duration::from_millis(800), "{:?}", start.elapsed());
-        assert_eq!(out[0], Err("took longer than 300ms".to_string()));
-        assert_eq!(out[1], Err("no time left at startup".to_string()));
-        assert_eq!(out[2], Err("no time left at startup".to_string()));
-        assert_eq!(out[3], Err("no time left at startup".to_string()));
+        let errors: Vec<_> = out.into_iter().map(|r| r.map(|_| ())).collect();
+        assert_eq!(errors[0], Err("took longer than 300ms".to_string()));
+        assert_eq!(errors[1..], vec![Err("no time left at startup".to_string()); 3]);
+        assert_reaped(&dir, "1-hang");
+        assert_reaped(&dir, "2-hang");
+        assert!(
+            fs::symlink_metadata(dir.join("3-hang.pid")).is_err(),
+            "no renderer started without time left"
+        );
     }
-
-    #[test]
-    fn a_panicking_render_falls_back_to_the_letter() {
-        let out = render_all(vec![1, 2], Duration::from_secs(5), Duration::from_secs(5), |job| {
-            if job == 1 {
-                panic!("renderer bug");
-            }
-            instant(job)
-        });
-        assert_eq!(out, vec![Err("the renderer panicked".to_string()), Ok(2)]);
-    }
-
     #[test]
     fn refuses_png_bombs_before_decoding() {
         let (_dir, r) = roots("bomb");

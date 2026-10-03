@@ -12,6 +12,7 @@ egui-winit = { version = "0.36.2", default-features = false, features = ["links"
 winit = { version = "0.30.13", default-features = false, features = ["wayland", "wayland-dlopen", "rwh_06"] }
 softbuffer = { version = "0.4.8", default-features = false, features = ["wayland", "wayland-dlopen"] }
 resvg = { version = "0.48.1", default-features = false }
+libc = "0.2.190"
 
 [profile.dev]
 debug = "line-tables-only"

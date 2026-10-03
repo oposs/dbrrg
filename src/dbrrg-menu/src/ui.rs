@@ -1,11 +1,11 @@
 //! Drawing the grid and the save dialog. Everything that decides something
 //! lives in menu.rs; this file only paints it and reports clicks.
 
-use crate::icons::{self, IconRoots};
+use crate::icons::{self, IconJob, IconRoots};
 use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
 use egui_shadcn::Theme;
 use egui_shadcn::components::button::{Button, ButtonVariant};
 use std::path::PathBuf;
@@ -17,34 +17,54 @@ pub const ICON_SIDE: u32 = 96;
 /// A warning amber, for reasons drawn on a disabled tile.
 pub const WARN: Color32 = Color32::from_rgb(0xc7, 0x9a, 0x4a);
 
-/// Rasterise every tile's icon once, at startup. `None` draws the letter.
-pub fn load_icons(ctx: &egui::Context, tiles: &[Tile], roots: &IconRoots) -> Vec<Option<TextureHandle>> {
+/// Each tile's icon, rasterised in renderer processes as the menu draws it:
+/// `None` when the tile names no icon that resolves, otherwise the path and
+/// the image or why there is none. Both draw the letter.
+pub fn render_icons(tiles: &[Tile], roots: &IconRoots) -> Vec<Option<(PathBuf, Result<ColorImage, String>)>> {
     let fg = Theme::dark().palette.foreground;
     let rgb = [fg.r(), fg.g(), fg.b()];
-    let jobs: Vec<(usize, PathBuf, bool)> = tiles
+    let (index, jobs): (Vec<usize>, Vec<IconJob>) = tiles
         .iter()
         .enumerate()
         .filter_map(|(i, t)| {
             let path = icons::resolve(t.icon.as_deref()?, roots)?;
             let symbolic = icons::is_symbolic(&path, roots);
-            Some((i, path, symbolic))
+            Some((
+                i,
+                IconJob {
+                    path,
+                    side: ICON_SIDE,
+                    rgb,
+                    symbolic,
+                },
+            ))
         })
-        .collect();
-    let rendered = icons::render_all(
-        jobs.clone(),
-        icons::ICON_DEADLINE,
-        icons::ICONS_BUDGET,
-        move |(_, path, symbolic)| icons::render(&path, ICON_SIDE, rgb, symbolic),
-    );
+        .unzip();
+    // The renderer is this program, started with --render-icon.
+    let rendered = match std::env::current_exe() {
+        Ok(exe) => icons::render_all(&exe, &jobs, icons::ICON_DEADLINE, icons::ICONS_BUDGET),
+        Err(e) => vec![Err(format!("cannot find the renderer: {e}")); jobs.len()],
+    };
     let mut out = vec![None; tiles.len()];
-    for ((i, path, _), result) in jobs.into_iter().zip(rendered) {
-        let file = &tiles[i].file;
-        match result {
-            Ok(img) => out[i] = Some(ctx.load_texture(file.clone(), img, egui::TextureOptions::LINEAR)),
-            Err(e) => eprintln!("dbrrg-menu: icon {} for {file}: {e}", path.display()),
-        }
+    for ((i, job), result) in index.into_iter().zip(jobs).zip(rendered) {
+        out[i] = Some((job.path, result));
     }
     out
+}
+
+/// Rasterise every tile's icon once, at startup. `None` draws the letter.
+pub fn load_icons(ctx: &egui::Context, tiles: &[Tile], roots: &IconRoots) -> Vec<Option<TextureHandle>> {
+    render_icons(tiles, roots)
+        .into_iter()
+        .zip(tiles)
+        .map(|(icon, tile)| match icon? {
+            (_, Ok(img)) => Some(ctx.load_texture(tile.file.clone(), img, egui::TextureOptions::LINEAR)),
+            (path, Err(e)) => {
+                eprintln!("dbrrg-menu: icon {} for {}: {e}", path.display(), tile.file);
+                None
+            }
+        })
+        .collect()
 }
 
 fn elapsed(d: Duration) -> String {

@@ -284,6 +284,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_shadcn",
+ "libc",
  "resvg",
  "softbuffer",
  "winit",
