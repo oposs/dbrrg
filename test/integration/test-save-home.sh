@@ -54,12 +54,24 @@ STUB
 
 # curl also records whether the file it was told to upload exists at that
 # moment, so a test can tell an upload of the archive from one of nothing.
+# The form value goes through the real curl, whose -F parser splits it on ;
+# and , unless the file name is quoted: it opens the file before it
+# connects, so exit 26 is a value that named no readable file, and 7 is a
+# readable one meeting the refused loopback port 1.
+REAL_CURL=$(command -v curl) || { echo "FAIL - the test needs curl" >&2; exit 1; }
+export DBRRG_TEST_REAL_CURL="$REAL_CURL"
 cat >"$STUBS/curl" <<'STUB'
 #!/bin/bash
 echo "curl $*" >>"$DBRRG_TEST_CURL_LOG"
 for a in "$@"; do
     case "$a" in
-        data=@*) f=${a#data=@}; [ -f "${f%%;*}" ] && echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
+        data=@*)
+            "$DBRRG_TEST_REAL_CURL" -s -o /dev/null -F "$a" http://127.0.0.1:1/
+            case $? in
+                7) echo "upload-file-exists" >>"$DBRRG_TEST_CURL_LOG" ;;
+                26) exit 26 ;;
+            esac
+            ;;
     esac
 done
 # Stand in for an upload that hangs, so a test can signal the script while it
@@ -130,7 +142,7 @@ run_save_home() {
     DBRRG_TEST_GZIP_FAIL="${DBRRG_TEST_GZIP_FAIL:-}" \
     DBRRG_TEST_TAR_RC="${DBRRG_TEST_TAR_RC:-0}" \
     DBRRG_TEST_CURL_RC="${DBRRG_TEST_CURL_RC:-0}" \
-    TMPDIR="$WORK/tmp" \
+    TMPDIR="${TMPDIR_OVERRIDE:-$WORK/tmp}" \
     PATH="$STUBS:$PATH" \
         "$SCRIPT" </dev/null >"$WORK/out" 2>"$WORK/err"
     echo $?
@@ -449,6 +461,7 @@ setup
 rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
 upload=$(grep -o 'data=@[^ ]*' "$WORK/curl.log" 2>/dev/null | head -1)
 upload=${upload#data=@}
+upload=${upload#\"}
 upload=${upload%%;*}
 if [[ "$rc" == "0" ]] && [[ "$upload" == "$WORK/tmp/"* ]] &&
    grep -q upload-file-exists "$WORK/curl.log"; then
@@ -480,6 +493,21 @@ if [[ "$rc" == "5" ]] && [[ -z "$(ls -A "$WORK/tmp")" ]]; then
     ok "the temporary archive is removed when tar fails"
 else
     bad "failed tar: exit $rc, left behind: $(ls -A "$WORK/tmp")"
+fi
+
+# A $TMPDIR holding ; or , still uploads the archive. curl splits an
+# unquoted -F value on both, so the path it opened ended at the first one,
+# curl exited 26 and nothing was saved. The " and \ check the escaping the
+# quoted form needs.
+setup
+odd_tmp="$WORK/tmp/a;b,c\"d\\e"
+mkdir -p "$odd_tmp"
+rc=$(TMPDIR_OVERRIDE="$odd_tmp" run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == "0" ]] && grep -q upload-file-exists "$WORK/curl.log" &&
+   [[ -z "$(ls -A "$odd_tmp")" ]]; then
+    ok "netboot upload works from a \$TMPDIR holding ; , \" and \\"
+else
+    bad "TMPDIR '$odd_tmp': exit $rc, left behind '$(ls -A "$odd_tmp")', curl log: $(cat "$WORK/curl.log" 2>/dev/null)"
 fi
 
 # --------------------------------------------------------------- test 25

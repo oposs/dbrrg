@@ -195,7 +195,12 @@ if [ "" != "$BOOT_SRV" ]; then
   #
   # filename= fixes the name the server sees. Without it curl sends the local
   # basename, which is now whatever mktemp picked.
-  if ! curl -f -sS -F "data=@$_dsh_archive;filename=home.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
+  #
+  # The path is double-quoted inside the form value, with " and \ escaped as
+  # curl requires: curl splits an unquoted value on ; and , so a $TMPDIR
+  # holding either made curl open a truncated path and exit 26.
+  _dsh_form_path=$(printf '%s' "$_dsh_archive" | sed 's/[\\"]/\\&/g')
+  if ! curl -f -sS -F "data=@\"$_dsh_form_path\";filename=home.tar.gz" "${BASE_PATH}/home.pkg?mac=${MAC_ADDR}"; then
     echo "dbrrg: upload to ${BASE_PATH} failed - your home was NOT saved." >&2
     exit 5
   fi
