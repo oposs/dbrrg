@@ -546,12 +546,15 @@ else
     fail=1
 fi
 
-# Every shipped tile is usable and its Icon= resolves to a file in the
-# image, checked by the menu's own resolver. thinlinc_128.png is an absolute
-# path into /opt/thinlinc, which has moved across client versions before.
+# Every shipped tile is usable and its icon draws, checked by the menu
+# itself: --check resolves each Icon= and renders it in the same rlimited,
+# time-limited renderer process the session uses, so an icon that is missing
+# or that the renderer refuses or cannot finish fails here, not as a letter
+# on the screen. thinlinc_128.png is an absolute path into /opt/thinlinc,
+# which has moved across client versions before.
 IMAGE="${DBRRG_UBUNTU_IMAGE:-localhost/dbrrg-ubuntu:3.0.0}"
 if check_out=$(podman run --rm --network=none "$IMAGE" /usr/bin/dbrrg-menu --check 2>&1); then
-    echo "ok   - every shipped tile is usable and its icon resolves"
+    echo "ok   - every shipped tile is usable and its icon renders"
 else
     echo "FAIL - dbrrg-menu --check in $IMAGE:"
     echo "$check_out"
