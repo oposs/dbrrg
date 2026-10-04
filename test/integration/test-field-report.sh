@@ -213,9 +213,14 @@ else
     bad "DBRRG_SESSION_RETRIED appears $retries time(s) - it must be set and tested"
 fi
 
-# Behaviour: run the real profile script under sh with stub tty and labwc.
-# wait-kms does not exist on the dev host; the retry must survive that.
+# Behaviour: run the real profile script under sh with stub tty, labwc and
+# wait-kms. The real wait-kms waits up to 20s for a GPU, so a host that has
+# /usr/libexec/dbrrg/wait-kms must not be the one that answers here.
 mkdir -p "$WORK/ps/bin" "$WORK/ps/home" "$WORK/ps/run"
+cat >"$WORK/ps/bin/wait-kms" <<'STUB'
+#!/bin/sh
+echo x >>"$STUB_WAITKMS_COUNT"
+STUB
 cat >"$WORK/ps/bin/tty" <<'STUB'
 #!/bin/sh
 echo /dev/tty1
@@ -228,27 +233,39 @@ rc=$(head -n 1 "$STUB_SEQ" 2>/dev/null)
 sed -i 1d "$STUB_SEQ" 2>/dev/null
 exit "${rc:-1}"
 STUB
-chmod +x "$WORK/ps/bin/tty" "$WORK/ps/bin/labwc"
+chmod +x "$WORK/ps/bin/tty" "$WORK/ps/bin/labwc" "$WORK/ps/bin/wait-kms"
 
-run_profile() {   # $1 = scripted statuses, space separated
+run_profile() {   # $1 = scripted statuses, space separated; $2 = wait-kms
     : >"$WORK/ps/count"
+    : >"$WORK/ps/waitkms"
     printf '%s\n' $1 >"$WORK/ps/seq"
     env -i PATH="$WORK/ps/bin:/usr/bin:/bin" HOME="$WORK/ps/home" \
         XDG_RUNTIME_DIR="$WORK/ps/run" \
         STUB_COUNT="$WORK/ps/count" STUB_SEQ="$WORK/ps/seq" \
+        STUB_WAITKMS_COUNT="$WORK/ps/waitkms" \
+        DBRRG_WAIT_KMS="${2:-$WORK/ps/bin/wait-kms}" \
         DBRRG_SESSION_VERDICT="$REPO/overlay/usr/libexec/dbrrg/session-verdict" \
         DBRRG_SESSION_FAILURES="$WORK/ps/failures" \
         sh "$PROFILE" >"$WORK/ps/out" 2>&1
     ps_rc=$?
     ps_calls=$(wc -l <"$WORK/ps/count")
+    ps_waits=$(wc -l <"$WORK/ps/waitkms")
 }
 
 run_profile "1 0"
-if [[ "$ps_rc" == "0" && "$ps_calls" == "2" ]] &&
+if [[ "$ps_rc" == "0" && "$ps_calls" == "2" && "$ps_waits" == "1" ]] &&
    ! grep -q 'graphical session exited' "$WORK/ps/out"; then
-    ok "labwc failing once is retried, and the retry's success ends the session cleanly"
+    ok "labwc failing once is retried after wait-kms, and the retry's success ends the session cleanly"
 else
-    bad "fail-then-succeed: exit $ps_rc, labwc called $ps_calls time(s): $(cat "$WORK/ps/out")"
+    bad "fail-then-succeed: exit $ps_rc, labwc called $ps_calls time(s), wait-kms $ps_waits time(s): $(cat "$WORK/ps/out")"
+fi
+
+# A machine where wait-kms is missing or fails still gets its retry.
+run_profile "1 0" "$WORK/ps/no-such-wait-kms"
+if [[ "$ps_rc" == "0" && "$ps_calls" == "2" ]]; then
+    ok "a missing wait-kms does not stop the retry"
+else
+    bad "missing wait-kms: exit $ps_rc, labwc called $ps_calls time(s): $(cat "$WORK/ps/out")"
 fi
 
 run_profile "1 1 1 1"

@@ -154,7 +154,8 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] &&
     if [ "$DBRRG_SESSION_RC" -ne 0 ] && [ -z "${DBRRG_SESSION_RETRIED:-}" ]; then
         echo "dbrrg: the compositor did not start (status $DBRRG_SESSION_RC)."
         echo "dbrrg: waiting for a graphics driver and trying once more..."
-        /usr/libexec/dbrrg/wait-kms || true
+        # Overridable so the tests do not wait on a host that has the file.
+        "${DBRRG_WAIT_KMS:-/usr/libexec/dbrrg/wait-kms}" || true
         DBRRG_SESSION_RETRIED=1
         export DBRRG_SESSION_RETRIED
         dbrrg_run_labwc
