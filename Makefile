@@ -336,8 +336,10 @@ qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
 
 # Headless netboot smoke test: the rootfs artifacts are served over HTTP from
 # the host and booted with no disk, as a PXE client would boot them. Besides
-# the clean-boot checks it requires the MAC-based hostname and a home.pkg
-# request under the boot MAC; see scripts/run-qemu-netboot-smoke.sh.
+# the clean-boot checks it requires the MAC-based hostname, a home.pkg
+# request under the boot MAC, and a ramroot URL whose host name only the
+# DHCP-supplied DNS server knows. It runs in an unprivileged user and network
+# namespace; see scripts/run-qemu-netboot-smoke.sh.
 QEMU_NETBOOT_LOG := $(IMAGE_DIR)/qemu-netboot-smoke.log
 
 qemu-smoke-netboot: $(KERNEL) $(INITRD) $(SQUASHFS) | $(IMAGE_DIR)

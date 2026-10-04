@@ -310,11 +310,20 @@ modules. `isc-dhcp-client` is not installed: nothing in the image runs
 depends on the package. Dropping it took 328 KiB off `ramroot.sqsh`.
 
 `make qemu-smoke-netboot` boots the artifacts from a local HTTP server with
-`ramroot=http://_gateway:<port>/ramroot.sqsh` (resolved answers `_gateway`
-itself; it is the host on QEMU's user network) and requires the hostname
-`dbrrg-123456` for MAC 52:54:00:12:34:56 and a `home.pkg` request under that
-MAC. It does not exercise forwarding to a DHCP-supplied DNS server.
-**Not verified on hardware.**
+`ramroot=http://boot.dbrrg.test:<port>/ramroot.sqsh` and requires the
+hostname `dbrrg-123456` for MAC 52:54:00:12:34:56, a `home.pkg` request under
+that MAC, a query for `boot.dbrrg.test` at the test's DNS server and a
+download of `ramroot.sqsh`. That name exists only in `scripts/smoke-dns.py`,
+a stdlib one-name DNS server, so a boot that downloads the ramroot used the
+DNS server from its DHCP lease: resolved forwards to QEMU's 10.0.2.3, and
+slirp forwards that to the first `nameserver` in `/etc/resolv.conf`. To keep
+this offline and unprivileged, `scripts/run-qemu-netboot-smoke.sh`
+re-executes itself under `unshare -rmn` (user, mount and network namespace,
+loopback only), bind-mounts a `resolv.conf` saying `127.0.0.1` there, and
+runs the HTTP server and `smoke-dns.py` on that namespace's loopback, which
+slirp's host address 10.0.2.2 reaches. The test therefore needs unprivileged
+user namespaces on the host. With the name left unanswered the boot stops at
+`dracut: FATAL: Download failed`. **Not verified on hardware.**
 
 ## Container Build Best Practices
 
