@@ -52,7 +52,7 @@ done
     qemu-system-x86_64 "$@" \
     -netdev user,id=n0 -device "virtio-net-pci,netdev=n0,mac=$MAC" \
     -kernel "$ROOTFS_DIR/vmlinuz" -initrd "$ROOTFS_DIR/initrd.img" \
-    -append "ramroot=http://_gateway:$port/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target rd.info systemd.log_target=console systemd.mask=serial-getty@ttyS0.service" ||
+    -append "ramroot=http://_gateway:$port/ramroot.sqsh console=ttyS0,115200 systemd.unit=multi-user.target systemd.log_target=console systemd.mask=serial-getty@ttyS0.service" ||
     exit $?
 
 kill "$srv" 2>/dev/null

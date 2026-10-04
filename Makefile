@@ -312,7 +312,7 @@ QEMU_SMOKE_GRACE ?= 15
 # same serial line, has landed inside systemd's "Reached target
 # multi-user.target" line and failed a good boot. Nothing in the smoke test
 # logs in on the serial console.
-QEMU_SMOKE_APPEND := console=ttyS0,115200 systemd.unit=multi-user.target rd.info \
+QEMU_SMOKE_APPEND := console=ttyS0,115200 systemd.unit=multi-user.target \
 	systemd.log_target=console systemd.mask=serial-getty@ttyS0.service
 
 qemu-smoke: $(QCOW2_BOOT_IMAGE) $(KERNEL) $(INITRD)
