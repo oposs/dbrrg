@@ -124,9 +124,13 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   after 2 s, or when the 5 s for all icons are used up. Any failure draws
   the tile's first letter. In-process guards cannot bound memory: a
   700-byte SVG of nested `<pattern>`s asked resvg for 2.88 GB, and the
-  thread the deadline abandoned kept allocating until the OOM killer
-  ended the menu. A release renderer needs 64 MiB for every legitimate
-  icon measured, and the debug build (the tests) needs 192 MiB. Before
+  thread the deadline abandoned kept allocating inside the menu; three
+  such tiles reach about 8.6 GB, enough for the OOM killer to pick the
+  menu on a machine that holds its rootfs in RAM. A renderer dies with
+  the menu (`PR_SET_PDEATHSIG`), and `RLIMIT_CORE` is 0, so an aborted
+  render leaves no core file in the home. A release renderer needs 64 MiB
+  for every legitimate icon measured, and the debug build (the tests)
+  needs 192 MiB. Before
   rendering, the child still refuses an SVG that nests deeper than 64
   elements, has more than 10000, declares entities or uses filters (one
   `feTurbulence` ran for over a minute). Limits and guards are in

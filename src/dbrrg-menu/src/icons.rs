@@ -315,6 +315,8 @@ pub const RENDER_ICON_ARG: &str = "--render-icon";
 const REPLY_IMAGE: &[u8; 4] = b"RGBA";
 const REPLY_ERROR: &[u8; 4] = b"FAIL";
 const NO_IMAGE: &str = "the renderer returned no usable image";
+/// How long the reason of a renderer that has exited may take to arrive.
+const STDERR_GRACE: Duration = Duration::from_millis(100);
 /// Longest error message read back from a renderer.
 const MAX_ERROR_BYTES: usize = 1024;
 
@@ -415,15 +417,30 @@ fn set_limit(resource: libc::__rlimit_resource_t, value: u64) -> io::Result<()> 
 }
 
 /// Runs in the forked child before exec. A limit the kernel refuses fails
-/// the spawn, and the tile draws its letter.
-fn limit_renderer() -> io::Result<()> {
+/// the spawn, and the tile draws its letter. `menu` is the pid of the
+/// process that spawns the renderer.
+fn limit_renderer(menu: u32) -> io::Result<()> {
+    // The menu enforces the deadline, so a renderer whose menu died must
+    // die too rather than run on until RLIMIT_CPU ends it. A menu that died
+    // before the prctl took effect shows as a different parent.
+    // SAFETY: prctl and getppid are async-signal-safe and touch no memory
+    // of ours.
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::getppid() } as u32 != menu {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
     set_limit(libc::RLIMIT_AS, ICON_MEMORY)?;
     set_limit(libc::RLIMIT_STACK, ICON_STACK)?;
     set_limit(libc::RLIMIT_CPU, ICON_CPU_SECONDS)?;
     // The renderer writes no files and opens one; the dynamic loader opens
     // the libraries one at a time.
     set_limit(libc::RLIMIT_FSIZE, 0)?;
-    set_limit(libc::RLIMIT_NOFILE, 16)
+    set_limit(libc::RLIMIT_NOFILE, 16)?;
+    // Every refused allocation ends in abort(); no core file may land in
+    // the menu's directory, which can be the home that save-home archives.
+    set_limit(libc::RLIMIT_CORE, 0)
 }
 
 /// A renderer process that is killed and reaped when this goes out of
@@ -494,8 +511,10 @@ fn render_one(program: &Path, job: &IconJob, wait: Duration) -> Result<egui::Col
         // A pipe, not the menu's stderr: that is the session log, a file,
         // and RLIMIT_FSIZE kills a renderer that writes to a file.
         .stderr(Stdio::piped());
-    // SAFETY: limit_renderer only calls getrlimit and setrlimit.
-    unsafe { command.pre_exec(limit_renderer) };
+    let menu = std::process::id();
+    // SAFETY: limit_renderer only makes async-signal-safe calls and does
+    // not allocate.
+    unsafe { command.pre_exec(move || limit_renderer(menu)) };
     let mut renderer = Renderer(
         command
             .spawn()
@@ -523,9 +542,10 @@ fn render_one(program: &Path, job: &IconJob, wait: Duration) -> Result<egui::Col
         }
         thread::sleep(Duration::from_millis(1));
     };
-    // The renderer has exited, so its stderr is at its end.
+    // The renderer has exited, so its stderr is at its end, also when that
+    // was right at the deadline: the grace only waits for the reader thread.
     let said = said
-        .recv_timeout(end.saturating_duration_since(Instant::now()))
+        .recv_timeout(end.saturating_duration_since(Instant::now()).max(STDERR_GRACE))
         .unwrap_or_default();
     parse_reply(&reply, &said, status, job.side).map_err(NoImage::Failed)
 }

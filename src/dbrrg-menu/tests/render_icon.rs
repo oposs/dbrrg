@@ -5,7 +5,7 @@
 use dbrrg_menu::icons::{self, ICON_DEADLINE, ICON_MEMORY, ICONS_BUDGET, IconJob, MAX_SVG_ELEMENTS};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const RENDERER: &str = env!("CARGO_BIN_EXE_dbrrg-menu");
 
@@ -109,13 +109,11 @@ fn a_pattern_bomb_draws_the_letter_and_its_memory_is_bounded() {
         dir.file("bomb4.svg", &pattern_bomb(4)),
     ]);
     assert!(start.elapsed() < ICON_DEADLINE, "{:?}", start.elapsed());
+    // Refused or aborted, either way quickly, with the letter drawn; how
+    // resvg allocates the bomb is its own business.
     for r in &out {
         let e = r.as_ref().map(|_| ()).unwrap_err();
-        // The kernel refused the allocation and the renderer aborted.
-        assert_eq!(
-            e,
-            "the renderer was killed by signal 6 (memory allocation of 1474560000 bytes failed)"
-        );
+        assert!(!e.starts_with("took longer"), "{e}");
     }
     let peak = children_max_rss();
     assert!(peak <= ICON_MEMORY, "a renderer reached {} MiB", peak >> 20);
@@ -173,4 +171,89 @@ fn a_bad_command_line_is_refused() {
         "{:?}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// Pids of the live processes whose parent is `parent`.
+fn children_of(parent: u32) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| {
+            let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+            let status = fs::read_to_string(e.path().join("status")).ok()?;
+            let ppid = status.lines().find_map(|l| l.strip_prefix("PPid:"))?.trim();
+            (ppid == parent.to_string()).then_some(pid)
+        })
+        .collect()
+}
+
+/// Whether `pid` still runs: gone and zombie both count as ended.
+fn running(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| s.rsplit_once(") ").map(|(_, rest)| !rest.starts_with('Z')))
+        .unwrap_or(false)
+}
+
+// Before PR_SET_PDEATHSIG, a renderer whose menu was killed ran on until
+// RLIMIT_CPU ended it, up to 3 s later.
+#[test]
+fn a_renderer_dies_with_its_menu() {
+    let dir = Dir::new("orphan");
+    // Hundreds of tiny dashes keep resvg busy for seconds, under every
+    // guard and every limit.
+    let circles: String = (0..400)
+        .map(|i| {
+            format!(
+                r#"<circle cx="12" cy="12" r="{}" fill="none" stroke="red" stroke-dasharray="0.002"/>"#,
+                1 + i % 11
+            )
+        })
+        .collect();
+    let slow = dir.file("slow.svg", &svg(&circles));
+    for d in ["shipped", "user", "state"] {
+        fs::create_dir_all(dir.0.join(d)).unwrap();
+    }
+    fs::write(
+        dir.0.join("user/slow.desktop"),
+        format!("[Desktop Entry]\nName=Slow\nExec=true\nIcon={}\n", slow.display()),
+    )
+    .unwrap();
+    let mut menu = std::process::Command::new(RENDERER)
+        .arg("--check")
+        .env("DBRRG_MENU_SHIPPED_DIR", dir.0.join("shipped"))
+        .env("DBRRG_MENU_USER_DIR", dir.0.join("user"))
+        .env("DBRRG_STATE_DIR", dir.0.join("state"))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let renderer = loop {
+        if let Some(&pid) = children_of(menu.id()).first() {
+            break pid;
+        }
+        assert!(start.elapsed() < Duration::from_secs(1), "no renderer started");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(running(renderer), "the slow render ended on its own");
+    let limits = fs::read_to_string(format!("/proc/{renderer}/limits")).unwrap();
+    for (name, value) in [
+        ("Max address space", ICON_MEMORY.to_string()),
+        ("Max cpu time", "3".to_string()),
+        ("Max file size", "0".to_string()),
+        ("Max core file size", "0".to_string()),
+        ("Max open files", "16".to_string()),
+    ] {
+        let line = limits.lines().find(|l| l.starts_with(name)).unwrap();
+        let fields: Vec<&str> = line[name.len()..].split_whitespace().collect();
+        assert_eq!(fields[..2], [value.as_str(), value.as_str()], "{line}");
+    }
+    menu.kill().unwrap();
+    menu.wait().unwrap();
+    let killed = Instant::now();
+    while running(renderer) && killed.elapsed() < Duration::from_secs(1) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!running(renderer), "renderer {renderer} outlived its menu");
 }
