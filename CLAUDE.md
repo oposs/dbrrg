@@ -304,6 +304,10 @@ the default route, i.e. the one whose lease was applied, not from the first
 `/sys/class/net` entry. A host name in the ramroot URL resolves through the
 resolved stub. Cost: networkd pulls in `kernel-network-modules` (every NIC
 driver), and the initrd grew from 165.6 MB to 179.3 MB.
+`dracut-network` stays: it ships the `systemd-networkd` and `url-lib` dracut
+modules. `isc-dhcp-client` is not installed: nothing in the image runs
+`dhclient` (the running system's netplan renders for networkd), and nothing
+depends on the package. Dropping it took 328 KiB off `ramroot.sqsh`.
 
 `make qemu-smoke-netboot` boots the artifacts from a local HTTP server with
 `ramroot=http://_gateway:<port>/ramroot.sqsh` (resolved answers `_gateway`

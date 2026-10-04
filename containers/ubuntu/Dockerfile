@@ -136,7 +136,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -yq \
     firmware-sof-signed \
     dracut \
     dracut-network \
-    isc-dhcp-client \
     squashfs-tools \
     zstd \
     wget \
