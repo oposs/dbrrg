@@ -241,6 +241,10 @@ impl ApplicationHandler<JobResult> for App {
             None,
         );
         let icons = ui::load_icons(&self.ctx, &self.cfg.menu.tiles, &self.cfg.icon_roots);
+        if self.cfg.debug {
+            let drawn = icons.iter().filter(|i| i.is_some()).count();
+            eprintln!("dbrrg-menu: {drawn} of {} tile icons drawn", icons.len());
+        }
         let bg = egui_shadcn::Theme::dark().palette.background;
         self.live = Some(Live {
             window: window.clone(),

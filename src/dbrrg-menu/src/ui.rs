@@ -57,10 +57,16 @@ pub fn load_icons(ctx: &egui::Context, tiles: &[Tile], roots: &IconRoots) -> Vec
     render_icons(tiles, roots)
         .into_iter()
         .zip(tiles)
-        .map(|(icon, tile)| match icon? {
-            (_, Ok(img)) => Some(ctx.load_texture(tile.file.clone(), img, egui::TextureOptions::LINEAR)),
-            (path, Err(e)) => {
+        .map(|(icon, tile)| match icon {
+            Some((_, Ok(img))) => Some(ctx.load_texture(tile.file.clone(), img, egui::TextureOptions::LINEAR)),
+            Some((path, Err(e))) => {
                 eprintln!("dbrrg-menu: icon {} for {}: {e}", path.display(), tile.file);
+                None
+            }
+            None => {
+                if let Some(name) = &tile.icon {
+                    eprintln!("dbrrg-menu: icon {name} for {}: not found", tile.file);
+                }
                 None
             }
         })

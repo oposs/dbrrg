@@ -207,6 +207,19 @@ else
     echo "$menu_out"
     fail=1
 fi
+# Every tile in this container is a shipped one (root has no
+# ~/.config/dbrrg/menu), so every icon must draw. A tile drawing its letter
+# also logs "dbrrg-menu: icon <name> for <file>: <why>".
+icons_line=$(echo "$menu_out" | grep -o 'dbrrg-menu: [0-9]* of [0-9]* tile icons drawn' | tail -1)
+icons_drawn=$(echo "$icons_line" | cut -d' ' -f2)
+icons_total=$(echo "$icons_line" | cut -d' ' -f4)
+if [[ -n "$icons_total" && "$icons_total" -gt 0 && "$icons_drawn" == "$icons_total" ]]; then
+    echo "ok   - dbrrg-menu drew every shipped tile icon ($icons_drawn of $icons_total)"
+else
+    echo "FAIL - a shipped tile draws its letter: ${icons_line:-no icon count printed}"
+    echo "$menu_out" | grep 'dbrrg-menu: icon '
+    fail=1
+fi
 if echo "$menu_out" | grep -q 'menu-rc=124'; then
     echo "ok   - dbrrg-menu kept running until stopped"
 else
