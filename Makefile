@@ -209,7 +209,12 @@ ipxe: $(IPXE_PXE) $(IPXE_KPXE) $(IPXE_EFI)
 		containers/image-builder
 	$(call image_id,$(IMAGE_BUILDER)) >$@
 
-$(USB_IMAGE): rootfs .image-builder-container | $(IMAGE_DIR)
+# The files the image is built from, not the phony `rootfs`: through that,
+# every target needing the image (qemu-smoke, qemu-test) built it again with
+# new random GPT GUIDs, and the .zst from `make image` no longer matched it.
+$(USB_IMAGE): $(KERNEL) $(INITRD) $(SQUASHFS) configs/syslinux.cfg \
+		scripts/make-bootable-image.sh scripts/lib/common.sh \
+		.image-builder-container | $(IMAGE_DIR)
 	@echo "Creating bootable USB image..."
 	$(CONTAINER_RUNTIME) run --rm \
 		-v $(PWD)/scripts:/scripts:ro \
@@ -382,6 +387,7 @@ test: test-unit rootfs
 	@test/integration/test-field-report.sh
 	@test/integration/test-session-lifecycle.sh
 	@test/integration/test-container-stamp.sh
+	@test/integration/test-usb-image-deps.sh
 	@test/integration/test-make-clean.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
