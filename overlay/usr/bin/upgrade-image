@@ -44,6 +44,12 @@ EFI_RETRY_SECONDS = 15
 # Where the initramfs records this boot's home restore outcome; dbrrg-save-home
 # reads the same file. Module constant so tests can point it elsewhere.
 STATE_DIR = "/run/dbrrg/state"
+# The ESP the initramfs mounted for this boot. Module constant so tests can
+# point it elsewhere.
+BOOT_EFI_MOUNT = "/run/dbrrg/storage/efi"
+# Both copies of the boot loader config on the ESP: BIOS syslinux reads the
+# first, the EFI build the second.
+SYSLINUX_CFGS = ("syslinux.cfg", "efi/boot/syslinux.cfg")
 
 # ============ Data Classes ============
 
@@ -458,12 +464,55 @@ def download_and_write_image(base_url: str, device: str) -> None:
 
 # ============ Upgrade Operations ============
 
+def _new_label_block(lines: List[str]) -> List[str]:
+    """A "LABEL new" entry copied from "LABEL current", with tl/ -> tl.new/.
+
+    Sticks written before the entry existed lack it. Copying the stick's own
+    current entry keeps its kernel options.
+    """
+    start = next((i for i, l in enumerate(lines) if l.strip() == "LABEL current"), None)
+    if start is None:
+        return []
+    block = ["", "LABEL new"]
+    for line in lines[start + 1:]:
+        if not line.startswith((" ", "\t")):
+            break
+        block.append(line.replace("/tl/", "/tl.new/").replace("ramroot=tl/", "ramroot=tl.new/"))
+    return block
+
+
+def set_boot_default(efi_mount: str, label: str) -> None:
+    """Make syslinux boot <label> by default, in both config copies.
+
+    After a staged upgrade the next boot must take its kernel from tl.new/:
+    only that kernel matches tl.new/ramroot.sqsh, and the initramfs rotates
+    tl.new into tl/ only on such a boot (dbrrg_finalize_upgrade), then sets
+    DEFAULT current again. Each copy is written to .tmp and renamed over the
+    original, so a power cut leaves the old or the new file.
+    """
+    for rel in SYSLINUX_CFGS:
+        path = os.path.join(efi_mount, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path) as f:
+            lines = f.read().splitlines()
+        lines = [f"DEFAULT {label}" if l.startswith("DEFAULT ") else l for l in lines]
+        if not any(l.strip() == "LABEL new" for l in lines):
+            lines += _new_label_block(lines)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+
 def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
     """Perform A/B upgrade on existing dbrrg drive"""
 
     if drive.is_boot:
         # Boot drive - use already mounted partition
-        efi_mount = "/run/dbrrg/storage/efi"
+        efi_mount = BOOT_EFI_MOUNT
         if not os.path.ismount(efi_mount):
             die(f"Boot EFI partition not mounted at {efi_mount}")
         owned_mount = False
@@ -499,6 +548,10 @@ def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
         run_cmd(["mkdir", "-p", tl_new_path])
         for filename in FIRMWARE_FILES:
             run_cmd(["cp", os.path.join(firmware_dir, filename), tl_new_path])
+        # Only after tl.new is complete: DEFAULT new with a partial tl.new
+        # would not boot.
+        run_cmd(["sync"])
+        set_boot_default(efi_mount, "new")
     else:
         # Direct A/B rotation
         log("Rotating firmware (tl -> tl.old, installing new tl)...")
@@ -515,6 +568,9 @@ def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
         run_cmd(["mkdir", "-p", tl_path])
         for filename in FIRMWARE_FILES:
             run_cmd(["cp", os.path.join(firmware_dir, filename), tl_path])
+        # A DEFAULT new left from an unfinished upgrade would point at the
+        # tl.new just removed.
+        set_boot_default(efi_mount, "current")
 
     run_cmd(["sync"])
 

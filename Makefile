@@ -64,7 +64,7 @@ endif
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke qemu-smoke-netboot test-unit test test-runtime help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke qemu-smoke-netboot qemu-smoke-upgrade test-unit test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
@@ -80,6 +80,7 @@ help:
 	@echo "  qemu-test         - Test boot image in QEMU (EFI)"
 	@echo "  qemu-smoke        - Headless USB-style boot smoke test"
 	@echo "  qemu-smoke-netboot - Headless HTTP netboot smoke test"
+	@echo "  qemu-smoke-upgrade - Headless first boot of a staged upgrade"
 	@echo "  test-unit         - Run offline unit tests (no rootfs needed)"
 	@echo "  test              - Run integration guard tests against rootfs"
 	@echo "  test-runtime      - Run runtime session tests (needs network, compositor)"
@@ -359,6 +360,20 @@ qemu-smoke-netboot: $(KERNEL) $(INITRD) $(SQUASHFS) | $(IMAGE_DIR)
 		-no-reboot \
 		-object rng-random,filename=/dev/urandom,id=rng0 \
 		-device virtio-rng-pci,rng=rng0
+
+# Headless first boot of a staged upgrade: tl.new/ on the stick and
+# syslinux.cfg on DEFAULT new, as upgrade-image leaves them, booted through
+# OVMF and syslinux. Requires the initramfs to rotate tl.new into tl/ and set
+# DEFAULT current again. See scripts/run-qemu-upgrade-smoke.sh.
+QEMU_UPGRADE_LOG := $(IMAGE_DIR)/qemu-upgrade-smoke.log
+QEMU_UPGRADE_IMAGE := $(IMAGE_DIR)/$(PROJECT_NAME)-upgrade-smoke.img
+
+qemu-smoke-upgrade: $(USB_IMAGE)
+	@echo "Running headless upgrade boot smoke test..."
+	BUILD_JOBS=$(BUILD_JOBS) QEMU_MEMORY=$(QEMU_MEMORY) \
+		scripts/run-qemu-upgrade-smoke.sh $(USB_IMAGE) $(QEMU_UPGRADE_IMAGE) \
+		$(QEMU_UPGRADE_LOG) $(QEMU_SMOKE_TIMEOUT) $(QEMU_SMOKE_GRACE) \
+		"$(QEMU_SMOKE_APPEND)"
 
 # Host-side tests. No image, no container, no network: the fast feedback
 # loop for the scripts in overlay/usr/bin and for dbrrg-menu's rules.

@@ -614,48 +614,108 @@ fi
 #
 # The tl.new -> tl -> tl.old rotation called sync, which the initramfs did not
 # have, so every sync in it failed with "command not found" on the stick.
+#
+# The rotation used to run on every boot that found a tl.new, also when the
+# boot loader had loaded the kernel from tl/: the old kernel then ran on the
+# new ramroot.sqsh, whose modules are for the new kernel, and every module not
+# already in the initramfs (igc, an i226-V NIC) failed to load. upgrade-image
+# now points syslinux at the new "LABEL new" entry, which boots the kernel
+# from tl.new/, and the rotation runs only on such a boot.
 
-mkesp() {  # mkesp <name>: fake ESP with tl, tl.old and a complete tl.new
+SYSLINUX_CFG='DEFAULT new
+LABEL current
+    KERNEL /tl/vmlinuz
+    APPEND ramroot=tl/ramroot.sqsh
+LABEL new
+    KERNEL /tl.new/vmlinuz
+    APPEND ramroot=tl.new/ramroot.sqsh'
+
+mkesp() {  # mkesp <name>: fake ESP with tl, tl.old, a complete tl.new and DEFAULT new
     local d="$WORK/$1"
-    mkdir -p "$d/tl" "$d/tl.old" "$d/tl.new"
+    mkdir -p "$d/tl" "$d/tl.old" "$d/tl.new" "$d/efi/boot"
     echo current >"$d/tl/marker"; echo previous >"$d/tl.old/marker"
     for f in vmlinuz initrd.img ramroot.sqsh; do echo new >"$d/tl.new/$f"; done
+    printf '%s\n' "$SYSLINUX_CFG" >"$d/syslinux.cfg"
+    printf '%s\n' "$SYSLINUX_CFG" >"$d/efi/boot/syslinux.cfg"
     echo "$d"
 }
+defaults() {  # defaults <esp>: the DEFAULT line of both syslinux.cfg copies
+    grep -h '^DEFAULT' "$1/syslinux.cfg" "$1/efi/boot/syslinux.cfg" | tr '\n' ' '
+}
 
-esp=$(mkesp esp-rotate)
-( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>"$WORK/fu-stderr"; rc=$?
+esp=$(mkesp esp-rotate); echo tl.new/ramroot.sqsh >"$WORK/rr-rotate"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" tl.new/ramroot.sqsh "$WORK/rr-rotate" ) \
+    2>"$WORK/fu-stderr"; rc=$?
 if [[ $rc -eq 0 && -f "$esp/tl/ramroot.sqsh" && ! -e "$esp/tl.new" \
    && "$(cat "$esp/tl.old/marker")" == current && ! -s "$WORK/fu-stderr" ]]; then
-    ok "dbrrg_finalize_upgrade rotates tl.new -> tl -> tl.old with only the initramfs's tools"
+    ok "a boot from tl.new rotates tl.new -> tl -> tl.old with only the initramfs's tools"
 else
     bad "dbrrg_finalize_upgrade under the initramfs PATH: rc=$rc stderr=$(cat "$WORK/fu-stderr") esp=$(ls "$esp" | tr '\n' ' ')"
 fi
+if [[ "$(defaults "$esp")" == "DEFAULT current DEFAULT current " ]]; then
+    ok "after the rotation both syslinux.cfg copies boot current again"
+else
+    bad "syslinux.cfg defaults after the rotation: $(defaults "$esp")"
+fi
+if [[ "$(cat "$WORK/rr-rotate")" == tl/ramroot.sqsh ]]; then
+    ok "after the rotation the squashfs is mounted from tl/"
+else
+    bad "ramroot after the rotation: $(cat "$WORK/rr-rotate")"
+fi
 
-esp=$(mkesp esp-incomplete); rm "$esp/tl.new/ramroot.sqsh"
-( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
-if [[ $rc -eq 0 && -d "$esp/tl.new" && "$(cat "$esp/tl/marker")" == current ]]; then
-    ok "an incomplete tl.new is left alone for the next boot"
+esp=$(mkesp esp-from-tl); echo tl/ramroot.sqsh >"$WORK/rr-from-tl"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" tl/ramroot.sqsh "$WORK/rr-from-tl" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl.new" && "$(cat "$esp/tl/marker")" == current \
+   && "$(cat "$WORK/rr-from-tl")" == tl/ramroot.sqsh ]]; then
+    ok "a boot whose kernel came from tl/ leaves a pending tl.new alone"
+else
+    bad "boot from tl/ with tl.new pending: rc=$rc ramroot=$(cat "$WORK/rr-from-tl") esp=$(ls "$esp" | tr '\n' ' ')"
+fi
+
+esp=$(mkesp esp-incomplete); rm "$esp/tl.new/ramroot.sqsh"; echo tl.new/ramroot.sqsh >"$WORK/rr-inc"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" tl.new/ramroot.sqsh "$WORK/rr-inc" ) 2>/dev/null; rc=$?
+if [[ $rc -eq 0 && -d "$esp/tl.new" && "$(cat "$esp/tl/marker")" == current \
+   && "$(cat "$WORK/rr-inc")" == tl.new/ramroot.sqsh ]]; then
+    ok "an incomplete tl.new is left alone"
 else
     bad "incomplete tl.new: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
 fi
 
-esp="$WORK/esp-none"; mkdir -p "$esp/tl"
-( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" ) 2>/dev/null; rc=$?
+esp="$WORK/esp-none"; mkdir -p "$esp/tl"; echo tl/ramroot.sqsh >"$WORK/rr-none"
+( PATH="$BIN"; dbrrg_finalize_upgrade "$esp" tl/ramroot.sqsh "$WORK/rr-none" ) 2>/dev/null; rc=$?
 if [[ $rc -eq 0 && -d "$esp/tl" && ! -e "$esp/tl.old" ]]; then
     ok "no pending upgrade: nothing is touched"
 else
     bad "no pending upgrade: rc=$rc esp=$(ls "$esp" | tr '\n' ' ')"
 fi
 
-# The pre-mount hook runs in parallel with the cmdline hook that writes
+# Resetting DEFAULT works on a stick without the EFI copy, and leaves every
+# other line alone.
+esp=$(mkesp esp-default); rm "$esp/efi/boot/syslinux.cfg"
+( PATH="$BIN"; dbrrg_set_boot_default "$esp" current ) 2>"$WORK/sd-stderr"; rc=$?
+if [[ $rc -eq 0 && "$(sed 1d "$esp/syslinux.cfg")" == "$(printf '%s\n' "$SYSLINUX_CFG" | sed 1d)" \
+   && "$(head -n1 "$esp/syslinux.cfg")" == "DEFAULT current" && ! -s "$WORK/sd-stderr" \
+   && ! -e "$esp/syslinux.cfg.tmp" ]]; then
+    ok "dbrrg_set_boot_default changes only the DEFAULT line"
+else
+    bad "dbrrg_set_boot_default: rc=$rc stderr=$(cat "$WORK/sd-stderr") cfg=$(cat "$esp/syslinux.cfg")"
+fi
+
+# The pre-mount hook used to run in parallel with the cmdline hook that writes
 # /tmp/dbrrg-ramroot, so it must read ramroot= from the command line itself.
-# Reading the file made every netboot wait 60s for an ESP.
-if grep -v '^[[:space:]]*#' "$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/finalize-upgrade.sh" \
-        | grep -q '/tmp/dbrrg-ramroot'; then
+# Reading the file made every netboot wait 60s for an ESP. It does write the
+# file, after a rotation; the drop-in orders that write after the cmdline
+# hook's.
+FU="$REPO/overlay/usr/lib/dracut/modules.d/90dbrrg/finalize-upgrade.sh"
+if grep -v '^[[:space:]]*#' "$FU" | grep -qE '(cat|<)[[:space:]]*/tmp/dbrrg-ramroot'; then
     bad "finalize-upgrade.sh reads /tmp/dbrrg-ramroot, which may not exist yet in pre-mount"
 else
-    ok "finalize-upgrade.sh does not depend on the cmdline hook's /tmp/dbrrg-ramroot"
+    ok "finalize-upgrade.sh does not read the cmdline hook's /tmp/dbrrg-ramroot"
+fi
+if grep -qE '^dbrrg_finalize_upgrade "\$efi_mount" "\$ramroot" /tmp/dbrrg-ramroot$' "$FU"; then
+    ok "finalize-upgrade.sh passes the boot's ramroot= and the mount hook's file"
+else
+    bad "finalize-upgrade.sh does not call dbrrg_finalize_upgrade with ramroot= and /tmp/dbrrg-ramroot"
 fi
 
 # finalize-upgrade.sh itself mounts the ESP and so cannot run here; this

@@ -636,11 +636,52 @@ dbrrg_write_hostname() {
     return 0
 }
 
-# dbrrg_finalize_upgrade <efi-mount>
+# dbrrg_set_boot_default <efi-mount> <label>
+#
+# Set the DEFAULT line of syslinux.cfg on the mounted ESP, in both copies the
+# image carries: /syslinux.cfg (BIOS) and /efi/boot/syslinux.cfg (EFI). A
+# missing copy is skipped. Each copy is written to a .tmp file and renamed
+# over the original, so a power cut leaves the old or the new file, never half
+# of one. upgrade-image sets "new" after it stages tl.new; the rotation sets
+# "current" again.
+dbrrg_set_boot_default() {
+    local _sbd_efi="$1" _sbd_label="$2" _sbd_cfg _sbd_rc=0
+
+    for _sbd_cfg in "$_sbd_efi/syslinux.cfg" "$_sbd_efi/efi/boot/syslinux.cfg"; do
+        [ -f "$_sbd_cfg" ] || continue
+        if sed "s/^DEFAULT .*/DEFAULT $_sbd_label/" "$_sbd_cfg" > "$_sbd_cfg.tmp" \
+                && mv "$_sbd_cfg.tmp" "$_sbd_cfg"; then
+            :
+        else
+            dbrrg_log "finalize-upgrade: could not set DEFAULT $_sbd_label in $_sbd_cfg"
+            rm -f "$_sbd_cfg.tmp"
+            _sbd_rc=1
+        fi
+    done
+    sync
+    return $_sbd_rc
+}
+
+# dbrrg_finalize_upgrade <efi-mount> <ramroot> <ramroot-file>
 #
 # Rotate a pending upgrade on the mounted ESP: tl.old is removed, tl becomes
 # tl.old, tl.new becomes tl. Called by finalize-upgrade.sh, which owns the
 # mount and unmount.
+#
+# The rotation runs only when <ramroot> is tl.new/ramroot.sqsh, i.e. when the
+# boot loader took this boot's kernel and initramfs from tl.new/ ("LABEL new",
+# which upgrade-image makes the DEFAULT). The squashfs cannot be moved once it
+# is mounted, so the rotation has to happen here, before the mount; and only a
+# kernel loaded from tl.new/ matches the modules in tl.new/ramroot.sqsh. A
+# rotation on a boot from tl/ ran the old kernel on the new squashfs, and every
+# module not in the old initramfs failed to load (an i226-V NIC stayed down
+# until the next reboot). A tl.new found on a boot from tl/ is left alone.
+#
+# On success syslinux.cfg is set back to DEFAULT current, before the moves:
+# a power cut between them then boots tl/ or fails the same way the rotation
+# always could, but never points syslinux at a tl.new/ that is already gone.
+# <ramroot-file> (/tmp/dbrrg-ramroot) is rewritten to tl/ramroot.sqsh, so the
+# mount hook finds the squashfs where the rotation put it.
 #
 # Returns 0 when nothing was pending, the upgrade was finalized, or the boot
 # should continue regardless (a failed tl.new -> tl move is logged and left
@@ -654,11 +695,16 @@ dbrrg_write_hostname() {
 # one of these calls failed with "command not found" while the offline tests
 # passed on the dev host.
 dbrrg_finalize_upgrade() {
-    local _dfu_efi="$1"
+    local _dfu_efi="$1" _dfu_ramroot="$2" _dfu_ramroot_file="$3"
     local _dfu_file
 
     # Check if upgrade is pending (tl.new exists with required files)
     [ -d "$_dfu_efi/tl.new" ] || return 0
+
+    if [ "$_dfu_ramroot" != "tl.new/ramroot.sqsh" ]; then
+        dbrrg_log "finalize-upgrade: tl.new is pending, but this kernel came from ${_dfu_ramroot%/*}/ - not rotating"
+        return 0
+    fi
 
     for _dfu_file in vmlinuz initrd.img ramroot.sqsh; do
         if [ ! -f "$_dfu_efi/tl.new/$_dfu_file" ]; then
@@ -669,6 +715,8 @@ dbrrg_finalize_upgrade() {
 
     info "finalize-upgrade: Finalizing pending upgrade (tl.new -> tl -> tl.old)"
     dbrrg_log "finalize-upgrade: Starting rotation"
+
+    dbrrg_set_boot_default "$_dfu_efi" current
 
     if [ -d "$_dfu_efi/tl.old" ]; then
         info "finalize-upgrade: Removing old fallback (tl.old)"
@@ -709,6 +757,7 @@ dbrrg_finalize_upgrade() {
     fi
 
     sync
+    echo "tl/ramroot.sqsh" > "$_dfu_ramroot_file"
 
     info "finalize-upgrade: Upgrade finalized successfully"
     dbrrg_log "finalize-upgrade: Complete - now booting from new tl/"

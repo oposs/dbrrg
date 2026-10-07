@@ -369,7 +369,7 @@ The EFI partition `/config/` directory can also store other persistent configura
 
 ## Standing Constraints
 
-Fourteen rules in this repository look like ordinary configuration but are
+Fifteen rules in this repository look like ordinary configuration but are
 load-bearing. All but the patched-labwc, hook-order, menu-rendering and
 logout-save ones have each caused a real shipped-image bug. The
 patched-labwc one is preventive - nothing has shipped broken from it yet, but
@@ -726,6 +726,37 @@ status handling in `dbrrg-session`: a panic (101), a segfault (139) or a
 failed exec (126/127) read as logout would be silent, and saving on them
 would archive the home on every respawn. `test/integration/test-session-lifecycle.sh`
 guards both.
+
+### The first boot after an upgrade takes its kernel from tl.new
+
+`upgrade-image` stages an upgrade of the running stick in `tl.new/` and then
+sets `DEFAULT new` in both `syslinux.cfg` copies (`/syslinux.cfg` and
+`/efi/boot/syslinux.cfg`; it adds `LABEL new` to a stick written before the
+entry existed). `LABEL new` boots `/tl.new/vmlinuz` with
+`ramroot=tl.new/ramroot.sqsh`. On that boot `dbrrg_finalize_upgrade`
+(`dbrrg-lib.sh`) sets `DEFAULT current` again, rotates `tl` → `tl.old` and
+`tl.new` → `tl`, and points `/tmp/dbrrg-ramroot` at `tl/ramroot.sqsh`. It
+rotates **only** when ramroot= is `tl.new/ramroot.sqsh`. The rotation has to
+happen in the initramfs, because the squashfs is mounted from the stick and
+cannot be moved afterwards.
+
+The rotation used to run on a boot that had loaded the kernel from `tl/`. The
+old kernel (7.0.0-34) then ran on the new squashfs (modules for 7.0.0-38), and
+every module not already in the old initramfs failed to load: an i226-V NIC
+(`igc`) stayed down until the next reboot, while WiFi (`iwlwifi`, in the
+initramfs) worked. Seen in the field 2026-10-07.
+
+Limits: the upgrade runs the *running* image's `upgrade-image`, so a machine
+on an image from before this fix has the mismatch once more on its next
+upgrade. Staging such an older image with the new `upgrade-image` (a
+downgrade) boots it from `tl.new/`, where its initramfs rotates
+unconditionally and then fails to find `tl.new/ramroot.sqsh`; type `current`
+at the boot prompt, and set `DEFAULT current` in both copies by hand.
+
+`test/unit/test_upgrade_image.py` (via `make test-unit`) and
+`test/integration/test-initramfs-home.sh` guard both halves, and `make
+qemu-smoke-upgrade` boots a staged upgrade through OVMF and syslinux and
+requires the rotation and `DEFAULT current` afterwards.
 
 ## Known Limitations
 

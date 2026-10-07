@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
@@ -825,6 +826,172 @@ class TestMountinfoDetection(unittest.TestCase):
 
     def test_tab_newline_backslash_escapes_decode(self):
         self.assertEqual(ui._unescape_mountinfo("a\\011b\\012c\\134d"), "a\tb\nc\\d")
+
+
+# A stick written before "LABEL new" existed: upgrade-image must add the entry.
+OLD_SYSLINUX_CFG = """SERIAL 0 115200
+DEFAULT current
+TIMEOUT 5
+
+LABEL current
+    KERNEL /tl/vmlinuz
+    APPEND ramroot=tl/ramroot.sqsh console=tty1 quiet splash
+    INITRD /tl/initrd.img
+
+LABEL previous
+    KERNEL /tl.old/vmlinuz
+    APPEND ramroot=tl.old/ramroot.sqsh console=tty1 quiet splash
+    INITRD /tl.old/initrd.img
+"""
+
+
+def label_block(cfg: str, label: str) -> List[str]:
+    """The stripped lines of one LABEL entry, LABEL line included."""
+    lines = cfg.splitlines()
+    start = lines.index(f"LABEL {label}")
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.startswith((" ", "\t")):
+            break
+        block.append(line.strip())
+    return block
+
+
+class TestShippedSyslinuxCfg(unittest.TestCase):
+    """The image's own syslinux.cfg carries the entry the first boot uses."""
+
+    cfg = (REPO / "configs" / "syslinux.cfg").read_text()
+
+    def test_the_default_is_current(self):
+        self.assertIn("\nDEFAULT current\n", self.cfg)
+
+    def test_new_boots_kernel_initramfs_and_squashfs_from_tl_new(self):
+        block = label_block(self.cfg, "new")
+        self.assertIn("KERNEL /tl.new/vmlinuz", block)
+        self.assertIn("INITRD /tl.new/initrd.img", block)
+        append = [l for l in block if l.startswith("APPEND ")]
+        self.assertEqual(len(append), 1)
+        self.assertIn("ramroot=tl.new/ramroot.sqsh", append[0].split())
+
+    def test_new_has_the_same_options_as_current(self):
+        current = [l for l in label_block(self.cfg, "current") if l.startswith("APPEND ")]
+        new = [l for l in label_block(self.cfg, "new") if l.startswith("APPEND ")]
+        self.assertEqual(
+            new[0].replace("ramroot=tl.new/", "ramroot=tl/"), current[0]
+        )
+
+
+class TestSetBootDefault(unittest.TestCase):
+    """upgrade-image points the next boot at tl.new/ in both config copies."""
+
+    def setUp(self):
+        self.esp = Path(tempfile.mkdtemp(prefix="dbrrg-esp-"))
+        self.addCleanup(shutil.rmtree, self.esp, ignore_errors=True)
+        (self.esp / "efi" / "boot").mkdir(parents=True)
+        self.copies = [self.esp / "syslinux.cfg", self.esp / "efi" / "boot" / "syslinux.cfg"]
+        for c in self.copies:
+            c.write_text(OLD_SYSLINUX_CFG)
+
+    def test_both_copies_get_default_new(self):
+        ui.set_boot_default(str(self.esp), "new")
+        for c in self.copies:
+            self.assertIn("\nDEFAULT new\n", c.read_text(), c)
+            self.assertNotIn("DEFAULT current", c.read_text(), c)
+
+    def test_an_old_stick_gets_a_new_entry_built_from_current(self):
+        ui.set_boot_default(str(self.esp), "new")
+        block = label_block(self.copies[0].read_text(), "new")
+        self.assertEqual(block, [
+            "LABEL new",
+            "KERNEL /tl.new/vmlinuz",
+            "APPEND ramroot=tl.new/ramroot.sqsh console=tty1 quiet splash",
+            "INITRD /tl.new/initrd.img",
+        ])
+
+    def test_an_existing_new_entry_is_not_duplicated(self):
+        ui.set_boot_default(str(self.esp), "new")
+        ui.set_boot_default(str(self.esp), "current")
+        ui.set_boot_default(str(self.esp), "new")
+        text = self.copies[0].read_text()
+        self.assertEqual(text.count("LABEL new"), 1)
+        self.assertIn("\nDEFAULT new\n", text)
+
+    def test_other_entries_are_kept(self):
+        ui.set_boot_default(str(self.esp), "new")
+        text = self.copies[1].read_text()
+        self.assertEqual(label_block(text, "current"), label_block(OLD_SYSLINUX_CFG, "current"))
+        self.assertEqual(label_block(text, "previous"), label_block(OLD_SYSLINUX_CFG, "previous"))
+
+    def test_no_temporary_file_is_left(self):
+        ui.set_boot_default(str(self.esp), "new")
+        self.assertEqual(sorted(p.name for p in self.esp.iterdir()), ["efi", "syslinux.cfg"])
+
+    def test_a_missing_efi_copy_is_skipped(self):
+        self.copies[1].unlink()
+        ui.set_boot_default(str(self.esp), "new")
+        self.assertIn("\nDEFAULT new\n", self.copies[0].read_text())
+        self.assertFalse(self.copies[1].exists())
+
+
+class TestAbUpgradeBootDefault(unittest.TestCase):
+    """The first boot after an upgrade takes its kernel from tl.new/.
+
+    Booting tl/'s kernel while the initramfs rotated tl.new into place ran a
+    7.0.0-34 kernel on a 7.0.0-38 squashfs: igc (i226-V) could not load.
+    """
+
+    def setUp(self):
+        self.esp = Path(tempfile.mkdtemp(prefix="dbrrg-esp-"))
+        self.addCleanup(shutil.rmtree, self.esp, ignore_errors=True)
+        (self.esp / "efi" / "boot").mkdir(parents=True)
+        (self.esp / "tl").mkdir()
+        for c in (self.esp / "syslinux.cfg", self.esp / "efi" / "boot" / "syslinux.cfg"):
+            c.write_text(OLD_SYSLINUX_CFG)
+        fw = Path(tempfile.mkdtemp(prefix="dbrrg-fw-"))
+        self.addCleanup(shutil.rmtree, fw, ignore_errors=True)
+        for f in ui.FIRMWARE_FILES:
+            (fw / f).write_text("new")
+        patches = [
+            mock.patch.object(ui, "download_firmware", return_value=str(fw)),
+            mock.patch.object(ui, "BOOT_EFI_MOUNT", str(self.esp)),
+            mock.patch.object(ui.os.path, "ismount", return_value=True),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def drive(self, is_boot):
+        return ui.DriveInfo("/dev/sdz", "16G", "Test", "", True, "/dev/sdz1",
+                            1024, is_boot, False, False)
+
+    def defaults(self):
+        return [l for c in (self.esp / "syslinux.cfg", self.esp / "efi" / "boot" / "syslinux.cfg")
+                for l in c.read_text().splitlines() if l.startswith("DEFAULT")]
+
+    def test_the_boot_drive_boots_tl_new_next(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui.do_ab_upgrade(self.drive(True), "http://example.invalid")
+        self.assertTrue((self.esp / "tl.new" / "ramroot.sqsh").is_file())
+        self.assertEqual(self.defaults(), ["DEFAULT new", "DEFAULT new"])
+
+    def test_a_direct_rotation_boots_current(self):
+        # A non-boot drive is rotated in place; a DEFAULT new left over from
+        # an unfinished upgrade would point at the tl.new it just removed.
+        ui.set_boot_default(str(self.esp), "new")
+        (self.esp / "tl.new").mkdir()
+        run = ui.run_cmd
+        def fake_run(cmd, *a, **kw):
+            if cmd[0] in ("mount", "umount"):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return run(cmd, *a, **kw)
+        with mock.patch.object(ui, "run_cmd", side_effect=fake_run), \
+             mock.patch.object(ui.tempfile, "mkdtemp", side_effect=[str(self.esp), tempfile.mkdtemp(prefix="dbrrg-work-")]), \
+             mock.patch.object(ui.shutil, "rmtree"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            ui.do_ab_upgrade(self.drive(False), "http://example.invalid")
+        self.assertTrue((self.esp / "tl" / "ramroot.sqsh").is_file())
+        self.assertFalse((self.esp / "tl.new").exists())
+        self.assertEqual(self.defaults(), ["DEFAULT current", "DEFAULT current"])
 
 
 if __name__ == "__main__":

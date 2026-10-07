@@ -2,16 +2,22 @@
 # finalize-upgrade.sh - Finalize pending upgrade by rotating tl.new -> tl -> tl.old
 # Runs in initramfs after auto-resize, before mount-squashfs (priority 25)
 #
-# When upgrade-image writes to tl.new/, this script finalizes on next boot:
-# 1. Remove old fallback (tl.old/)
-# 2. Move current to fallback (tl/ -> tl.old/)
-# 3. Activate new version (tl.new/ -> tl/)
+# upgrade-image writes tl.new/ and sets syslinux.cfg to DEFAULT new, so the
+# next boot loads its kernel from tl.new/ with ramroot=tl.new/ramroot.sqsh.
+# On that boot this script:
+# 1. Sets syslinux.cfg back to DEFAULT current
+# 2. Removes old fallback (tl.old/)
+# 3. Moves current to fallback (tl/ -> tl.old/)
+# 4. Activates new version (tl.new/ -> tl/), and points the mount hook at
+#    tl/ramroot.sqsh
+# A boot whose kernel came from tl/ never rotates; see dbrrg_finalize_upgrade.
 
 type info >/dev/null 2>&1 || . /lib/dracut-lib.sh
 . /lib/dbrrg-lib.sh
 
 # Only run for USB boot (not network boot)
-# Read ramroot= from the kernel command line, not from /tmp/dbrrg-ramroot.
+# Read ramroot= from the kernel command line, not from the file the cmdline
+# hook writes.
 # dracut-pre-mount.service is ordered only after dracut-initqueue.service,
 # which is not part of the boot transaction here, so this hook runs in
 # parallel with the cmdline hook that writes that file - measured with
@@ -57,7 +63,10 @@ fi
 # The rotation itself lives in dbrrg_finalize_upgrade() in dbrrg-lib.sh, so
 # test/integration/test-initramfs-home.sh can run it with only the commands
 # the initramfs actually has.
-dbrrg_finalize_upgrade "$efi_mount"
+# /tmp/dbrrg-ramroot is written here, never read: after a rotation the
+# squashfs is in tl/, not where ramroot= says. The cmdline hook has written
+# the file by now - dbrrg-after-cmdline.conf orders pre-mount after it.
+dbrrg_finalize_upgrade "$efi_mount" "$ramroot" /tmp/dbrrg-ramroot
 rc=$?
 
 umount "$efi_mount"
