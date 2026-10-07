@@ -35,6 +35,9 @@ absent() {
 }
 
 present "labwc"            'usr/bin/labwc$'
+# seatd next to logind made libseat try seatd first and fail; see the
+# Dockerfile. Not installed today, never enabled if it comes back.
+absent  "enabled seatd"    'etc/systemd/system/[^/]+\.wants/seatd\.service$'
 present "Xwayland"         'usr/bin/Xwayland$'
 present "foot"             'usr/bin/foot$'
 present "grim"             'usr/bin/grim$'

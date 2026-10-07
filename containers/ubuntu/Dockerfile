@@ -235,7 +235,12 @@ RUN printf '#!/bin/sh\nupdate-alternatives --query default.plymouth 2>/dev/null 
 # "could not access socket /run/seatd.sock: permission denied" because tluser is
 # in no seat group, and only then falls back to logind. That produced an alarming
 # error on every start and left DRM access depending on which backend won.
-RUN systemctl disable seatd.service || true
+# On 26.04 labwc pulls in libseat1 only and seatd is not installed; the guard
+# stays for the day a package brings it back. `systemctl disable` on the
+# missing unit printed "Unit seatd.service does not exist" on every build.
+RUN if [ -e /usr/lib/systemd/system/seatd.service ]; then \
+        systemctl disable seatd.service; \
+    fi
 
 # waybar is started by dbrrg-session, not by systemd. The package ships a user
 # unit enabled into graphical-session.target whose ExecStart is a bare

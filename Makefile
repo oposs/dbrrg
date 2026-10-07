@@ -64,7 +64,7 @@ endif
 QEMU_MEMORY ?= 2G
 QEMU_EXTRA_ARGS ?=
 
-.PHONY: all clean rootfs image ipxe qemu-test qemu-test-console qemu-test-efi qemu-test-upgrade qemu-smoke qemu-smoke-netboot qemu-smoke-upgrade test-unit test test-runtime help
+.PHONY: all clean rootfs image ipxe qemu-test qemu-smoke qemu-smoke-netboot qemu-smoke-upgrade test-unit test test-runtime help
 
 all: image
 	@echo "✓ Build complete!"
