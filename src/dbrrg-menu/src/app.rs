@@ -7,13 +7,15 @@
 use crate::damage::Tracker;
 use crate::icons::IconRoots;
 use crate::jobs::{self, JobResult, Paths};
+use crate::log::Feed;
 use crate::menu::{Effect, Job, Menu};
 use crate::raster::{Background, Canvas, Textures};
 use crate::ui;
 use egui::{TextureHandle, ViewportId};
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -21,6 +23,17 @@ use winit::window::{Window, WindowId};
 
 /// How much of the grid's brightness survives behind the save dialog.
 const DIM_KEEP: u32 = 90;
+/// The shortest time between two wake-ups for program output: a program
+/// that floods its output costs at most ten frames a second.
+const OUTPUT_PACE: Duration = Duration::from_millis(100);
+
+/// Why the loop was woken from another thread.
+#[derive(Debug)]
+pub enum Wake {
+    Job(JobResult),
+    /// Lines are waiting in the feed.
+    Output,
+}
 
 pub struct Config {
     pub menu: Menu,
@@ -44,7 +57,9 @@ struct Live {
 pub struct App {
     cfg: Config,
     ctx: egui::Context,
-    proxy: EventLoopProxy<JobResult>,
+    proxy: EventLoopProxy<Wake>,
+    /// Program output on its way into the menu's log.
+    feed: Arc<Feed>,
     live: Option<Live>,
     /// Set when the menu must end; `run` returns it as the process status.
     exit: Option<i32>,
@@ -54,7 +69,7 @@ pub struct App {
 
 /// Run the menu until it exits. Returns the exit status for dbrrg-session.
 pub fn run(cfg: Config) -> Result<i32, String> {
-    let event_loop = EventLoop::<JobResult>::with_user_event()
+    let event_loop = EventLoop::<Wake>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -65,10 +80,24 @@ pub fn run(cfg: Config) -> Result<i32, String> {
     // An animated widget on a CPU rasteriser arrives as visibly staged full
     // frames.
     ctx.global_style_mut(|s| s.animation_time = 0.0);
+    let feed = Arc::new(Feed::default());
+    let waker = event_loop.create_proxy();
+    let waiting = feed.clone();
+    std::thread::spawn(move || {
+        loop {
+            waiting.wait();
+            // The loop is gone only when the menu is exiting.
+            if waker.send_event(Wake::Output).is_err() {
+                return;
+            }
+            std::thread::sleep(OUTPUT_PACE);
+        }
+    });
     let mut app = App {
         cfg,
         ctx,
         proxy: event_loop.create_proxy(),
+        feed,
         live: None,
         exit: None,
         frozen: false,
@@ -81,21 +110,22 @@ pub fn run(cfg: Config) -> Result<i32, String> {
 impl App {
     fn start(&self, job: Job) {
         let proxy = self.proxy.clone();
+        let feed = self.feed.clone();
         let paths = Paths {
             save_home: self.cfg.paths.save_home.clone(),
             state_dir: self.cfg.paths.state_dir.clone(),
         };
         std::thread::spawn(move || {
             let result = match job {
-                Job::Save => JobResult::Saved(jobs::save(&paths)),
+                Job::Save => JobResult::Saved(jobs::save(&paths, &feed)),
                 Job::Run {
                     name,
                     argv,
                     save_on_exit,
-                } => jobs::run(&name, &argv, save_on_exit),
+                } => jobs::run(&name, &argv, save_on_exit, &feed),
             };
             // The loop is gone only when the menu is exiting; nothing to tell.
-            let _ = proxy.send_event(result);
+            let _ = proxy.send_event(Wake::Job(result));
         });
     }
 
@@ -203,7 +233,7 @@ fn present(surface: &mut softbuffer::Surface<Rc<Window>, Rc<Window>>, canvas: &C
     buf.present().map_err(|e| e.to_string())
 }
 
-impl ApplicationHandler<JobResult> for App {
+impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.live.is_some() {
             return;
@@ -267,10 +297,17 @@ impl ApplicationHandler<JobResult> for App {
         }
     }
 
-    // A finished job arrives here through the proxy, which wakes the loop.
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, result: JobResult) {
-        let effect = self.cfg.menu.finished(result, Instant::now());
-        self.apply(effect, event_loop);
+    // A finished job and program output arrive here through the proxy,
+    // which wakes the loop. The output is taken first, so a program's last
+    // lines are logged before its exit.
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, wake: Wake) {
+        for line in self.feed.drain() {
+            self.cfg.menu.log.push(line);
+        }
+        if let Wake::Job(result) = wake {
+            let effect = self.cfg.menu.finished(result, Instant::now());
+            self.apply(effect, event_loop);
+        }
         if let Some(live) = self.live.as_ref() {
             live.window.request_redraw();
         }

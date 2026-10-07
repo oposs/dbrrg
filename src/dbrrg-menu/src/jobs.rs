@@ -4,8 +4,19 @@
 //! spend 60 seconds pinging before it starts, and a window that stops
 //! answering frame callbacks for that long looks dead.
 
+use crate::log::{Feed, Kind, Line, Splitter, local_time};
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+/// How long `run` and `save` wait, once the program has exited, for the
+/// rest of its output. A background process it started may hold the pipes
+/// open for as long as it lives; its lines are still logged, but the tile
+/// is done when the program itself is.
+const DRAIN_GRACE: Duration = Duration::from_millis(300);
 
 /// What dbrrg-save-home reported, by its exit code. The codes are its
 /// contract, documented at the top of overlay/usr/bin/dbrrg-save-home.
@@ -82,23 +93,76 @@ pub struct Paths {
     pub state_dir: PathBuf,
 }
 
-/// Run dbrrg-save-home. Its stdout and stderr go where ours go: the session
-/// log.
-pub fn save(paths: &Paths) -> SaveOutcome {
-    match Command::new(&paths.save_home).stdin(Stdio::null()).status() {
+/// Copy one output pipe into the feed, line by line, until it closes.
+fn pump(mut pipe: impl Read, source: String, feed: Arc<Feed>, done: Sender<()>) {
+    let mut split = Splitter::default();
+    let mut emit = |text: String| {
+        feed.push(Line {
+            time: local_time(),
+            source: Some(source.clone()),
+            text,
+            kind: Kind::Output,
+        })
+    };
+    let mut buf = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => split.feed(&buf[..n], &mut emit),
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    split.finish(&mut emit);
+    let _ = done.send(());
+}
+
+/// Start `cmd` with stdout and stderr each read by a thread of its own into
+/// the feed, wait for it, then give its output `DRAIN_GRACE` to arrive.
+fn run_logged(mut cmd: Command, source: &str, feed: &Arc<Feed>) -> std::io::Result<ExitStatus> {
+    let mut child: Child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (tx, rx): (Sender<()>, Receiver<()>) = mpsc::channel();
+    let mut pumps = 0;
+    if let Some(out) = child.stdout.take() {
+        let (s, f, t) = (source.to_string(), feed.clone(), tx.clone());
+        std::thread::spawn(move || pump(out, s, f, t));
+        pumps += 1;
+    }
+    if let Some(err) = child.stderr.take() {
+        let (s, f, t) = (source.to_string(), feed.clone(), tx);
+        std::thread::spawn(move || pump(err, s, f, t));
+        pumps += 1;
+    }
+    let status = child.wait();
+    let deadline = Instant::now() + DRAIN_GRACE;
+    for _ in 0..pumps {
+        if rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+            break;
+        }
+    }
+    status
+}
+
+/// Run dbrrg-save-home. Its output goes to the log as "save-home".
+pub fn save(paths: &Paths, feed: &Arc<Feed>) -> SaveOutcome {
+    match run_logged(Command::new(&paths.save_home), "save-home", feed) {
         Ok(st) => SaveOutcome::from_status(st.code()),
         Err(e) => SaveOutcome::Broken(format!("{} could not be started: {e}", paths.save_home.display())),
     }
 }
 
-/// Run a tile's program and wait for it. The save that may follow is a
-/// separate job, so the grid can show the save dialog for it.
-pub fn run(name: &str, argv: &[String], save_on_exit: bool) -> JobResult {
-    let status = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::null())
-        .status()
-        .map(|st: ExitStatus| st.code())
+/// Run a tile's program and wait for it; its output goes to the log under
+/// the tile's name. The save that may follow is a separate job, so the grid
+/// can show the save dialog for it.
+pub fn run(name: &str, argv: &[String], save_on_exit: bool, feed: &Arc<Feed>) -> JobResult {
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    let status = run_logged(cmd, name, feed)
+        .map(|st| st.code())
         .map_err(|e| format!("{} could not be started: {e}", argv[0]));
     JobResult::Ran {
         name: name.to_string(),
@@ -110,6 +174,8 @@ pub fn run(name: &str, argv: &[String], save_on_exit: bool) -> JobResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log::{Feed, Kind, LINE_BYTES};
+    use std::sync::Arc;
     use crate::testdir::TestDir;
     use std::fs;
 
@@ -167,24 +233,24 @@ mod tests {
             save_home: "/bin/true".into(),
             state_dir: d.to_path_buf(),
         };
-        assert_eq!(save(&ok), SaveOutcome::Saved);
+        assert_eq!(save(&ok, &Arc::new(Feed::default())), SaveOutcome::Saved);
         let one = Paths {
             save_home: "/bin/false".into(),
             state_dir: d.to_path_buf(),
         };
-        assert_eq!(save(&one), SaveOutcome::HomeMissing);
+        assert_eq!(save(&one, &Arc::new(Feed::default())), SaveOutcome::HomeMissing);
         let missing = Paths {
             save_home: d.join("nope"),
             state_dir: d.to_path_buf(),
         };
-        assert!(matches!(save(&missing), SaveOutcome::Broken(_)));
+        assert!(matches!(save(&missing, &Arc::new(Feed::default())), SaveOutcome::Broken(_)));
     }
 
     #[test]
     fn run_reports_the_exit_status() {
         let argv: Vec<String> = ["/bin/sh", "-c", "exit 7"].map(String::from).to_vec();
         assert_eq!(
-            run("P", &argv, true),
+            run("P", &argv, true, &Arc::new(Feed::default())),
             JobResult::Ran {
                 name: "P".into(),
                 status: Ok(Some(7)),
@@ -195,9 +261,87 @@ mod tests {
 
     #[test]
     fn run_reports_a_program_that_cannot_start() {
-        let JobResult::Ran { status, .. } = run("X", &["/nonexistent/prog".into()], false) else {
+        let JobResult::Ran { status, .. } = run("X", &["/nonexistent/prog".into()], false, &Arc::new(Feed::default())) else {
             panic!()
         };
         assert!(status.unwrap_err().contains("could not be started"));
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        ["/bin/sh", "-c", script].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn run_streams_stdout_and_stderr_into_the_feed() {
+        let feed = Arc::new(Feed::default());
+        run("Tool", &sh("echo out; echo err >&2; exit 3"), false, &feed);
+        let mut got: Vec<_> = feed.drain().into_iter().map(|l| (l.source, l.text, l.kind)).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (Some("Tool".to_string()), "err".to_string(), Kind::Output),
+                (Some("Tool".to_string()), "out".to_string(), Kind::Output),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_line_is_in_the_feed_before_run_returns() {
+        // The exit is logged after the program's last lines, not before.
+        let feed = Arc::new(Feed::default());
+        run("Tool", &sh("i=0; while [ $i -lt 200 ]; do echo line$i; i=$((i+1)); done"), false, &feed);
+        let got = feed.drain();
+        assert_eq!(got.len(), 200);
+        assert_eq!(got[199].text, "line199");
+    }
+
+    #[test]
+    fn a_long_line_arrives_cut() {
+        let feed = Arc::new(Feed::default());
+        run("Tool", &sh("head -c 100000 /dev/zero | tr '\\0' x; echo; echo after"), false, &feed);
+        let got: Vec<_> = feed.drain().into_iter().map(|l| l.text).collect();
+        assert_eq!(got, [format!("{}…", "x".repeat(LINE_BYTES)), "after".to_string()]);
+    }
+
+    #[test]
+    fn a_background_child_holding_the_pipe_does_not_hold_the_tile() {
+        let feed = Arc::new(Feed::default());
+        let t0 = Instant::now();
+        let JobResult::Ran { status, .. } =
+            run("Tool", &sh("(sleep 1; echo late) & echo early; exit 0"), false, &feed)
+        else {
+            panic!()
+        };
+        assert_eq!(status, Ok(Some(0)));
+        assert!(t0.elapsed() < Duration::from_millis(900), "waited {:?}", t0.elapsed());
+        assert_eq!(feed.drain().into_iter().map(|l| l.text).collect::<Vec<_>>(), ["early"]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut late = Vec::new();
+        while late.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            late = feed.drain();
+        }
+        assert_eq!(late.into_iter().map(|l| l.text).collect::<Vec<_>>(), ["late"], "still logged");
+    }
+
+    #[test]
+    fn save_streams_its_output_as_save_home() {
+        let d = dir("save-out");
+        let feed = Arc::new(Feed::default());
+        let p = Paths {
+            save_home: "/bin/sh".into(),
+            state_dir: d.to_path_buf(),
+        };
+        // /bin/sh with no arguments reads stdin, which is /dev/null: exit 0.
+        assert_eq!(save(&p, &feed), SaveOutcome::Saved);
+        let p = Paths {
+            save_home: "/bin/ls".into(),
+            state_dir: d.to_path_buf(),
+        };
+        let _ = save(&p, &feed);
+        let got = feed.drain();
+        assert!(!got.is_empty(), "ls wrote nothing to the feed");
+        assert!(got.iter().all(|l| l.source.as_deref() == Some("save-home")));
     }
 }

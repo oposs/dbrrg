@@ -1,11 +1,15 @@
-//! Drawing the grid and the save dialog. Everything that decides something
+//! Drawing the grid, the log under it, and the save dialog. Everything that decides something
 //! lives in menu.rs; this file only paints it and reports clicks.
 
 use crate::icons::{self, IconJob, IconRoots};
+use crate::log::{Kind, Line, Log};
 use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
-use egui::{Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2, pos2, vec2};
+use egui::{
+    Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
+    pos2, vec2,
+};
 use egui_shadcn::Theme;
 use egui_shadcn::components::button::{Button, ButtonVariant};
 use std::path::PathBuf;
@@ -13,6 +17,18 @@ use std::time::{Duration, Instant};
 
 pub const COLUMNS: usize = 3;
 pub const GAP: f32 = 16.0;
+/// Tiles are squares of this side, smaller only when the screen is.
+pub const TILE_MAX: f32 = 220.0;
+/// The smallest tile; below it the grid scrolls instead.
+pub const TILE_MIN: f32 = 160.0;
+/// The log takes this share of the screen height, and at least
+/// `LOG_MIN_ROWS` rows.
+pub const LOG_SHARE: f32 = 0.3;
+pub const LOG_MIN_ROWS: usize = 8;
+/// One log row, in points; the log draws one line per row.
+pub const LOG_ROW: f32 = 18.0;
+const LOG_PAD: f32 = 10.0;
+const LOG_FONT: f32 = 13.0;
 pub const ICON_SIDE: u32 = 96;
 /// A warning amber, for reasons drawn on a disabled tile.
 pub const WARN: Color32 = Color32::from_rgb(0xc7, 0x9a, 0x4a);
@@ -85,6 +101,47 @@ pub enum UiEvent {
     Chose(Choice),
 }
 
+/// Where the grid and the log go on a screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    /// The log, along the bottom.
+    pub log: Rect,
+    /// The space above the log; the grid scrolls inside it.
+    pub area: Rect,
+    /// The grid itself, centred in `area`, or from its top when taller.
+    pub grid: Rect,
+    /// The side of one square tile.
+    pub side: f32,
+}
+
+pub fn layout(screen: Rect, tiles: usize) -> Layout {
+    let log_h = (screen.height() * LOG_SHARE).max(LOG_MIN_ROWS as f32 * LOG_ROW + 2.0 * LOG_PAD);
+    let log = Rect::from_min_max(
+        pos2(screen.left() + GAP, screen.bottom() - GAP - log_h),
+        pos2(screen.right() - GAP, screen.bottom() - GAP),
+    );
+    let area = Rect::from_min_max(screen.min, pos2(screen.right(), log.top()));
+    let cols = COLUMNS.min(tiles.max(1));
+    let rows = tiles.max(1).div_ceil(COLUMNS);
+    let fit = |space: f32, n: usize| (space - 2.0 * GAP - GAP * (n as f32 - 1.0)) / n as f32;
+    let side = TILE_MAX
+        .min(fit(area.width(), cols))
+        .min(fit(area.height(), rows))
+        .max(TILE_MIN);
+    let size = vec2(
+        cols as f32 * side + (cols as f32 - 1.0) * GAP,
+        rows as f32 * side + (rows as f32 - 1.0) * GAP,
+    );
+    let left = (area.center().x - size.x / 2.0).max(area.left() + GAP);
+    let top = area.top() + ((area.height() - size.y) / 2.0).max(GAP);
+    Layout {
+        log,
+        area,
+        grid: Rect::from_min_size(pos2(left, top), size),
+        side,
+    }
+}
+
 /// Draw one frame.
 pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Instant) -> Option<UiEvent> {
     // No background fill here: the canvas restores the page colour itself,
@@ -143,50 +200,93 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
         }
         Busy::Idle | Busy::Running { .. } => {}
     }
+    let l = layout(ui.max_rect(), menu.tiles.len());
     let mut clicked = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.add_space(GAP);
-        for line in menu.banner.iter().chain(menu.notice.iter()) {
-            ui.horizontal(|ui| {
-                ui.add_space(GAP);
-                ui.label(egui::RichText::new(line).color(WARN).size(16.0));
-            });
-        }
-        if let Busy::Running { name } = &menu.busy {
-            ui.horizontal(|ui| {
-                ui.add_space(GAP);
-                ui.label(egui::RichText::new(format!("{name} is running.")).size(16.0));
-            });
-        }
-        let width = ui.available_width() - 2.0 * GAP;
-        let tile_w = (width - GAP * (COLUMNS as f32 - 1.0)) / COLUMNS as f32;
-        let tile_h = (tile_w * 0.5).clamp(160.0, 260.0);
-        for (row, chunk) in menu.tiles.chunks(COLUMNS).enumerate() {
-            ui.horizontal(|ui| {
-                ui.add_space(GAP);
-                ui.spacing_mut().item_spacing.x = GAP;
-                for (col, tile) in chunk.iter().enumerate() {
-                    let index = row * COLUMNS + col;
-                    let enabled = tile.usable() && menu.busy == Busy::Idle;
-                    let sense = if enabled { Sense::click() } else { Sense::hover() };
-                    let (rect, resp) = ui.allocate_exact_size(vec2(tile_w, tile_h), sense);
-                    paint_tile(
-                        ui,
-                        rect,
-                        tile,
-                        icons[index].as_ref(),
-                        resp.hovered() && enabled,
-                        resp.has_focus(),
-                    );
-                    if resp.clicked() {
-                        clicked = Some(UiEvent::Tile(index));
+    let mut grid_ui = ui.new_child(UiBuilder::new().max_rect(l.area));
+    egui::ScrollArea::vertical()
+        .id_salt("grid")
+        .auto_shrink([false, false])
+        .show(&mut grid_ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(GAP, GAP);
+            ui.add_space(l.grid.top() - l.area.top() - GAP);
+            for (row, chunk) in menu.tiles.chunks(COLUMNS).enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(l.grid.left() - l.area.left() - GAP);
+                    for (col, tile) in chunk.iter().enumerate() {
+                        let index = row * COLUMNS + col;
+                        let enabled = tile.usable() && menu.busy == Busy::Idle;
+                        let sense = if enabled { Sense::click() } else { Sense::hover() };
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(l.side), sense);
+                        paint_tile(
+                            ui,
+                            rect,
+                            tile,
+                            icons[index].as_ref(),
+                            resp.hovered() && enabled,
+                            resp.has_focus(),
+                        );
+                        if resp.clicked() {
+                            clicked = Some(UiEvent::Tile(index));
+                        }
                     }
-                }
-            });
-            ui.add_space(GAP - ui.spacing().item_spacing.y);
-        }
-    });
+                });
+            }
+            ui.add_space(0.0);
+        });
+    show_log(ui, &menu.log, l.log);
     clicked
+}
+
+/// The log: one line per row, newest at the bottom, following new lines
+/// unless the person scrolled up.
+fn show_log(ui: &mut Ui, log: &Log, rect: Rect) {
+    let t = Theme::current(ui.ctx());
+    let mut log_ui = ui.new_child(UiBuilder::new().max_rect(rect));
+    egui::Frame::new()
+        .fill(t.palette.card)
+        .stroke(Stroke::new(1.0, t.palette.border))
+        .corner_radius(t.radius_md())
+        .inner_margin(LOG_PAD)
+        .show(&mut log_ui, |ui| {
+            ui.set_min_size(rect.size() - Vec2::splat(2.0 * LOG_PAD));
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let n = log.lines().len();
+            egui::ScrollArea::vertical()
+                .id_salt("log")
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show_rows(ui, LOG_ROW, n, |ui, range| {
+                    let width = ui.available_width();
+                    for line in log.lines().skip(range.start).take(range.len()) {
+                        let (row, _) = ui.allocate_exact_size(vec2(width, LOG_ROW), Sense::hover());
+                        let mut job = log_job(line, &t);
+                        job.wrap = TextWrapping::truncate_at_width(width);
+                        let galley = ui.painter().layout_job(job);
+                        let y = row.center().y - galley.size().y / 2.0;
+                        ui.painter_at(row).galley(pos2(row.left(), y), galley, t.palette.foreground);
+                    }
+                });
+        });
+}
+
+/// One log line: the time, then the program it came from, then the text.
+fn log_job(line: &Line, t: &Theme) -> LayoutJob {
+    let font = FontId::monospace(LOG_FONT);
+    let muted = TextFormat::simple(font.clone(), t.palette.muted_foreground);
+    let text_color = match line.kind {
+        Kind::Event => t.palette.foreground,
+        Kind::Output => t.palette.muted_foreground,
+        Kind::Warn => WARN,
+    };
+    let mut job = LayoutJob::default();
+    job.append(&line.time, 0.0, muted.clone());
+    if let Some(source) = &line.source {
+        job.append(&format!("{source} | "), 16.0, muted);
+        job.append(&line.text, 0.0, TextFormat::simple(font, text_color));
+    } else {
+        job.append(&line.text, 16.0, TextFormat::simple(font, text_color));
+    }
+    job
 }
 
 fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, hovered: bool, focused: bool) {
@@ -373,5 +473,111 @@ mod tests {
     fn elapsed_is_minutes_and_seconds() {
         assert_eq!(elapsed(Duration::from_secs(0)), "0:00");
         assert_eq!(elapsed(Duration::from_secs(65)), "1:05");
+    }
+
+    fn screen(w: f32, h: f32) -> Rect {
+        Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))
+    }
+
+    #[test]
+    fn six_tiles_on_full_hd_are_square_centred_and_above_the_log() {
+        let l = layout(screen(1920.0, 1080.0), 6);
+        assert_eq!(l.side, TILE_MAX);
+        assert_eq!(l.grid.size(), vec2(3.0 * TILE_MAX + 2.0 * GAP, 2.0 * TILE_MAX + GAP));
+        assert!((l.grid.center().x - 960.0).abs() < 0.5, "{:?}", l.grid);
+        assert!((l.grid.center().y - l.area.center().y).abs() < 0.5, "{:?} in {:?}", l.grid, l.area);
+        assert!(l.grid.bottom() <= l.log.top());
+        assert!(l.log.height() >= 0.3 * 1080.0 - 2.0 * GAP, "{:?}", l.log);
+        assert!(l.log.bottom() <= 1080.0 && l.log.left() >= 0.0 && l.log.right() <= 1920.0);
+    }
+
+    #[test]
+    fn tiles_shrink_to_fit_but_not_below_the_minimum() {
+        let l = layout(screen(800.0, 600.0), 6);
+        assert!(l.side < TILE_MAX && l.side >= TILE_MIN, "{}", l.side);
+        assert!(l.grid.width() <= 800.0);
+        let tiny = layout(screen(300.0, 300.0), 6);
+        assert_eq!(tiny.side, TILE_MIN);
+    }
+
+    #[test]
+    fn the_log_keeps_its_minimum_rows_on_a_short_screen() {
+        let l = layout(screen(1280.0, 480.0), 6);
+        assert!(l.log.height() >= LOG_MIN_ROWS as f32 * LOG_ROW, "{:?}", l.log);
+    }
+
+    #[test]
+    fn many_tiles_start_at_the_top_and_overflow_downwards() {
+        let l = layout(screen(1920.0, 1080.0), 38);
+        assert!(l.grid.top() >= l.area.top() && l.grid.height() > l.area.height(), "{:?}", l);
+        assert!((l.grid.center().x - 960.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_log_line_is_drawn_below_the_tiles_with_its_time() {
+        let mut menu = Menu::new(
+            Grid {
+                tiles: vec![Tile {
+                    file: "1.desktop".into(),
+                    name: "TileName".into(),
+                    comment: None,
+                    icon: None,
+                    action: Action::Run,
+                    argv: vec!["x".into()],
+                    terminal: false,
+                    save_on_exit: false,
+                    origin: Origin::User,
+                    problem: None,
+                    note: None,
+                }],
+                banner: vec![],
+            },
+            false,
+        );
+        menu.log.push(crate::log::Line {
+            time: "12:34:56".into(),
+            source: Some("Tool".into()),
+            text: "hello-log".into(),
+            kind: crate::log::Kind::Output,
+        });
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(screen(1280.0, 720.0)),
+            ..Default::default()
+        };
+        // Two passes: the font atlas and the scroll areas settle in the first.
+        let mut out = None;
+        for _ in 0..2 {
+            let mut o = ctx.run_ui(input.clone(), |ui| {
+                show(ui, &menu, &[None], Instant::now());
+            });
+            // The font atlas upload is not applied anywhere here.
+            o.textures_delta.clear();
+            out = Some(o);
+        }
+        let out = out.unwrap();
+        let find = |needle: &str| {
+            out.shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t) if t.galley.text().contains(needle) => Some(t.visual_bounding_rect()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{needle} not drawn"))
+        };
+        let name = find("TileName");
+        let line = find("hello-log");
+        assert!(line.top() > name.bottom(), "log line {line:?} not below tile {name:?}");
+        let text = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().contains("hello-log") => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(text.starts_with("12:34:56"), "{text}");
+        assert!(text.contains("Tool | hello-log"), "{text}");
     }
 }

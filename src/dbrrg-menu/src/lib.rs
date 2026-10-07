@@ -6,6 +6,7 @@ pub mod damage;
 pub mod desktop;
 pub mod icons;
 pub mod jobs;
+pub mod log;
 pub mod menu;
 pub mod raster;
 #[cfg(test)]

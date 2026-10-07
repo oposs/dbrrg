@@ -1,6 +1,5 @@
 //! The menu's state machine, apart from any drawing: which tile may be
-//! activated, what activating it starts, and what a finished job leaves on
-//! screen. One action at a time, enforced here by refusing activation, not
+//! activated, what activating it starts, and what it writes to the log. One action at a time, enforced here by refusing activation, not
 //! by blocking the event loop.
 //!
 //! Log out saves the home directory here, behind the dialog, before the
@@ -9,6 +8,7 @@
 //! failed and the person at the machine chose to log out anyway.
 
 use crate::jobs::{JobResult, SaveOutcome};
+use crate::log::{Kind, Log};
 use crate::tiles::{Action, Grid, Tile};
 use std::time::{Duration, Instant};
 
@@ -88,24 +88,25 @@ pub struct Menu {
     pub tiles: Vec<Tile>,
     pub banner: Vec<String>,
     pub busy: Busy,
-    pub notice: Option<String>,
+    /// What happened, for the log under the grid.
+    pub log: Log,
     restore_failed: bool,
 }
 
-fn run_message(name: &str, status: &Result<Option<i32>, String>) -> Option<String> {
+const SAVING: &str = "Saving the home directory…";
+
+fn run_message(name: &str, status: &Result<Option<i32>, String>) -> (Kind, String) {
     match status {
-        Ok(Some(0)) => None,
-        Ok(Some(n)) => Some(format!("{name} exited with status {n}.")),
-        Ok(None) => Some(format!("{name} was killed by a signal.")),
-        Err(e) => Some(format!("{e}.")),
+        Ok(Some(0)) => (Kind::Event, format!("{name} exited.")),
+        Ok(Some(n)) => (Kind::Warn, format!("{name} exited with status {n}.")),
+        Ok(None) => (Kind::Warn, format!("{name} was killed by a signal.")),
+        Err(e) => (Kind::Warn, format!("{e}.")),
     }
 }
 
-fn join(a: Option<String>, b: String) -> String {
-    match a {
-        Some(a) => format!("{a} {b}"),
-        None => b,
-    }
+fn save_message(outcome: &SaveOutcome) -> (Kind, String) {
+    let kind = if outcome.saved() { Kind::Event } else { Kind::Warn };
+    (kind, outcome.message())
 }
 
 impl Menu {
@@ -118,11 +119,15 @@ impl Menu {
                 t.problem = Some(RESTORE_FAILED_REASON.to_string());
             }
         }
+        let mut log = Log::default();
+        for line in &grid.banner {
+            log.note(Kind::Warn, line.clone());
+        }
         Menu {
             tiles,
             banner: grid.banner,
             busy: Busy::Idle,
-            notice: None,
+            log,
             restore_failed,
         }
     }
@@ -132,9 +137,9 @@ impl Menu {
             return None;
         }
         let tile = self.tiles.get(index).filter(|t| t.usable())?.clone();
-        self.notice = None;
         match tile.action {
             Action::Run => {
+                self.log.note(Kind::Event, format!("{} started.", tile.name));
                 self.busy = Busy::Running {
                     name: tile.name.clone(),
                 };
@@ -145,6 +150,7 @@ impl Menu {
                 }))
             }
             Action::SaveHome => {
+                self.log.note(Kind::Event, SAVING);
                 self.busy = Busy::Saving {
                     since: now,
                     purpose: SaveFor::Backup,
@@ -155,11 +161,12 @@ impl Menu {
                 // A save that is refused anyway is not attempted: the person
                 // is asked straight away.
                 if self.restore_failed {
-                    self.busy = Busy::LogoutFailed {
-                        message: SaveOutcome::RestoreFailed.message(),
-                    };
+                    let message = SaveOutcome::RestoreFailed.message();
+                    self.log.note(Kind::Warn, message.clone());
+                    self.busy = Busy::LogoutFailed { message };
                     return None;
                 }
+                self.log.note(Kind::Event, SAVING);
                 self.busy = Busy::Saving {
                     since: now,
                     purpose: SaveFor::Logout,
@@ -176,6 +183,8 @@ impl Menu {
                     Busy::Saving { purpose, .. } => purpose,
                     _ => SaveFor::Backup,
                 };
+                let (kind, text) = save_message(&outcome);
+                self.log.note(kind, text);
                 if purpose == SaveFor::Logout {
                     self.busy = if outcome.saved() {
                         Busy::LoggingOut {
@@ -188,8 +197,6 @@ impl Menu {
                     };
                     return None;
                 }
-                let prior = self.notice.take();
-                self.notice = Some(join(prior, outcome.message()));
                 self.busy = Busy::Idle;
                 None
             }
@@ -198,17 +205,18 @@ impl Menu {
                 status,
                 save_on_exit,
             } => {
-                self.notice = run_message(&name, &status);
+                let (kind, text) = run_message(&name, &status);
+                self.log.note(kind, text);
                 if !save_on_exit {
                     self.busy = Busy::Idle;
                     return None;
                 }
                 if self.restore_failed {
-                    let prior = self.notice.take();
-                    self.notice = Some(join(prior, SaveOutcome::RestoreFailed.message()));
+                    self.log.note(Kind::Warn, SaveOutcome::RestoreFailed.message());
                     self.busy = Busy::Idle;
                     return None;
                 }
+                self.log.note(Kind::Event, SAVING);
                 self.busy = Busy::Saving {
                     since: now,
                     purpose: SaveFor::Backup,
@@ -220,13 +228,13 @@ impl Menu {
 
     /// The answer to a failed logout save. Ignored in any other state.
     pub fn choose(&mut self, choice: Choice) -> Option<Effect> {
-        let Busy::LogoutFailed { message } = &self.busy else {
+        // The failure is in the log already, from when it happened.
+        let Busy::LogoutFailed { .. } = &self.busy else {
             return None;
         };
         match choice {
             Choice::LogOutAnyway => Action::Logout.exit_code().map(Effect::Exit),
             Choice::Stay => {
-                self.notice = Some(message.clone());
                 self.busy = Busy::Idle;
                 None
             }
@@ -247,7 +255,21 @@ impl Menu {
 mod tests {
     use super::*;
     use crate::desktop;
+    use crate::log::Kind;
     use crate::tiles::{SourceFile, merge};
+
+    /// The log as (kind, text), oldest first.
+    fn log(m: &Menu) -> Vec<(Kind, String)> {
+        m.log.lines().map(|l| (l.kind, l.text.clone())).collect()
+    }
+
+    fn ev(t: &str) -> (Kind, String) {
+        (Kind::Event, t.to_string())
+    }
+
+    fn warn(t: &str) -> (Kind, String) {
+        (Kind::Warn, t.to_string())
+    }
 
     fn grid() -> Grid {
         let f = |n: &str, t: &str| SourceFile {
@@ -290,6 +312,7 @@ mod tests {
             }
         );
         assert_eq!(m.finished(JobResult::Saved(SaveOutcome::Saved), now), None);
+        assert_eq!(log(&m), [ev("Saving the home directory…"), ev("Home directory saved.")]);
         assert_eq!(m.tick(now), None, "the result is shown first");
         assert_eq!(m.tick(now + LOGOUT_PAUSE), Some(Effect::Exit(0)));
     }
@@ -311,8 +334,11 @@ mod tests {
         assert_eq!(m.choose(Choice::Stay), None);
         assert_eq!(m.busy, Busy::Idle);
         assert_eq!(
-            m.notice.as_deref(),
-            Some("Not saved: the boot server cannot be reached.")
+            log(&m),
+            [
+                ev("Saving the home directory…"),
+                warn("Not saved: the boot server cannot be reached.")
+            ]
         );
     }
 
@@ -330,6 +356,7 @@ mod tests {
         let mut m = Menu::new(grid(), true);
         assert_eq!(m.activate(3, Instant::now()), None, "no save job started");
         assert!(matches!(m.busy, Busy::LogoutFailed { .. }));
+        assert_eq!(log(&m), [warn(&SaveOutcome::RestoreFailed.message())]);
         assert_eq!(m.choose(Choice::LogOutAnyway), Some(Effect::Exit(0)));
     }
 
@@ -356,7 +383,7 @@ mod tests {
             now,
         );
         assert_eq!(m.busy, Busy::Idle);
-        assert_eq!(m.notice, None);
+        assert_eq!(log(&m), [ev("Terminal started."), ev("Terminal exited.")]);
         assert_eq!(m.activate(3, now), Some(Effect::Start(Job::Save)));
     }
 
@@ -384,8 +411,13 @@ mod tests {
         m.finished(JobResult::Saved(SaveOutcome::ServerUnreachable), now);
         assert_eq!(m.busy, Busy::Idle);
         assert_eq!(
-            m.notice.as_deref(),
-            Some("ThinLinc exited with status 1. Not saved: the boot server cannot be reached.")
+            log(&m),
+            [
+                ev("ThinLinc started."),
+                warn("ThinLinc exited with status 1."),
+                ev("Saving the home directory…"),
+                warn("Not saved: the boot server cannot be reached."),
+            ]
         );
     }
 
@@ -408,7 +440,14 @@ mod tests {
             None
         );
         assert_eq!(m.busy, Busy::Idle);
-        assert!(m.notice.as_deref().unwrap().contains("home restore failed"));
+        assert_eq!(
+            log(&m),
+            [
+                ev("ThinLinc started."),
+                ev("ThinLinc exited."),
+                warn(&SaveOutcome::RestoreFailed.message())
+            ]
+        );
     }
 
     #[test]
@@ -417,7 +456,10 @@ mod tests {
         let now = Instant::now();
         assert_eq!(m.activate(2, now), Some(Effect::Start(Job::Save)));
         m.finished(JobResult::Saved(SaveOutcome::RestoreFailed), now);
-        assert!(m.notice.as_deref().unwrap().starts_with("Not saved"));
+        assert_eq!(
+            log(&m),
+            [ev("Saving the home directory…"), warn(&SaveOutcome::RestoreFailed.message())]
+        );
     }
 
     #[test]
@@ -433,6 +475,31 @@ mod tests {
             },
             now,
         );
-        assert_eq!(m.notice.as_deref(), Some("foot could not be started: x."));
+        assert_eq!(log(&m)[1], warn("foot could not be started: x."));
+    }
+
+    #[test]
+    fn a_signal_is_a_warning() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        m.activate(1, now);
+        m.finished(
+            JobResult::Ran {
+                name: "Terminal".into(),
+                status: Ok(None),
+                save_on_exit: false,
+            },
+            now,
+        );
+        assert_eq!(log(&m)[1], warn("Terminal was killed by a signal."));
+    }
+
+    #[test]
+    fn the_banner_opens_the_log_as_warnings() {
+        let mut g = grid();
+        g.banner = vec!["Your own tiles could not be read.".into()];
+        let m = Menu::new(g, false);
+        assert_eq!(log(&m), [warn("Your own tiles could not be read.")]);
+        assert_eq!(m.banner.len(), 1, "--check still prints it");
     }
 }
