@@ -221,7 +221,7 @@ The system implements home directory persistence across reboots:
   `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program exits, and
   the Back up home tile. The menu greys the save tile out when
   `/run/dbrrg/state/home-restore` says `failed`; after a Save-On-Exit tile
-  exits on such a boot, the save is skipped with a notice.
+  exits on such a boot, the save is skipped with a line in the menu's log.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd
   tluser`, never from `$HOME`, and every read of a recorded value under
   `/run/dbrrg/state` ends in `|| true`. Both are load-bearing. `sudo` on this
@@ -777,7 +777,11 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
   shipped Lucide set and the image's `foot.svg` render.
 - Each icon costs one process start at menu startup, and the icons render
   one after another, so that at most one renderer holds its 256 MiB.
-- None of the menu has been run on hardware yet.
+- A long log line is cut to one row on screen; the session log has it in
+  full, up to the 1 KiB cut.
+- **Confirmed on hardware (2026-10-07):** tiles start their programs,
+  Save-On-Exit, Back up home and the logout Stay / Log out anyway dialog
+  work. The square tiles and the log area have not been run on hardware.
 
 ### Screen blanking had to be rebuilt after the X11 removal
 
@@ -853,6 +857,20 @@ The session log also carries labwc's own line:
 
 From a VT, `dbrrg-menu --check` lists every tile, why one is grey, and why
 an icon draws its letter.
+
+### The menu's log
+
+The bottom 30 % of the menu (at least eight rows) is a log:
+`HH:MM:SS  source | text`, in local time. It shows every tile start and
+exit (with the exit status or signal), each save and its outcome, and every
+line a tile's program or `dbrrg-save-home` writes to stdout or stderr, with
+the tile name or `save-home` as source. Program output is untrusted, so the
+bounds are fixed in `src/dbrrg-menu/src/log.rs`: lines are cut at 1 KiB, the
+log and the queue from the reader threads keep 500 lines each, and output
+wakes the menu at most ten times a second. A program's last lines appear
+before its exit line; a background child that keeps the pipes open delays
+the tile by at most 300 ms, and its later lines are still logged. Every log
+line also goes to stderr, so the session log has all of it.
 
 ### The session waits for the GPU before it starts
 
