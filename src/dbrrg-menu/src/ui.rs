@@ -208,10 +208,12 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
         .auto_shrink([false, false])
         .show(&mut grid_ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(GAP, GAP);
-            ui.add_space(l.grid.top() - l.area.top() - GAP);
+            // add_space moves the cursor by exactly its amount; the item
+            // spacing comes only between the rows and tiles that follow.
+            ui.add_space(l.grid.top() - l.area.top());
             for (row, chunk) in menu.tiles.chunks(COLUMNS).enumerate() {
                 ui.horizontal(|ui| {
-                    ui.add_space(l.grid.left() - l.area.left() - GAP);
+                    ui.add_space(l.grid.left() - l.area.left());
                     for (col, tile) in chunk.iter().enumerate() {
                         let index = row * COLUMNS + col;
                         let enabled = tile.usable() && menu.busy == Busy::Idle;
@@ -311,10 +313,49 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
         t.palette.muted_foreground
     };
     let icon_px = ICON_SIDE as f32 / ui.ctx().pixels_per_point();
-    let icon_rect = Rect::from_center_size(
-        pos2(rect.center().x, rect.top() + 16.0 + icon_px / 2.0),
-        Vec2::splat(icon_px),
-    );
+    let text_w = rect.width() - 24.0;
+    // Name and Comment come from files the user writes. Each is one line,
+    // cut with an ellipsis, and all text is clipped to the tile, so no file
+    // can paint over its neighbours.
+    let clipped = ui.painter_at(rect);
+    let mut lines = Vec::new();
+    let mut line = |text: &str, font: FontId, color: Color32, one_line: bool| {
+        let galley = if one_line {
+            let mut job = LayoutJob::simple_singleline(text.to_string(), font, color);
+            job.wrap = TextWrapping::truncate_at_width(text_w);
+            clipped.layout_job(job)
+        } else {
+            clipped.layout(text.to_string(), font, color, text_w)
+        };
+        lines.push((galley, color));
+    };
+    line(&tile.name, FontId::proportional(20.0), fg, true);
+    if let Some(c) = &tile.comment {
+        line(c, FontId::proportional(14.0), t.palette.muted_foreground, true);
+    }
+    if let Some(why) = &tile.problem {
+        line(why, FontId::monospace(13.0), WARN, false);
+    }
+    if let Some(note) = &tile.note {
+        line(note, FontId::monospace(12.0), t.palette.muted_foreground, false);
+    }
+    if let Origin::Reworded { ignored } = &tile.origin {
+        let text = if ignored.is_empty() {
+            "reworded".to_string()
+        } else {
+            format!("reworded; ignored: {}", ignored.join(", "))
+        };
+        line(&text, FontId::monospace(12.0), t.palette.muted_foreground, false);
+    }
+    // Icon and text are one block in the middle of the square; a block too
+    // tall for it starts at the top and is clipped at the bottom.
+    let text_h: f32 = lines.iter().map(|(g, _)| g.size().y + 4.0).sum::<f32>() - 4.0;
+    let block_h = icon_px + 12.0 + text_h;
+    // On a whole pixel, or the icon texture is sampled between two pixels
+    // and its edges turn ragged.
+    let ppp = ui.ctx().pixels_per_point();
+    let top = ((rect.center().y - block_h / 2.0).max(rect.top() + 16.0) * ppp).round() / ppp;
+    let icon_rect = Rect::from_center_size(pos2(rect.center().x, top + icon_px / 2.0), Vec2::splat(icon_px));
     match icon {
         Some(tex) => {
             let tint = if usable {
@@ -347,39 +388,9 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
         }
     }
     let mut y = icon_rect.bottom() + 12.0;
-    let text_w = rect.width() - 24.0;
-    // Name and Comment come from files the user writes. Each is one line,
-    // cut with an ellipsis, and all text is clipped to the tile, so no file
-    // can paint over its neighbours.
-    let clipped = ui.painter_at(rect);
-    let mut line = |text: &str, font: FontId, color: Color32, one_line: bool| {
-        let galley = if one_line {
-            let mut job = LayoutJob::simple_singleline(text.to_string(), font, color);
-            job.wrap = TextWrapping::truncate_at_width(text_w);
-            clipped.layout_job(job)
-        } else {
-            clipped.layout(text.to_string(), font, color, text_w)
-        };
+    for (galley, color) in lines {
         clipped.galley(pos2(rect.center().x - galley.size().x / 2.0, y), galley.clone(), color);
         y += galley.size().y + 4.0;
-    };
-    line(&tile.name, FontId::proportional(20.0), fg, true);
-    if let Some(c) = &tile.comment {
-        line(c, FontId::proportional(14.0), t.palette.muted_foreground, true);
-    }
-    if let Some(why) = &tile.problem {
-        line(why, FontId::monospace(13.0), WARN, false);
-    }
-    if let Some(note) = &tile.note {
-        line(note, FontId::monospace(12.0), t.palette.muted_foreground, false);
-    }
-    if let Origin::Reworded { ignored } = &tile.origin {
-        let text = if ignored.is_empty() {
-            "reworded".to_string()
-        } else {
-            format!("reworded; ignored: {}", ignored.join(", "))
-        };
-        line(&text, FontId::monospace(12.0), t.palette.muted_foreground, false);
     }
     if tile.origin == Origin::User {
         p.text(
@@ -579,5 +590,101 @@ mod tests {
             .unwrap();
         assert!(text.starts_with("12:34:56"), "{text}");
         assert!(text.contains("Tool | hello-log"), "{text}");
+    }
+
+    fn plain_tile(name: &str) -> Tile {
+        Tile {
+            file: format!("{name}.desktop"),
+            name: name.into(),
+            comment: None,
+            icon: None,
+            action: Action::Run,
+            argv: vec!["x".into()],
+            terminal: false,
+            save_on_exit: false,
+            origin: Origin::Shipped,
+            problem: None,
+            note: None,
+        }
+    }
+
+    // `layout()` was right while the drawn grid sat a GAP above and left of
+    // it: the screenshot of 2026-10-08 showed the top row touching the screen
+    // edge. This checks the painted tiles, not the computed rectangle.
+    #[test]
+    fn the_painted_grid_is_where_the_layout_puts_it_with_centred_content() {
+        let names = ["T0", "T1", "T2", "T3", "T4", "T5"];
+        let menu = Menu::new(
+            Grid {
+                tiles: names.iter().map(|n| plain_tile(n)).collect(),
+                banner: vec![],
+            },
+            false,
+        );
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(screen(1280.0, 720.0)),
+            ..Default::default()
+        };
+        let icons: Vec<_> = names.iter().map(|_| None).collect();
+        let mut out = None;
+        for _ in 0..2 {
+            let mut o = ctx.run_ui(input.clone(), |ui| {
+                show(ui, &menu, &icons, Instant::now());
+            });
+            o.textures_delta.clear();
+            out = Some(o);
+        }
+        let out = out.unwrap();
+        let l = layout(screen(1280.0, 720.0), names.len());
+        let tiles: Vec<Rect> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r)
+                    if r.fill != Color32::TRANSPARENT && (r.rect.size() - Vec2::splat(l.side)).length() < 0.5 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tiles.len(), names.len(), "one square per tile");
+        let painted = tiles.iter().fold(Rect::NOTHING, |a, r| a.union(*r));
+        assert!(
+            (painted.min - l.grid.min).length() < 0.5 && (painted.max - l.grid.max).length() < 0.5,
+            "painted {painted:?}, layout {:?}",
+            l.grid
+        );
+        assert!(painted.top() >= GAP, "{painted:?}");
+        assert!((painted.center().x - 640.0).abs() < 0.5, "{painted:?}");
+        // The letter placeholder and the name, as one block, sit in the
+        // middle of the tile, not in its top half.
+        let tile = tiles.iter().find(|r| r.contains(painted.min + Vec2::splat(1.0))).unwrap();
+        let name = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "T0" => Some(Rect::from_min_size(t.pos, t.galley.size())),
+                _ => None,
+            })
+            .unwrap();
+        let icon = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r)
+                    if r.fill != Color32::TRANSPARENT && tile.contains_rect(r.rect) && r.rect.width() < l.side - 1.0 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("letter placeholder drawn");
+        assert_eq!(icon.top(), icon.top().round(), "icon on a whole pixel");
+        let above = icon.top() - tile.top();
+        let below = tile.bottom() - name.bottom();
+        assert!((above - below).abs() <= 1.0, "content {above} from the top, {below} from the bottom");
     }
 }
