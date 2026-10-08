@@ -76,10 +76,13 @@ The boot process involves several interconnected components:
 
 5. **Home Persistence** - the initramfs restores the home directory before
    the pivot (`restore_home()` in the dracut module). `dbrrg-menu` saves it
-   (`dbrrg-save-home`), behind its dialog: from the Log out tile before the
-   menu exits 0 (a failed save asks Stay / Log out anyway), after a tile with
-   `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) exits, and from the Back up
-   home tile. `dbrrg-session` never saves.
+   (`dbrrg-save-home`). Saves after a tile with `X-DBRRG-Save-On-Exit=true`
+   (ThinLinc, oxulnk) exits and from the Back up home tile run in the
+   background, one at a time, with at most one more queued. The Log out tile
+   asks Stay / Stop them and log out while programs run (SIGTERM to each
+   process group, SIGKILL after 5 s), waits for a running save, then saves
+   behind its dialog before the menu exits 0 (a failed save asks Stay / Log
+   out anyway). `dbrrg-session` never saves.
 
 ## Key Configuration Files
 
@@ -101,7 +104,10 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - System services: `overlay/etc/systemd/system/`
 - Network configuration: `overlay/etc/netplan/`
 - SSH configuration: `overlay/etc/ssh/sshd_config.d/`
-- Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory)
+- Session/compositor: `overlay/etc/dbrrg/labwc/` (`rc.xml`, `environment`) - kept outside `$HOME` because home is captured/restored wholesale by the persistence machinery, see [Persistent Home Directory](#persistent-home-directory).
+  `rc.xml` also holds the window rule that keeps the window with app_id
+  `dbrrg-menu` at the bottom (`ToggleAlwaysOnBottom`) and out of the taskbar
+  (`skipTaskbar`).
 - Taskbar: `overlay/etc/dbrrg/waybar/` (`config.jsonc`, `style.css`) - a
   single `wlr/taskbar` module, launched by `dbrrg-session`. It exists
   because labwc draws an iconify button and, with zero keybindings and no
@@ -114,7 +120,10 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
 - Tiles: the shipped tiles are `.desktop` files in `overlay/etc/dbrrg/menu/`,
   outside `$HOME` for the reason `rc.xml` is. Per-machine tiles go in
   `~/.config/dbrrg/menu/*.desktop`: at most 32 files, and they may only `run`
-  a program. A user file named like a shipped one may reword `Name`, `Comment`
+  a program. `X-DBRRG-Multiple=true` lets a run tile start again while a
+  copy of it still runs (ThinLinc, oxulnk and Terminal set it); without it a
+  tile runs once at a time. A user file rewording a shipped tile cannot set
+  it. A user file named like a shipped one may reword `Name`, `Comment`
   and `Icon` only; its other keys are ignored. The files travel with the home
   directory through `save-home`.
   `Icon=` is user data the menu parses on every boot, so each icon renders
@@ -215,11 +224,14 @@ The system implements home directory persistence across reboots:
   `/run/dbrrg/state/boot-mac` — the interface the initramfs actually used —
   rather than by re-deriving it, so restore and save cannot disagree.
 - On logout: `dbrrg-menu` runs `/usr/bin/dbrrg-save-home`, which saves the home
-  directory back to USB or uploads it to the boot server via HTTP POST. The
-  menu does this behind its dialog in three places: the Log out tile (before
-  the menu exits 0; a failed save asks Stay / Log out anyway), a tile with
-  `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program exits, and
-  the Back up home tile. The menu greys the save tile out when
+  directory back to USB or uploads it to the boot server via HTTP POST. A
+  tile with `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program
+  exits and the Back up home tile save in the background, one at a time,
+  with at most one more queued; no dialog. The Log out tile asks Stay / Stop
+  them and log out while programs run (SIGTERM to each process group,
+  SIGKILL after 5 s), waits for a running save, then saves behind its dialog
+  before the menu exits 0; a failed save asks Stay / Log out anyway. A
+  program stopped this way gets no Save-On-Exit save. The menu greys the save tile out when
   `/run/dbrrg/state/home-restore` says `failed`; after a Save-On-Exit tile
   exits on such a boot, the save is skipped with a line in the menu's log.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd
@@ -766,11 +778,12 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
 ### Menu limits
 
 - The grid is on one monitor. The span patch covers Xwayland windows only.
-- A tile whose program never exits and opens no window keeps the menu busy
-  with no way to cancel.
 - Clicking a tile is not covered by the headless runtime test, which has no
-  input devices. The logout dialog and its Stay / Log out anyway buttons are
-  proven by unit tests of the state machine only.
+  input devices. The logout dialogs and their buttons (Stay / Stop them and
+  log out, Stay / Log out anyway) are proven by unit tests of the state
+  machine only.
+- Program output keeps its SGR colours (16, 256, RGB, bold); other escape
+  sequences are removed. At most 64 colour runs per line.
 - Full-colour theme icons with drop shadows draw the letter, because
   filters are refused: 15 of 70 Adwaita `scalable` and 53 of 425 hicolor
   `scalable` icons on a desktop host. Every Adwaita symbolic icon, the
@@ -782,6 +795,9 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
 - **Confirmed on hardware (2026-10-07):** tiles start their programs,
   Save-On-Exit, Back up home and the logout Stay / Log out anyway dialog
   work. The square tiles and the log area have not been run on hardware.
+- Not seen on hardware: two programs at once, Stop them and log out, the
+  colours of a real `oxulnk-desktop` log, the menu staying behind a clicked
+  program.
 
 ### Screen blanking had to be rebuilt after the X11 removal
 
@@ -869,8 +885,10 @@ bounds are fixed in `src/dbrrg-menu/src/log.rs`: lines are cut at 1 KiB, the
 log and the queue from the reader threads keep 500 lines each, and output
 wakes the menu at most ten times a second. A program's last lines appear
 before its exit line; a background child that keeps the pipes open delays
-the tile by at most 300 ms, and its later lines are still logged. Every log
-line also goes to stderr, so the session log has all of it.
+the tile by at most 300 ms, and its later lines are still logged. Colours a
+program writes (SGR) are drawn; other escape sequences are removed. Every log
+line also goes to stderr, as plain text without escape sequences, so the
+session log has all of it.
 
 ### The session waits for the GPU before it starts
 
