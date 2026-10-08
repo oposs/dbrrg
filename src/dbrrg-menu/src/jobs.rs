@@ -1,8 +1,9 @@
 //! The work a tile starts: running a program, saving the home directory.
-//! Both run on a worker thread; the event loop keeps answering the
-//! compositor while they do. dbrrg-save-home on a netbooted machine can
-//! spend 60 seconds pinging before it starts, and a window that stops
-//! answering frame callbacks for that long looks dead.
+//! Each runs on a worker thread of its own, several programs at once, in
+//! the background; the event loop keeps answering the compositor while
+//! they do. dbrrg-save-home on a netbooted machine can spend 60 seconds
+//! pinging before it starts, and a window that stops answering frame
+//! callbacks for that long looks dead.
 
 use crate::log::{Feed, Kind, Line, Run, Splitter, local_time};
 use std::io::{ErrorKind, Read};
@@ -75,17 +76,52 @@ pub fn restore_failed(state_dir: &Path) -> bool {
     std::fs::read_to_string(state_dir.join("home-restore")).is_ok_and(|s| s.trim() == "failed")
 }
 
+/// Names one started program, so its start, its output and its end can be
+/// matched while others run.
+pub type JobId = u64;
+
 /// What finished, handed back to the event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobResult {
     Saved(SaveOutcome),
+    /// The program runs, in a process group of its own with this id.
+    Started {
+        id: JobId,
+        pgid: i32,
+    },
     /// `status` is the exit code, `Ok(None)` for a signal, `Err` when the
     /// program could not be started.
     Ran {
-        name: String,
+        id: JobId,
         status: Result<Option<i32>, String>,
-        save_on_exit: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    Term,
+    Kill,
+}
+
+/// The `kill` target for a process group, or `None` when the id cannot be
+/// one this menu started: 0 would signal the menu's own group and 1 (as -1)
+/// every process of the user.
+pub fn stop_target(pgid: i32) -> Option<i32> {
+    (pgid > 1).then_some(-pgid)
+}
+
+/// Signal a program and everything it started. A group that is already
+/// gone is not an error.
+pub fn stop(pgid: i32, signal: Signal) {
+    let Some(target) = stop_target(pgid) else { return };
+    let sig = match signal {
+        Signal::Term => libc::SIGTERM,
+        Signal::Kill => libc::SIGKILL,
+    };
+    // SAFETY: kill has no memory preconditions; ESRCH is ignored.
+    unsafe {
+        libc::kill(target, sig);
+    }
 }
 
 pub struct Paths {
@@ -119,12 +155,18 @@ fn pump(mut pipe: impl Read, source: String, feed: Arc<Feed>, done: Sender<()>) 
 
 /// Start `cmd` with stdout and stderr each read by a thread of its own into
 /// the feed, wait for it, then give its output `DRAIN_GRACE` to arrive.
-fn run_logged(mut cmd: Command, source: &str, feed: &Arc<Feed>) -> std::io::Result<ExitStatus> {
+fn run_logged(
+    mut cmd: Command,
+    source: &str,
+    feed: &Arc<Feed>,
+    on_spawn: impl FnOnce(u32),
+) -> std::io::Result<ExitStatus> {
     let mut child: Child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    on_spawn(child.id());
     let (tx, rx): (Sender<()>, Receiver<()>) = mpsc::channel();
     let mut pumps = 0;
     if let Some(out) = child.stdout.take() {
@@ -152,26 +194,24 @@ fn run_logged(mut cmd: Command, source: &str, feed: &Arc<Feed>) -> std::io::Resu
 
 /// Run dbrrg-save-home. Its output goes to the log as "save-home".
 pub fn save(paths: &Paths, feed: &Arc<Feed>) -> SaveOutcome {
-    match run_logged(Command::new(&paths.save_home), "save-home", feed) {
+    match run_logged(Command::new(&paths.save_home), "save-home", feed, |_| {}) {
         Ok(st) => SaveOutcome::from_status(st.code()),
         Err(e) => SaveOutcome::Broken(format!("{} could not be started: {e}", paths.save_home.display())),
     }
 }
 
 /// Run a tile's program and wait for it; its output goes to the log under
-/// the tile's name. The save that may follow is a separate job, so the grid
-/// can show the save dialog for it.
-pub fn run(name: &str, argv: &[String], save_on_exit: bool, feed: &Arc<Feed>) -> JobResult {
+/// the tile's name. The program gets a process group of its own, whose id
+/// `on_spawn` receives before the wait, so a logout can stop it together
+/// with everything it started.
+pub fn run(id: JobId, name: &str, argv: &[String], feed: &Arc<Feed>, on_spawn: impl FnOnce(i32)) -> JobResult {
+    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
-    let status = run_logged(cmd, name, feed)
+    cmd.args(&argv[1..]).process_group(0);
+    let status = run_logged(cmd, name, feed, |pid| on_spawn(pid as i32))
         .map(|st| st.code())
         .map_err(|e| format!("{} could not be started: {e}", argv[0]));
-    JobResult::Ran {
-        name: name.to_string(),
-        status,
-        save_on_exit,
-    }
+    JobResult::Ran { id, status }
 }
 
 #[cfg(test)]
@@ -256,19 +296,23 @@ mod tests {
     fn run_reports_the_exit_status() {
         let argv: Vec<String> = ["/bin/sh", "-c", "exit 7"].map(String::from).to_vec();
         assert_eq!(
-            run("P", &argv, true, &Arc::new(Feed::default())),
+            run(1, "P", &argv, &Arc::new(Feed::default()), |_| {}),
             JobResult::Ran {
-                name: "P".into(),
+                id: 1,
                 status: Ok(Some(7)),
-                save_on_exit: true
             }
         );
     }
 
     #[test]
     fn run_reports_a_program_that_cannot_start() {
-        let JobResult::Ran { status, .. } = run("X", &["/nonexistent/prog".into()], false, &Arc::new(Feed::default()))
-        else {
+        let JobResult::Ran { status, .. } = run(
+            1,
+            "X",
+            &["/nonexistent/prog".into()],
+            &Arc::new(Feed::default()),
+            |_| {},
+        ) else {
             panic!()
         };
         assert!(status.unwrap_err().contains("could not be started"));
@@ -281,7 +325,7 @@ mod tests {
     #[test]
     fn run_streams_stdout_and_stderr_into_the_feed() {
         let feed = Arc::new(Feed::default());
-        run("Tool", &sh("echo out; echo err >&2; exit 3"), false, &feed);
+        run(1, "Tool", &sh("echo out; echo err >&2; exit 3"), &feed, |_| {});
         let mut got: Vec<_> = feed
             .drain()
             .into_iter()
@@ -303,10 +347,11 @@ mod tests {
         // The exit is logged after the program's last lines, not before.
         let feed = Arc::new(Feed::default());
         run(
+            1,
             "Tool",
             &sh("i=0; while [ $i -lt 200 ]; do echo line$i; i=$((i+1)); done"),
-            false,
             &feed,
+            |_| {},
         );
         let got = feed.drain();
         assert_eq!(got.len(), 200);
@@ -317,10 +362,11 @@ mod tests {
     fn a_long_line_arrives_cut() {
         let feed = Arc::new(Feed::default());
         run(
+            1,
             "Tool",
             &sh("head -c 100000 /dev/zero | tr '\\0' x; echo; echo after"),
-            false,
             &feed,
+            |_| {},
         );
         let got: Vec<_> = feed.drain().into_iter().map(|l| l.plain()).collect();
         assert_eq!(got, [format!("{}…", "x".repeat(LINE_BYTES)), "after".to_string()]);
@@ -330,8 +376,13 @@ mod tests {
     fn a_background_child_holding_the_pipe_does_not_hold_the_tile() {
         let feed = Arc::new(Feed::default());
         let t0 = Instant::now();
-        let JobResult::Ran { status, .. } = run("Tool", &sh("(sleep 1; echo late) & echo early; exit 0"), false, &feed)
-        else {
+        let JobResult::Ran { status, .. } = run(
+            1,
+            "Tool",
+            &sh("(sleep 1; echo late) & echo early; exit 0"),
+            &feed,
+            |_| {},
+        ) else {
             panic!()
         };
         assert_eq!(status, Ok(Some(0)));
@@ -351,6 +402,60 @@ mod tests {
             ["late"],
             "still logged"
         );
+    }
+
+    #[test]
+    fn stop_target_refuses_0_and_1() {
+        // kill(-0) is the menu's own group, kill(-1) every process the user
+        // owns. A pgid that is not known yet must never reach kill.
+        assert_eq!(stop_target(0), None);
+        assert_eq!(stop_target(1), None);
+        assert_eq!(stop_target(-5), None);
+        assert_eq!(stop_target(4242), Some(-4242));
+    }
+
+    #[test]
+    fn stopping_the_group_ends_the_program_and_its_background_child() {
+        let feed = Arc::new(Feed::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let f = feed.clone();
+        let worker = std::thread::spawn(move || {
+            run(1, "Tool", &sh("sleep 30 & echo child $!; wait"), &f, move |pgid| {
+                let _ = tx.send(pgid);
+            })
+        });
+        let pgid = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Wait for the child's pid in the output.
+        let mut child = None;
+        let t0 = Instant::now();
+        while child.is_none() && t0.elapsed() < Duration::from_secs(5) {
+            child = feed
+                .drain()
+                .into_iter()
+                .find_map(|l| l.plain().strip_prefix("child ").and_then(|p| p.parse::<i32>().ok()));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child = child.expect("child pid printed");
+        stop(pgid, Signal::Term);
+        let JobResult::Ran { status, .. } = worker.join().unwrap() else {
+            panic!()
+        };
+        assert_eq!(status, Ok(None), "ended by the signal");
+        let t0 = Instant::now();
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(child, 0) } == 0 && t0.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(unsafe { libc::kill(child, 0) }, 0, "the background child ended too");
+    }
+
+    #[test]
+    fn stopping_a_finished_group_does_nothing() {
+        let feed = Arc::new(Feed::default());
+        let mut pgid = 0;
+        run(1, "Tool", &sh("exit 0"), &feed, |p| pgid = p);
+        assert!(pgid > 1);
+        stop(pgid, Signal::Kill);
     }
 
     #[test]

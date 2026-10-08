@@ -22,7 +22,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::window::{Window, WindowId};
 
-/// How much of the grid's brightness survives behind the save dialog.
+/// How much of the grid's brightness survives behind the logout dialog.
 const DIM_KEEP: u32 = 90;
 /// The shortest time between two wake-ups for program output: a program
 /// that floods its output costs at most ten frames a second.
@@ -119,11 +119,12 @@ impl App {
         std::thread::spawn(move || {
             let result = match job {
                 Job::Save => JobResult::Saved(jobs::save(&paths, &feed)),
-                Job::Run {
-                    name,
-                    argv,
-                    save_on_exit,
-                } => jobs::run(&name, &argv, save_on_exit, &feed),
+                Job::Run { id, name, argv } => {
+                    let started = proxy.clone();
+                    jobs::run(id, &name, &argv, &feed, move |pgid| {
+                        let _ = started.send_event(Wake::Job(JobResult::Started { id, pgid }));
+                    })
+                }
             };
             // The loop is gone only when the menu is exiting; nothing to tell.
             let _ = proxy.send_event(Wake::Job(result));
@@ -133,6 +134,11 @@ impl App {
     fn apply(&mut self, effect: Option<Effect>, event_loop: &ActiveEventLoop) {
         match effect {
             Some(Effect::Start(job)) => self.start(job),
+            Some(Effect::Signal(pgids, signal)) => {
+                for pgid in pgids {
+                    jobs::stop(pgid, signal);
+                }
+            }
             Some(Effect::Exit(code)) => {
                 self.exit = Some(code);
                 event_loop.exit();
@@ -154,7 +160,7 @@ impl App {
 
         // The dialog dims the grid once, when it opens, and un-freezes it
         // when it closes. Either way every pixel must be redrawn once.
-        let saving = self.cfg.menu.busy.dialog();
+        let saving = self.cfg.menu.dialog();
         let mut force_full = false;
         if saving != self.frozen {
             if saving {
@@ -209,7 +215,7 @@ impl App {
 
         let effect = match event {
             Some(ui::UiEvent::Tile(i)) => self.cfg.menu.activate(i, now),
-            Some(ui::UiEvent::Chose(c)) => self.cfg.menu.choose(c),
+            Some(ui::UiEvent::Chose(c)) => self.cfg.menu.choose(c, now),
             None => self.cfg.menu.tick(now),
         };
         if effect.is_some() || event.is_some() {
@@ -345,7 +351,7 @@ impl ApplicationHandler<Wake> for App {
             _ => {}
         }
         // While the dialog is up, input is refused rather than handled.
-        if self.cfg.menu.busy.refuses_input() && is_input(&event) {
+        if self.cfg.menu.refuses_input() && is_input(&event) {
             return;
         }
         let resp = live.egui.on_window_event(&live.window, &event);

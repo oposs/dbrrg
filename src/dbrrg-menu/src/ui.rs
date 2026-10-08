@@ -3,7 +3,7 @@
 
 use crate::icons::{self, IconJob, IconRoots};
 use crate::log::{Ansi, Kind, Line, Log, Run};
-use crate::menu::{Busy, Choice, Menu, SaveFor};
+use crate::menu::{Choice, Logout, Menu};
 use crate::tiles::{Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
@@ -147,13 +147,53 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
     // No background fill here: the canvas restores the page colour itself,
     // and while the dialog is up it holds the frozen grid, which a fill
     // would erase. Only the dialog is drawn then.
-    match &menu.busy {
-        Busy::Saving { since, purpose } => {
-            let title = match purpose {
-                SaveFor::Backup => "Backing up your home directory",
-                SaveFor::Logout => "Saving your home directory before logging out",
-            };
-            dialog(ui, title, |ui, t| {
+    match &menu.logout {
+        Some(Logout::Confirm) => {
+            let mut chose = None;
+            dialog(ui, "Programs are still running", |ui, t| {
+                for job in &menu.jobs {
+                    ui.label(egui::RichText::new(&job.name).color(t.palette.foreground));
+                }
+                ui.label(
+                    egui::RichText::new("They are stopped before the home directory is saved.")
+                        .color(t.palette.muted_foreground),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.add(Button::new("Stay")).clicked() {
+                        chose = Some(Choice::Stay);
+                    }
+                    if ui
+                        .add(Button::new("Stop them and log out").variant(ButtonVariant::Destructive))
+                        .clicked()
+                    {
+                        chose = Some(Choice::StopAndLogOut);
+                    }
+                });
+            });
+            return chose.map(UiEvent::Chose);
+        }
+        Some(Logout::Stopping { kill_at, .. }) => {
+            dialog(ui, "Stopping programs", |ui, t| {
+                for job in &menu.jobs {
+                    ui.label(egui::RichText::new(&job.name).color(t.palette.muted_foreground));
+                }
+            });
+            // Wake for the SIGKILL deadline without any input.
+            ui.ctx()
+                .request_repaint_after(kill_at.saturating_duration_since(now).min(Duration::from_secs(1)));
+            return None;
+        }
+        Some(Logout::WaitSave) => {
+            dialog(ui, "Saving your home directory before logging out", |ui, t| {
+                ui.label(
+                    egui::RichText::new("Waiting for the backup that is running.").color(t.palette.muted_foreground),
+                );
+            });
+            return None;
+        }
+        Some(Logout::Saving { since }) => {
+            dialog(ui, "Saving your home directory before logging out", |ui, t| {
                 ui.label(
                     egui::RichText::new(elapsed(now.duration_since(*since)))
                         .size(28.0)
@@ -168,14 +208,14 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             ui.ctx().request_repaint_after(Duration::from_secs(1));
             return None;
         }
-        Busy::LoggingOut { until } => {
+        Some(Logout::Leaving { until }) => {
             dialog(ui, "Home directory saved", |ui, t| {
                 ui.label(egui::RichText::new("Logging out.").color(t.palette.muted_foreground));
             });
             ui.ctx().request_repaint_after(until.saturating_duration_since(now));
             return None;
         }
-        Busy::LogoutFailed { message } => {
+        Some(Logout::Failed { message }) => {
             let mut chose = None;
             dialog(ui, "Your home directory was not saved", |ui, t| {
                 ui.label(egui::RichText::new(message).color(WARN));
@@ -198,7 +238,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             });
             return chose.map(UiEvent::Chose);
         }
-        Busy::Idle | Busy::Running { .. } => {}
+        None => {}
     }
     let l = layout(ui.max_rect(), menu.tiles.len());
     let mut clicked = None;
@@ -216,7 +256,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
                     ui.add_space(l.grid.left() - l.area.left());
                     for (col, tile) in chunk.iter().enumerate() {
                         let index = row * COLUMNS + col;
-                        let enabled = tile.usable() && menu.busy == Busy::Idle;
+                        let enabled = menu.can_activate(index);
                         let sense = if enabled { Sense::click() } else { Sense::hover() };
                         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(l.side), sense);
                         paint_tile(
@@ -226,6 +266,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
                             icons[index].as_ref(),
                             resp.hovered() && enabled,
                             resp.has_focus(),
+                            menu.status(index).as_deref(),
                         );
                         if resp.clicked() {
                             clicked = Some(UiEvent::Tile(index));
@@ -353,7 +394,15 @@ fn log_job(line: &Line, t: &Theme) -> LayoutJob {
     job
 }
 
-fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, hovered: bool, focused: bool) {
+fn paint_tile(
+    ui: &Ui,
+    rect: Rect,
+    tile: &Tile,
+    icon: Option<&TextureHandle>,
+    hovered: bool,
+    focused: bool,
+    status: Option<&str>,
+) {
     let t = Theme::current(ui.ctx());
     let p = ui.painter();
     let usable = tile.usable();
@@ -461,6 +510,15 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, icon: Option<&TextureHandle>, ho
             "user",
             FontId::monospace(11.0),
             t.palette.muted_foreground,
+        );
+    }
+    if let Some(status) = status {
+        p.text(
+            rect.left_top() + vec2(8.0, 6.0),
+            Align2::LEFT_TOP,
+            status,
+            FontId::monospace(11.0),
+            t.palette.ring,
         );
     }
 }
@@ -818,5 +876,47 @@ mod tests {
             .unwrap();
         assert_eq!(section.format.color, ansi_color(Ansi::Basic(3)));
         assert!(!text.contains("[33m"), "{text}");
+    }
+
+    #[test]
+    fn a_running_tile_shows_its_status() {
+        let mut t1 = plain_tile("T1");
+        t1.multiple = true;
+        let mut menu = Menu::new(
+            Grid {
+                tiles: vec![plain_tile("T0"), t1],
+                banner: vec![],
+            },
+            false,
+        );
+        let now = Instant::now();
+        menu.activate(0, now);
+        menu.activate(1, now);
+        menu.activate(1, now);
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(screen(1280.0, 720.0)),
+            ..Default::default()
+        };
+        let mut out = None;
+        for _ in 0..2 {
+            let mut o = ctx.run_ui(input.clone(), |ui| {
+                show(ui, &menu, &[None, None], now);
+            });
+            o.textures_delta.clear();
+            out = Some(o);
+        }
+        let texts: Vec<String> = out
+            .unwrap()
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "running"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "2 running"), "{texts:?}");
     }
 }
