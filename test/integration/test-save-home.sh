@@ -49,6 +49,8 @@ for a in "$@"; do
     esac
     prev="$a"
 done
+# A test that looks inside the archive asks for the real tar.
+[ -n "${DBRRG_TEST_REAL_TAR:-}" ] && exec "$DBRRG_TEST_REAL_TAR" "$@"
 exit "${DBRRG_TEST_TAR_RC:-0}"
 STUB
 
@@ -98,7 +100,7 @@ exit 0
 STUB
 
 # sudo runs only the commands the USB branch uses to write the ESP (tar, gzip,
-# mv, rm), resolved through PATH so the stubbed tar and gzip are used;
+# mv, rm) and the find that looks for large files, resolved through PATH so the stubbed tar and gzip are used;
 # without that the atomicity test would be vacuous. Everything else, such as
 # dbrrg-ssh-hostkeys --stage, mount, dd and sync (a real sync would flush the
 # shared host), is logged and swallowed because an
@@ -107,15 +109,19 @@ cat >"$STUBS/sudo" <<'STUB'
 #!/bin/bash
 echo "sudo $*" >>"$DBRRG_TEST_SUDO_LOG"
 case "${1:-}" in
-    tar|gzip|mv|rm) exec "$@" ;;
+    tar|gzip|mv|rm|find) exec "$@" ;;
 esac
 exit 0
 STUB
 
-# Only -t (test) is used by the script. Report the archive as valid unless the
-# test asked for a corrupt one.
+# The script uses only -t (test): report the archive as valid unless the test
+# asked for a corrupt one. The real tar runs gzip for -z; that call goes
+# through.
+REAL_GZIP=$(command -v gzip) || { echo "FAIL - the test needs gzip" >&2; exit 1; }
+export DBRRG_TEST_REAL_GZIP="$REAL_GZIP"
 cat >"$STUBS/gzip" <<'STUB'
 #!/bin/bash
+[ "${1:-}" = "-t" ] || exec "$DBRRG_TEST_REAL_GZIP" "$@"
 [ -n "${DBRRG_TEST_GZIP_FAIL:-}" ] && exit 1
 exit 0
 STUB
@@ -556,6 +562,57 @@ else
     else
         bad "SIGHUP during the upload: exit $rc, staged '$staged', left behind '$(ls -A "$WORK/tmp")', curl reached: $([[ -e "$ready" ]] && echo yes || echo no)"
     fi
+fi
+
+# ---------------------------------------------------------------- large files
+# The archive carries configuration. A file over 10 MB is a download or a
+# binary left in the home: it is left out and named in the output, which the
+# menu shows in its log. The shipped list also leaves out ~/Downloads.
+REAL_TAR=$(command -v tar)
+big() { mkdir -p "$(dirname "$1")"; truncate -s "${2:-10485761}" "$1"; }
+setup
+echo "ro ramroot=tl/ramroot.sqsh quiet" >"$WORK/cmdline"
+mkdir -p "$WORK/esp" && : >"$WORK/esp/.test-mounted"
+rm -f "$WORK/esp/home.tar.gz"
+H="$WORK/home/tluser"
+big "$H/stray.iso"
+big "$H/.config/exact" 10485760
+big "$H/a*b"
+echo small >"$H/axb"
+big "$H/nl
+name"
+big "$H/.cache/blob"
+mkdir -p "$H/Downloads" && echo small >"$H/Downloads/note.txt"
+rc=$(DBRRG_EFI_MOUNT_OVERRIDE="$WORK/esp" \
+     DBRRG_EXCLUDE_DEFAULT_OVERRIDE="$REPO/overlay/etc/dbrrg/save-home-exclude" \
+     DBRRG_TEST_REAL_TAR="$REAL_TAR" \
+     run_save_home "$WORK/root" "$H")
+members=$("$REAL_TAR" -tzf "$WORK/esp/home.tar.gz" 2>/dev/null)
+if [[ "$rc" == 0 ]] &&
+   grep -qx './.dbrrg-sessionrc' <<<"$members" &&
+   grep -qx './.config/exact' <<<"$members" &&
+   grep -qx './axb' <<<"$members" &&
+   ! grep -q 'stray.iso\|a\*b\|^./nl\|blob\|Downloads/note' <<<"$members"; then
+    ok "files over 10 MB and ~/Downloads stay out of the archive"
+else
+    bad "large-file exclusion: exit $rc, members: $(tr '\n' ' ' <<<"$members") err: $(head -3 "$WORK/err")"
+fi
+if grep -q 'not saved.*: ./stray.iso$' "$WORK/out" &&
+   grep -q 'not saved.*: ./a\*b$' "$WORK/out" &&
+   ! grep -q 'exact\|blob' "$WORK/out"; then
+    ok "each large file left out is named, excluded ones are not"
+else
+    bad "large-file report: $(cat "$WORK/out")"
+fi
+
+# The netboot path builds the same tar arguments.
+setup
+big "$WORK/home/tluser/stray.iso"
+rc=$(run_save_home "$WORK/root" "$WORK/home/tluser")
+if [[ "$rc" == 0 ]] && grep -q -- '--exclude=./stray.iso' "$WORK/tar.log"; then
+    ok "a netboot save leaves large files out too"
+else
+    bad "netboot large-file exclusion: exit $rc, tar log: $(cat "$WORK/tar.log")"
 fi
 
 exit $fail

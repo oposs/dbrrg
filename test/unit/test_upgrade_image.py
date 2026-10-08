@@ -260,6 +260,47 @@ class TestHomeArchiveExcludes(unittest.TestCase):
     def test_no_exclude_file_at_all_still_archives(self):
         self.assertIn("./.keep/f", self._members())
 
+    def _big(self, rel, size=ui.SAVE_HOME_MAX_FILE_BYTES + 1):
+        path = self.home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            f.truncate(size)
+        return path
+
+    def test_a_file_larger_than_the_limit_is_left_out_and_named(self):
+        self._big("stray.iso")
+        self._big(".keep/exact", ui.SAVE_HOME_MAX_FILE_BYTES)
+        with mock.patch.object(ui, "log") as log:
+            members = self._members()
+        self.assertNotIn("./stray.iso", members)
+        self.assertIn("./.keep/exact", members)
+        self.assertIn("./.keep/f", members)
+        logged = " ".join(c.args[0] for c in log.call_args_list)
+        self.assertIn("./stray.iso", logged)
+        self.assertNotIn("./.keep/exact", logged)
+
+    def test_odd_names_are_left_out_literally(self):
+        # A wildcard or a newline in a large file's name must not widen the
+        # exclude to its small neighbours.
+        self._big("a*b")
+        self._big("nl\nname")
+        (self.home / "axb").write_text("small")
+        (self.home / "nl_name").write_text("small")
+        with mock.patch.object(ui, "log"):
+            members = self._members()
+        self.assertNotIn("./a*b", members)
+        self.assertNotIn("./nl\nname", members)
+        self.assertIn("./axb", members)
+        self.assertIn("./nl_name", members)
+
+    def test_a_large_file_already_excluded_is_not_named(self):
+        self.default.write_text("./.cache\n")
+        self._big(".cache/blob")
+        with mock.patch.object(ui, "log") as log:
+            self._members()
+        self.assertNotIn(".cache/blob",
+                         " ".join(c.args[0] for c in log.call_args_list))
+
 class TestCopyHomeToDrive(unittest.TestCase):
     """The wrapper that mounts, archives and unmounts.
 
@@ -701,10 +742,14 @@ class TestHomeCopyQuestion(unittest.TestCase):
     def test_the_ab_upgrade_never_asks(self):
         with tempfile.TemporaryDirectory() as tmp:
             fw = os.path.join(tmp, "firmware")
+            os.mkdir(fw)
+            for f in ui.FIRMWARE_FILES:
+                Path(fw, f).write_text("new")
             with mock.patch("builtins.input",
                             side_effect=AssertionError("asked a question")), \
                  mock.patch.object(ui.os.path, "ismount", return_value=True), \
                  mock.patch.object(ui, "download_firmware", return_value=fw), \
+                 mock.patch.object(ui, "free_bytes", return_value=1 << 30), \
                  mock.patch.object(ui, "run_cmd"), \
                  mock.patch.object(ui, "copy_home_to_drive") as copy, \
                  contextlib.redirect_stdout(io.StringIO()):
@@ -992,6 +1037,58 @@ class TestAbUpgradeBootDefault(unittest.TestCase):
         self.assertTrue((self.esp / "tl" / "ramroot.sqsh").is_file())
         self.assertFalse((self.esp / "tl.new").exists())
         self.assertEqual(self.defaults(), ["DEFAULT current", "DEFAULT current"])
+
+
+class TestAbUpgradeSpace(TestAbUpgradeBootDefault):
+    """A stick holds at most two releases: tl.old goes before tl.new is staged."""
+
+    def test_the_boot_drive_drops_tl_old_before_staging(self):
+        (self.esp / "tl.old").mkdir()
+        (self.esp / "tl.old" / "ramroot.sqsh").write_text("older")
+        seen = []
+        run = ui.run_cmd
+        def spy(cmd, *a, **kw):
+            if cmd[0] == "cp":
+                seen.append((self.esp / "tl.old").exists())
+            return run(cmd, *a, **kw)
+        with mock.patch.object(ui, "run_cmd", side_effect=spy), \
+             contextlib.redirect_stdout(io.StringIO()):
+            ui.do_ab_upgrade(self.drive(True), "http://example.invalid")
+        self.assertTrue(seen)
+        self.assertNotIn(True, seen)
+        self.assertTrue((self.esp / "tl").is_dir())
+        self.assertTrue((self.esp / "tl.new" / "ramroot.sqsh").is_file())
+
+    def test_too_little_space_stops_before_any_change(self):
+        # An empty tl.old frees nothing.
+        (self.esp / "tl.old").mkdir()
+        with mock.patch.object(ui, "free_bytes", return_value=0), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err, \
+             self.assertRaises(SystemExit):
+            ui.do_ab_upgrade(self.drive(True), "http://example.invalid")
+        self.assertTrue((self.esp / "tl.old").is_dir())
+        self.assertFalse((self.esp / "tl.new").exists())
+        self.assertEqual(self.defaults(), ["DEFAULT current", "DEFAULT current"])
+        self.assertIn("space", err.getvalue())
+
+    def test_space_freed_by_tl_old_counts(self):
+        # 4 KiB per file on disk is reclaimable from tl.old; with nothing free
+        # otherwise the upgrade still fits.
+        (self.esp / "tl.old").mkdir()
+        for f in ui.FIRMWARE_FILES:
+            (self.esp / "tl.old" / f).write_bytes(b"x" * 4096)
+        with mock.patch.object(ui, "free_bytes", return_value=0), \
+             contextlib.redirect_stdout(io.StringIO()):
+            ui.do_ab_upgrade(self.drive(True), "http://example.invalid")
+        self.assertTrue((self.esp / "tl.new" / "ramroot.sqsh").is_file())
+
+    def test_the_staged_message_names_the_current_entry(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ui.do_ab_upgrade(self.drive(True), "http://example.invalid")
+        self.assertIn("'current'", out.getvalue())
+        self.assertNotIn("'previous'", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
 # NUC7i3BNK's home held a 233 MB Claude Code binary and a large ~/.cache,
 # turning a 22 MB archive into several hundred MB.
 ./.cache
+./Downloads
 ./.local/share/claude/versions
 ./.local/share/Trash
 ./.thumbnails

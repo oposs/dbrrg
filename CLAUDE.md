@@ -264,7 +264,15 @@ The system implements home directory persistence across reboots:
 - `dbrrg-save-home` leaves out what makes the archive slow to unpack on every
   boot (a 233MB Claude binary did this): patterns come from
   `~/.save-home-exclude`, falling back to `/etc/dbrrg/save-home-exclude`, and
-  a user file replaces the shipped one rather than extending it.
+  a user file replaces the shipped one rather than extending it. The shipped
+  list leaves out `~/Downloads`.
+- The archive is for configuration, not data: every regular file over
+  10 MB is left out, whatever the exclude list says, and named on stdout
+  (`dbrrg: not saved (NN MB, over 10 MB): ./path`), which the menu log
+  shows. Files the exclude list already leaves out are not named. A newline
+  in such a file's name becomes `?` in the tar pattern, so a small file
+  differing from it only there is left out too. `upgrade-image`'s home copy
+  applies the same limit (`SAVE_HOME_MAX_FILE_BYTES`).
 - On USB it writes to the ESP the initramfs already mounted at
   `/run/dbrrg/storage/efi`, never a second mount by partlabel - every stick
   carries that label, so with two sticks plugged in the home can land on the
@@ -766,6 +774,17 @@ upgrade. Staging such an older image with the new `upgrade-image` (a
 downgrade) boots it from `tl.new/`, where its initramfs rotates
 unconditionally and then fails to find `tl.new/ramroot.sqsh`; type `current`
 at the boot prompt, and set `DEFAULT current` in both copies by hand.
+
+A stick holds at most two releases. One release (`vmlinuz`, `initrd.img`,
+`ramroot.sqsh`) was 775 MB in 2026-10, and the ESP was 2000 MB: with
+`tl.old/` still present, staging `tl.new/` needed room for three and failed.
+`upgrade-image` therefore removes `tl.old/` before it stages `tl.new/`;
+while an upgrade is staged the fallback is `tl/`, the `current` entry. Before
+it removes anything it checks that free space plus `tl.old/` and `tl.new/`
+holds the release plus 10 %, and stops with "Nothing was changed" if not.
+New images get a 3000 MB ESP (`EFI_PARTITION_SIZE`): two releases, two home
+archives during a save, and room to grow. A fresh install therefore needs a
+stick of 4 GB or more; sticks already in the field keep their 2000 MB.
 
 `test/unit/test_upgrade_image.py` (via `make test-unit`) and
 `test/integration/test-initramfs-home.sh` guard both halves, and `make

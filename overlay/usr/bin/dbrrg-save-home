@@ -136,6 +136,50 @@ if [ "$DBRRG_RESTORE_STATE" = "failed" ]; then
   exit 2
 fi
 
+# Leave out every file over 10 MB, and name it.
+#
+# The archive is for configuration: WiFi, ThinLinc settings, keys, dotfiles.
+# A file this size is a download, an image or a binary left in the home, and
+# every boot would pay for unpacking it (see the exclude list above). Each one
+# left out gets a line on stdout, which the menu shows in its log.
+#
+# find skips what the exclude list already leaves out, so a large file in
+# ~/.cache is not reported. A pattern without a leading ./ gets */ in front,
+# which approximates tar's unanchored match; a near miss costs a report line.
+#
+# The names reach tar as --exclude patterns, so * ? [ ] \ are escaped. A
+# newline cannot travel in a line and becomes ?, which matches any one
+# character: a small file whose name differs from a large one only there is
+# left out with it.
+DBRRG_SAVE_HOME_MAX_BYTES=10485760
+dsh_large_files() {
+  set --
+  if [ -r "$EXCLUDE_FILE" ]; then
+    while IFS= read -r _dsh_lf_pat || [ -n "$_dsh_lf_pat" ]; do
+      case "$_dsh_lf_pat" in
+        ''|'#'*) continue ;;
+        ./*|/*) ;;
+        *) _dsh_lf_pat="*/$_dsh_lf_pat" ;;
+      esac
+      [ $# -gt 0 ] && set -- "$@" -o
+      set -- "$@" -path "$_dsh_lf_pat"
+    done <"$EXCLUDE_FILE"
+  fi
+  [ $# -gt 0 ] && set -- \( "$@" \) -prune -o
+  # As root, like tar: a directory tluser cannot read is still archived.
+  sudo find . "$@" -type f -size +"${DBRRG_SAVE_HOME_MAX_BYTES}"c \
+    -printf '%s\t%p\0' | sed -z 's/[][\\*?]/\\&/g' | tr '\n\0' '?\n'
+}
+_dsh_large=$(dsh_large_files)
+_dsh_tab=$(printf '\t')
+while IFS="$_dsh_tab" read -r _dsh_size _dsh_pat; do
+  [ -n "$_dsh_pat" ] || continue
+  set -- "$@" "--exclude=$_dsh_pat"
+  echo "dbrrg: not saved ($((_dsh_size / 1048576)) MB, over 10 MB): $(printf '%s' "$_dsh_pat" | sed 's/\\\(.\)/\1/g')"
+done <<EOF
+$_dsh_large
+EOF
+
 # Capture the live SSH host keys into the home directory so they travel with
 # the archive. This is the ONLY place they are persisted - see
 # /usr/bin/dbrrg-ssh-hostkeys and CLAUDE.md.

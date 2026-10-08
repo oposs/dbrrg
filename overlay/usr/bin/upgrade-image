@@ -7,11 +7,13 @@ Supports A/B updates for existing dbrrg drives, or fresh install for new drives.
 """
 
 import atexit
+import fnmatch
 import glob
 import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,12 @@ SAVE_HOME_EXCLUDE_DEFAULT = "/etc/dbrrg/save-home-exclude"
 # ~/.dbrrg-password is deliberately NOT here: the user set it for remote
 # access and it travels with the home on purpose.
 IDENTITY_EXCLUDES = ("./.dbrrg-ssh-host-keys", "./wg0.conf")
+# The home archive carries configuration, not data. A file above this size is
+# a download or a binary left in the home; dbrrg-save-home uses the same limit.
+SAVE_HOME_MAX_FILE_BYTES = 10 * 1024 * 1024
+# Room asked for beyond the release's own size: FAT cluster slack, and a
+# release that is a little bigger than the one measured.
+UPGRADE_SPACE_MARGIN = 1.1
 # udev may not have re-read the partition table yet, right after partprobe on
 # a drive that was just written byte for byte.
 EFI_RETRY_SECONDS = 15
@@ -507,6 +515,24 @@ def set_boot_default(efi_mount: str, label: str) -> None:
         os.replace(tmp, path)
 
 
+def free_bytes(path: str) -> int:
+    """Bytes an unprivileged writer can still put on the filesystem at path."""
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def tree_bytes(path: str) -> int:
+    """Bytes the files below path occupy on disk; 0 when it does not exist."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
 def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
     """Perform A/B upgrade on existing dbrrg drive"""
 
@@ -538,9 +564,28 @@ def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
     tl_old_path = os.path.join(efi_mount, "tl.old")
     tl_new_path = os.path.join(efi_mount, "tl.new")
 
+    # Both paths remove tl.old and tl.new before they write, so their space
+    # counts as free. Checked before anything is removed: a stick that cannot
+    # take the release keeps its fallback.
+    need = int(sum(os.path.getsize(os.path.join(firmware_dir, f))
+                   for f in FIRMWARE_FILES) * UPGRADE_SPACE_MARGIN)
+    have = free_bytes(efi_mount) + tree_bytes(tl_old_path) + tree_bytes(tl_new_path)
+    if have < need:
+        die(f"Not enough space on {drive.device}: the new release needs "
+            f"{need // (1024 * 1024)} MB, {have // (1024 * 1024)} MB can be made "
+            f"free. Nothing was changed.")
+
     if drive.is_boot:
-        # Additive upgrade - write to tl.new/, finalized on next boot
+        # Additive upgrade - write to tl.new/, finalized on next boot.
+        #
+        # tl.old goes first. The rotation on the next boot removes it anyway,
+        # and with it in place the stick needed room for three releases: at
+        # 775 MB each that does not fit a 2000 MB partition. While tl.new is
+        # staged the fallback is tl/, the "current" entry.
         log("Installing firmware to tl.new/ (will activate on reboot)...")
+
+        if os.path.exists(tl_old_path):
+            run_cmd(["rm", "-rf", tl_old_path])
 
         if os.path.exists(tl_new_path):
             run_cmd(["rm", "-rf", tl_new_path])
@@ -586,7 +631,7 @@ def do_ab_upgrade(drive: DriveInfo, base_url: str) -> None:
 
     if drive.is_boot:
         log("Upgrade staged! Reboot to activate new firmware.")
-        log("If new version fails, select 'previous' at boot menu.")
+        log("If the new version fails, type 'current' at the boot prompt.")
     else:
         log("Upgrade complete! Previous version saved as fallback.")
 
@@ -608,15 +653,65 @@ def load_exclude_patterns(home_dir: str) -> List[str]:
     return [ln for ln in lines if ln and not ln.startswith("#")]
 
 
+def _excluded(rel: str, patterns: List[str]) -> bool:
+    """Approximately tar's --exclude match for a "./"-relative member name.
+
+    A pattern starting with "./" matches the whole name, anything else a
+    trailing part after a slash; "*" matches "/" as it does in tar. Used only
+    to skip what tar will leave out anyway, so a near miss costs a log line.
+    """
+    return any(
+        fnmatch.fnmatchcase(rel, p if p.startswith("./") else "*/" + p)
+        for p in patterns
+    )
+
+
+def large_files(home_dir: str, patterns: List[str]) -> List[Tuple[int, str]]:
+    """(size, "./"-relative name) of each regular file above the size limit.
+
+    Directories and files the patterns exclude are skipped, and symlinks are
+    not followed.
+    """
+    found = []
+    for root, dirs, files in os.walk(home_dir):
+        rel_root = "." + root[len(home_dir):]
+        dirs[:] = [d for d in dirs
+                   if not _excluded(f"{rel_root}/{d}", patterns)]
+        for name in files:
+            rel = f"{rel_root}/{name}"
+            if _excluded(rel, patterns):
+                continue
+            try:
+                st = os.lstat(os.path.join(root, name))
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and st.st_size > SAVE_HOME_MAX_FILE_BYTES:
+                found.append((st.st_size, rel))
+    return sorted(found, key=lambda f: f[1])
+
+
+def tar_literal(name: str) -> str:
+    """An --exclude pattern that matches exactly this name: wildcard
+    characters are escaped. A newline needs nothing, as an argument carries it.
+    """
+    return re.sub(r"([\\*?\[\]])", r"\\\1", name)
+
+
 def home_archive_argv(home_dir: str, dest: str) -> List[str]:
     """Build the tar command line for a new stick's home.tar.gz.
 
     restore_home() in the initramfs unpacks this archive into the home
     directory itself, so the members must be relative: -C <home> with a bare
-    ".". The excludes are the save-home list plus IDENTITY_EXCLUDES.
+    ".". The excludes are the save-home list plus IDENTITY_EXCLUDES, plus
+    every file above SAVE_HOME_MAX_FILE_BYTES, each one named in the log.
     """
-    excludes = [f"--exclude={p}" for p in load_exclude_patterns(home_dir)]
-    excludes += [f"--exclude={p}" for p in IDENTITY_EXCLUDES]
+    patterns = load_exclude_patterns(home_dir) + list(IDENTITY_EXCLUDES)
+    excludes = [f"--exclude={p}" for p in patterns]
+    limit_mb = SAVE_HOME_MAX_FILE_BYTES // (1024 * 1024)
+    for size, rel in large_files(home_dir, patterns):
+        log(f"not copied ({size // (1024 * 1024)} MB, over {limit_mb} MB): "
+            f"{rel.replace(chr(10), '?')}")
+        excludes.append(f"--exclude={tar_literal(rel)}")
     return ["tar", "-C", home_dir, *excludes, "-czf", dest, "."]
 
 

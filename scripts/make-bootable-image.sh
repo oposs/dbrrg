@@ -5,7 +5,7 @@ set -euo pipefail
 
 source /scripts/lib/common.sh
 
-EFI_PARTITION_SIZE="${EFI_PARTITION_SIZE:-640}"
+EFI_PARTITION_SIZE="${EFI_PARTITION_SIZE:-3000}"
 VERSION="${VERSION:-dev}"
 BUILD_ID="${BUILD_ID:-unknown}"
 PROJECT_NAME="${PROJECT_NAME:-dbrrg}"

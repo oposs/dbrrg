@@ -35,7 +35,7 @@ IPXE_EFI := $(ROOTFS_DIR)/ipxe.efi
 # Configuration
 SQUASHFS_COMP ?= zstd
 SQUASHFS_COMP_LEVEL ?= 3
-EFI_PARTITION_SIZE ?= 2000
+EFI_PARTITION_SIZE ?= 3000
 
 # Local (non-archive) packages staged into the container build context.
 #
@@ -90,7 +90,7 @@ help:
 	@echo "Variables:"
 	@echo "  SQUASHFS_COMP=zstd         - Compression algorithm"
 	@echo "  SQUASHFS_COMP_LEVEL=3      - Compression level"
-	@echo "  EFI_PARTITION_SIZE=2000    - EFI partition size (MB)"
+	@echo "  EFI_PARTITION_SIZE=3000    - EFI partition size (MB)"
 	@echo "  QEMU_MEMORY=2G             - QEMU RAM allocation"
 	@echo "  QCOW2_TEST_SIZE=4G         - Size for qemu-test"
 	@echo "  QEMU_EXTRA_ARGS=\"\"          - Additional QEMU arguments"
