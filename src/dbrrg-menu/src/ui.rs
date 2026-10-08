@@ -173,15 +173,19 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             });
             return chose.map(UiEvent::Chose);
         }
-        Some(Logout::Stopping { kill_at, .. }) => {
+        Some(Logout::Stopping { kill_at, killed }) => {
             dialog(ui, "Stopping programs", |ui, t| {
                 for job in &menu.jobs {
                     ui.label(egui::RichText::new(&job.name).color(t.palette.muted_foreground));
                 }
             });
-            // Wake for the SIGKILL deadline without any input.
-            ui.ctx()
-                .request_repaint_after(kill_at.saturating_duration_since(now).min(Duration::from_secs(1)));
+            // Wake for the SIGKILL deadline without any input. After it,
+            // every remaining step arrives as a job event, which redraws;
+            // asking here would redraw at full speed until then.
+            if !killed {
+                ui.ctx()
+                    .request_repaint_after(kill_at.saturating_duration_since(now).min(Duration::from_secs(1)));
+            }
             return None;
         }
         Some(Logout::WaitSave) => {
@@ -918,5 +922,43 @@ mod tests {
             .collect();
         assert!(texts.iter().any(|t| t == "running"), "{texts:?}");
         assert!(texts.iter().any(|t| t == "2 running"), "{texts:?}");
+    }
+
+    #[test]
+    fn after_sigkill_the_stopping_dialog_does_not_spin() {
+        // Once SIGKILL is sent nothing is left to time; each remaining step
+        // arrives as a job event. A zero repaint delay here redraws at full
+        // speed until then, forever for a program stuck in D state.
+        let mut menu = Menu::new(
+            Grid {
+                tiles: vec![plain_tile("T0")],
+                banner: vec![],
+            },
+            false,
+        );
+        let now = Instant::now();
+        menu.activate(0, now);
+        menu.logout = Some(Logout::Stopping {
+            kill_at: now,
+            killed: true,
+        });
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(screen(1280.0, 720.0)),
+            ..Default::default()
+        };
+        // Time moves, so the dialog's own fade-in settles first.
+        let mut delay = Duration::ZERO;
+        for i in 0..4 {
+            let mut frame = input.clone();
+            frame.time = Some(i as f64);
+            let mut o = ctx.run_ui(frame, |ui| {
+                show(ui, &menu, &[None], now + Duration::from_secs(1));
+            });
+            o.textures_delta.clear();
+            delay = o.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        }
+        assert!(!delay.is_zero(), "repaint delay {delay:?}");
     }
 }

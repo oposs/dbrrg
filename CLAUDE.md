@@ -231,7 +231,9 @@ The system implements home directory persistence across reboots:
   them and log out while programs run (SIGTERM to each process group,
   SIGKILL after 5 s), waits for a running save, then saves behind its dialog
   before the menu exits 0; a failed save asks Stay / Log out anyway. A
-  program stopped this way gets no Save-On-Exit save. The menu greys the save tile out when
+  program stopped this way gets no Save-On-Exit save, and neither does the
+  last program ending while the question is up: the logout then goes on
+  without asking. The menu greys the save tile out when
   `/run/dbrrg/state/home-restore` says `failed`; after a Save-On-Exit tile
   exits on such a boot, the save is skipped with a line in the menu's log.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd

@@ -260,6 +260,11 @@ impl Menu {
                         None
                     };
                 }
+                // Log out was clicked and nothing is left to stop: go on
+                // without asking. The logout save covers Save-On-Exit.
+                if self.logout == Some(Logout::Confirm) && self.jobs.is_empty() {
+                    return self.logout_after_jobs(now);
+                }
                 if !self.tiles[job.tile].save_on_exit {
                     return None;
                 }
@@ -287,6 +292,11 @@ impl Menu {
                         None
                     }
                     Some(Logout::WaitSave) => self.logout_after_jobs(now),
+                    // The logout save follows; a queued one would only repeat it.
+                    Some(Logout::Stopping { .. }) => {
+                        self.save.again = false;
+                        None
+                    }
                     _ if self.save.again => {
                         self.save.again = false;
                         self.request_save()
@@ -769,5 +779,64 @@ mod tests {
         let m = Menu::new(g, false);
         assert_eq!(log(&m), [warn("Your own tiles could not be read.")]);
         assert_eq!(m.banner.len(), 1, "--check still prints it");
+    }
+
+    #[test]
+    fn a_queued_save_is_dropped_while_programs_are_stopped() {
+        // The logout save follows; a queued one would only repeat it, and on
+        // netboot each save can take a minute.
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        let a = started(&mut m, 1, now);
+        assert_eq!(m.activate(2, now), Some(Effect::Start(Job::Save)));
+        assert_eq!(m.activate(2, now), None, "not clickable while saving");
+        m.save.again = true;
+        m.activate(3, now);
+        m.choose(Choice::StopAndLogOut, now);
+        assert_eq!(
+            m.finished(JobResult::Saved(SaveOutcome::Saved), now),
+            None,
+            "no queued save"
+        );
+        assert!(!m.save.running && !m.save.again);
+        assert_eq!(
+            m.finished(
+                JobResult::Ran {
+                    id: a,
+                    status: Ok(None)
+                },
+                now
+            ),
+            Some(Effect::Start(Job::Save)),
+            "the logout save, once"
+        );
+    }
+
+    #[test]
+    fn the_last_program_ending_during_the_question_continues_the_logout() {
+        // The person asked to log out; with nothing left to stop there is
+        // nothing to ask, and the logout save covers Save-On-Exit.
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        let a = started(&mut m, 0, now);
+        m.activate(3, now);
+        assert_eq!(m.logout, Some(Logout::Confirm));
+        assert_eq!(ran(&mut m, a, 0, now), Some(Effect::Start(Job::Save)));
+        assert_eq!(m.logout, Some(Logout::Saving { since: now }));
+    }
+
+    #[test]
+    fn a_program_ending_during_the_question_with_others_left_still_saves() {
+        // The person may still choose Stay, so Save-On-Exit acts as usual;
+        // the logout then waits for that save.
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        let a = started(&mut m, 0, now);
+        let b = started(&mut m, 1, now);
+        m.activate(3, now);
+        assert_eq!(ran(&mut m, a, 0, now), Some(Effect::Start(Job::Save)));
+        assert_eq!(m.logout, Some(Logout::Confirm));
+        assert_eq!(ran(&mut m, b, 0, now), None);
+        assert_eq!(m.logout, Some(Logout::WaitSave));
     }
 }
