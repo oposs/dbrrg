@@ -140,7 +140,10 @@ fn run_logged(mut cmd: Command, source: &str, feed: &Arc<Feed>) -> std::io::Resu
     let status = child.wait();
     let deadline = Instant::now() + DRAIN_GRACE;
     for _ in 0..pumps {
-        if rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+        if rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
             break;
         }
     }
@@ -175,9 +178,9 @@ pub fn run(name: &str, argv: &[String], save_on_exit: bool, feed: &Arc<Feed>) ->
 mod tests {
     use super::*;
     use crate::log::{Feed, Kind, LINE_BYTES};
-    use std::sync::Arc;
     use crate::testdir::TestDir;
     use std::fs;
+    use std::sync::Arc;
 
     fn dir(tag: &str) -> TestDir {
         TestDir::new("jobs", tag)
@@ -243,7 +246,10 @@ mod tests {
             save_home: d.join("nope"),
             state_dir: d.to_path_buf(),
         };
-        assert!(matches!(save(&missing, &Arc::new(Feed::default())), SaveOutcome::Broken(_)));
+        assert!(matches!(
+            save(&missing, &Arc::new(Feed::default())),
+            SaveOutcome::Broken(_)
+        ));
     }
 
     #[test]
@@ -261,7 +267,8 @@ mod tests {
 
     #[test]
     fn run_reports_a_program_that_cannot_start() {
-        let JobResult::Ran { status, .. } = run("X", &["/nonexistent/prog".into()], false, &Arc::new(Feed::default())) else {
+        let JobResult::Ran { status, .. } = run("X", &["/nonexistent/prog".into()], false, &Arc::new(Feed::default()))
+        else {
             panic!()
         };
         assert!(status.unwrap_err().contains("could not be started"));
@@ -290,7 +297,12 @@ mod tests {
     fn every_line_is_in_the_feed_before_run_returns() {
         // The exit is logged after the program's last lines, not before.
         let feed = Arc::new(Feed::default());
-        run("Tool", &sh("i=0; while [ $i -lt 200 ]; do echo line$i; i=$((i+1)); done"), false, &feed);
+        run(
+            "Tool",
+            &sh("i=0; while [ $i -lt 200 ]; do echo line$i; i=$((i+1)); done"),
+            false,
+            &feed,
+        );
         let got = feed.drain();
         assert_eq!(got.len(), 200);
         assert_eq!(got[199].text, "line199");
@@ -299,7 +311,12 @@ mod tests {
     #[test]
     fn a_long_line_arrives_cut() {
         let feed = Arc::new(Feed::default());
-        run("Tool", &sh("head -c 100000 /dev/zero | tr '\\0' x; echo; echo after"), false, &feed);
+        run(
+            "Tool",
+            &sh("head -c 100000 /dev/zero | tr '\\0' x; echo; echo after"),
+            false,
+            &feed,
+        );
         let got: Vec<_> = feed.drain().into_iter().map(|l| l.text).collect();
         assert_eq!(got, [format!("{}…", "x".repeat(LINE_BYTES)), "after".to_string()]);
     }
@@ -308,8 +325,7 @@ mod tests {
     fn a_background_child_holding_the_pipe_does_not_hold_the_tile() {
         let feed = Arc::new(Feed::default());
         let t0 = Instant::now();
-        let JobResult::Ran { status, .. } =
-            run("Tool", &sh("(sleep 1; echo late) & echo early; exit 0"), false, &feed)
+        let JobResult::Ran { status, .. } = run("Tool", &sh("(sleep 1; echo late) & echo early; exit 0"), false, &feed)
         else {
             panic!()
         };
@@ -322,7 +338,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             late = feed.drain();
         }
-        assert_eq!(late.into_iter().map(|l| l.text).collect::<Vec<_>>(), ["late"], "still logged");
+        assert_eq!(
+            late.into_iter().map(|l| l.text).collect::<Vec<_>>(),
+            ["late"],
+            "still logged"
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
-    Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
-    pos2, vec2,
+    Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextFormat, TextureHandle, Ui, UiBuilder,
+    Vec2, pos2, vec2,
 };
 use egui_shadcn::Theme;
 use egui_shadcn::components::button::{Button, ButtonVariant};
@@ -265,7 +265,8 @@ fn show_log(ui: &mut Ui, log: &Log, rect: Rect) {
                         job.wrap = TextWrapping::truncate_at_width(width);
                         let galley = ui.painter().layout_job(job);
                         let y = row.center().y - galley.size().y / 2.0;
-                        ui.painter_at(row).galley(pos2(row.left(), y), galley, t.palette.foreground);
+                        ui.painter_at(row)
+                            .galley(pos2(row.left(), y), galley, t.palette.foreground);
                     }
                 });
         });
@@ -496,7 +497,12 @@ mod tests {
         assert_eq!(l.side, TILE_MAX);
         assert_eq!(l.grid.size(), vec2(3.0 * TILE_MAX + 2.0 * GAP, 2.0 * TILE_MAX + GAP));
         assert!((l.grid.center().x - 960.0).abs() < 0.5, "{:?}", l.grid);
-        assert!((l.grid.center().y - l.area.center().y).abs() < 0.5, "{:?} in {:?}", l.grid, l.area);
+        assert!(
+            (l.grid.center().y - l.area.center().y).abs() < 0.5,
+            "{:?} in {:?}",
+            l.grid,
+            l.area
+        );
         assert!(l.grid.bottom() <= l.log.top());
         assert!(l.log.height() >= 0.3 * 1080.0 - 2.0 * GAP, "{:?}", l.log);
         assert!(l.log.bottom() <= 1080.0 && l.log.left() >= 0.0 && l.log.right() <= 1920.0);
@@ -520,7 +526,11 @@ mod tests {
     #[test]
     fn many_tiles_start_at_the_top_and_overflow_downwards() {
         let l = layout(screen(1920.0, 1080.0), 38);
-        assert!(l.grid.top() >= l.area.top() && l.grid.height() > l.area.height(), "{:?}", l);
+        assert!(
+            l.grid.top() >= l.area.top() && l.grid.height() > l.area.height(),
+            "{:?}",
+            l
+        );
         assert!((l.grid.center().x - 960.0).abs() < 0.5);
     }
 
@@ -661,7 +671,10 @@ mod tests {
         assert!((painted.center().x - 640.0).abs() < 0.5, "{painted:?}");
         // The letter placeholder and the name, as one block, sit in the
         // middle of the tile, not in its top half.
-        let tile = tiles.iter().find(|r| r.contains(painted.min + Vec2::splat(1.0))).unwrap();
+        let tile = tiles
+            .iter()
+            .find(|r| r.contains(painted.min + Vec2::splat(1.0)))
+            .unwrap();
         let name = out
             .shapes
             .iter()
@@ -675,7 +688,9 @@ mod tests {
             .iter()
             .find_map(|c| match &c.shape {
                 egui::Shape::Rect(r)
-                    if r.fill != Color32::TRANSPARENT && tile.contains_rect(r.rect) && r.rect.width() < l.side - 1.0 =>
+                    if r.fill != Color32::TRANSPARENT
+                        && tile.contains_rect(r.rect)
+                        && r.rect.width() < l.side - 1.0 =>
                 {
                     Some(r.rect)
                 }
@@ -685,6 +700,9 @@ mod tests {
         assert_eq!(icon.top(), icon.top().round(), "icon on a whole pixel");
         let above = icon.top() - tile.top();
         let below = tile.bottom() - name.bottom();
-        assert!((above - below).abs() <= 1.0, "content {above} from the top, {below} from the bottom");
+        assert!(
+            (above - below).abs() <= 1.0,
+            "content {above} from the top, {below} from the bottom"
+        );
     }
 }

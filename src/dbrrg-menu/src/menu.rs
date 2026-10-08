@@ -458,7 +458,10 @@ mod tests {
         m.finished(JobResult::Saved(SaveOutcome::RestoreFailed), now);
         assert_eq!(
             log(&m),
-            [ev("Saving the home directory…"), warn(&SaveOutcome::RestoreFailed.message())]
+            [
+                ev("Saving the home directory…"),
+                warn(&SaveOutcome::RestoreFailed.message())
+            ]
         );
     }
 

@@ -270,6 +270,10 @@ mod tests {
     fn local_time_is_hh_mm_ss() {
         let t = local_time();
         assert_eq!(t.len(), 8, "{t}");
-        assert!(t.chars().enumerate().all(|(i, c)| if i == 2 || i == 5 { c == ':' } else { c.is_ascii_digit() }));
+        assert!(
+            t.chars()
+                .enumerate()
+                .all(|(i, c)| if i == 2 || i == 5 { c == ':' } else { c.is_ascii_digit() })
+        );
     }
 }
