@@ -129,6 +129,10 @@ This pattern excludes editor backup files (*~) and properly applies overlay perm
   it. A user file named like a shipped one may reword `Name`, `Comment`
   and `Icon` only; its other keys are ignored. The files travel with the home
   directory through `save-home`.
+  A user file that matches no shipped file and sets neither `Exec` nor
+  `X-DBRRG-Action` is not drawn; the banner names it. That is what a reword
+  of the old `80-logout.desktop` became when Restart and Power off replaced
+  it, and it used to draw a grey "has no Exec" tile.
   `Icon=` is user data the menu parses on every boot, so each icon renders
   in a child process, `dbrrg-menu --render-icon`, one at a time, under
   `RLIMIT_AS` 256 MiB, `RLIMIT_STACK` 256 MiB, `RLIMIT_CPU` 3 s,

@@ -298,8 +298,36 @@ fn reword(mut tile: Tile, user: &SourceFile) -> Tile {
     }
 }
 
+/// A user file that can only have been meant to reword a shipped tile, but
+/// no shipped file carries its name: it sets no Exec and no X-DBRRG-Action.
+/// 80-logout.desktop was shipped until Restart and Power off replaced it, and
+/// a machine whose user had renamed Log out kept that file in its home; the
+/// menu then drew it as a grey tile saying "has no Exec".
+fn rewords_nothing(shipped: &[SourceFile], user: &SourceFile) -> bool {
+    let Ok(entry) = &user.entry else {
+        return false;
+    };
+    entry.get("Exec").is_none() && entry.get("X-DBRRG-Action").is_none() && !shipped.iter().any(|f| f.name == user.name)
+}
+
+/// Banner lines for the user files `merge` leaves out as rewords of a tile
+/// that is no longer shipped.
+pub fn leftover_rewords(shipped: &[SourceFile], user: &[SourceFile]) -> Vec<String> {
+    user.iter()
+        .filter(|u| rewords_nothing(shipped, u))
+        .map(|u| {
+            format!(
+                "~/.config/dbrrg/menu/{} rewords a tile that is no longer shipped and runs nothing, so it is not shown.",
+                u.name
+            )
+        })
+        .collect()
+}
+
 /// Merge the two directories. Both are sorted together by file name; a user
-/// file whose name equals a shipped one (case sensitive) rewords it.
+/// file whose name equals a shipped one (case sensitive) rewords it. A user
+/// file that rewords no shipped tile and runs nothing is left out, see
+/// `leftover_rewords`.
 pub fn merge(shipped: &[SourceFile], user: &[SourceFile]) -> Vec<Tile> {
     let mut tiles: Vec<Tile> = shipped
         .iter()
@@ -315,6 +343,9 @@ pub fn merge(shipped: &[SourceFile], user: &[SourceFile]) -> Vec<Tile> {
         {
             let shipped = tiles[pos].clone();
             tiles[pos] = reword(shipped, u);
+            continue;
+        }
+        if rewords_nothing(shipped, u) {
             continue;
         }
         tiles.push(match &u.entry {
@@ -365,11 +396,13 @@ pub fn load(shipped_dir: &Path, user_dir: &Path) -> Grid {
     let user = std::panic::catch_unwind(|| {
         let user = read_dir_bounded(user_dir, MAX_USER_FILES, "~/.config/dbrrg/menu");
         let merged = merge(&shipped.files, &user.files);
-        (merged, user.notes)
+        let leftover = leftover_rewords(&shipped.files, &user.files);
+        (merged, user.notes, leftover)
     });
     match user {
-        Ok((merged, notes)) => {
+        Ok((merged, notes, leftover)) => {
             banner.extend(notes);
+            banner.extend(leftover);
             choose(shipped_only, merged, banner)
         }
         Err(_) => {
@@ -656,6 +689,69 @@ mod tests {
             Some("60-bad.desktop: line 3 is not a desktop entry line")
         );
         assert!(tiles[2].usable());
+    }
+
+    fn reboot() -> SourceFile {
+        src(
+            "80-reboot.desktop",
+            "[Desktop Entry]\nName=Restart\nIcon=rotate-ccw\nX-DBRRG-Action=reboot\n",
+        )
+    }
+
+    /// What a machine may carry from when 80-logout.desktop was shipped: a
+    /// file that only reworded it.
+    fn old_logout_reword() -> SourceFile {
+        src(
+            "80-logout.desktop",
+            "[Desktop Entry]\nName=Abmelden\nComment=Sitzung beenden\nIcon=log-out\n",
+        )
+    }
+
+    #[test]
+    fn a_reword_of_a_tile_no_longer_shipped_is_not_drawn() {
+        let tiles = merge(&[thinlinc(), reboot()], &[old_logout_reword()]);
+        let files: Vec<&str> = tiles.iter().map(|t| t.file.as_str()).collect();
+        assert_eq!(files, ["10-thinlinc.desktop", "80-reboot.desktop"]);
+        assert!(tiles.iter().all(|t| t.usable()));
+    }
+
+    #[test]
+    fn a_reword_of_a_tile_no_longer_shipped_is_named_in_the_banner() {
+        let shipped = tmpdir("orphan-shipped");
+        let user = tmpdir("orphan-user");
+        fs::write(
+            shipped.join("80-reboot.desktop"),
+            "[Desktop Entry]\nName=Restart\nX-DBRRG-Action=reboot\n",
+        )
+        .unwrap();
+        fs::write(
+            user.join("80-logout.desktop"),
+            "[Desktop Entry]\nName=Abmelden\nIcon=log-out\n",
+        )
+        .unwrap();
+        let grid = load(&shipped, &user);
+        assert_eq!(grid.tiles.len(), 1);
+        assert_eq!(grid.banner.len(), 1, "{:?}", grid.banner);
+        assert!(grid.banner[0].contains("80-logout.desktop"), "{:?}", grid.banner);
+    }
+
+    #[test]
+    fn a_user_file_without_exec_that_names_an_action_is_still_drawn_broken() {
+        // Not a leftover reword: the file asks for something, so the grey
+        // tile says why it cannot have it.
+        let tiles = merge(
+            &[],
+            &[src("60-x.desktop", "[Desktop Entry]\nName=X\nX-DBRRG-Action=logout\n")],
+        );
+        assert_eq!(tiles.len(), 1);
+        assert!(tiles[0].problem.is_some());
+    }
+
+    #[test]
+    fn a_user_run_tile_with_a_broken_exec_is_still_drawn_broken() {
+        let tiles = merge(&[], &[src("60-x.desktop", "[Desktop Entry]\nName=X\nExec=\"x\n")]);
+        assert_eq!(tiles.len(), 1);
+        assert!(tiles[0].problem.is_some());
     }
 
     #[test]
