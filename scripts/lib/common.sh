@@ -70,16 +70,22 @@ run() {
     "$@" || die "Command failed: $*"
 }
 
-# Format bytes to human readable
+# Format bytes to human readable. MB and GB carry one decimal, rounded:
+# integer division printed the 2.93 GiB USB image as "2GB".
 format_bytes() {
-    local bytes=$1
+    local bytes=$1 unit tenths
     if [ $bytes -lt 1024 ]; then
         echo "${bytes}B"
+        return
     elif [ $bytes -lt 1048576 ]; then
         echo "$((bytes / 1024))KB"
+        return
     elif [ $bytes -lt 1073741824 ]; then
-        echo "$((bytes / 1048576))MB"
+        unit=MB
+        tenths=$(((bytes * 10 + 524288) / 1048576))
     else
-        echo "$((bytes / 1073741824))GB"
+        unit=GB
+        tenths=$(((bytes * 10 + 536870912) / 1073741824))
     fi
+    echo "$((tenths / 10)).$((tenths % 10))${unit}"
 }

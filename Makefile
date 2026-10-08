@@ -403,6 +403,7 @@ test: test-unit rootfs
 	@test/integration/test-session-lifecycle.sh
 	@test/integration/test-container-stamp.sh
 	@test/integration/test-usb-image-deps.sh
+	@test/integration/test-format-bytes.sh
 	@test/integration/test-make-clean.sh
 
 # Runtime session tests. Needs network (installs python3-xlib into a
