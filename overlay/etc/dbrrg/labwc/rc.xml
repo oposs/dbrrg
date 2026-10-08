@@ -34,4 +34,14 @@
     bindings act on titlebars and the desktop, neither of which a
     fullscreen ThinLinc session presents.
   -->
+  <!--
+    dbrrg-menu is the desktop: always the bottom window, so a program
+    window can never go behind it, and never in the taskbar, where it could
+    be minimised. The menu sets this app_id in src/dbrrg-menu/src/app.rs.
+  -->
+  <windowRules>
+    <windowRule identifier="dbrrg-menu" skipTaskbar="yes">
+      <action name="ToggleAlwaysOnBottom" />
+    </windowRule>
+  </windowRules>
 </labwc_config>

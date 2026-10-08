@@ -100,6 +100,17 @@ else
     echo "ok   - rc.xml registers no keybindings"
 fi
 
+# The menu is the bottom window: a program clicked away must not go behind
+# it, and the taskbar must not offer to minimise it. Matched by app_id.
+if [[ -f "$RC/etc/dbrrg/labwc/rc.xml" ]] &&
+   tr -d '\n' < "$RC/etc/dbrrg/labwc/rc.xml" |
+   grep -qE '<windowRule[^>]*identifier="dbrrg-menu"[^>]*skipTaskbar="yes"[^>]*>[[:space:]]*<action name="ToggleAlwaysOnBottom"'; then
+    echo "ok   - rc.xml keeps dbrrg-menu at the bottom and off the taskbar"
+else
+    echo "FAIL - rc.xml has no ToggleAlwaysOnBottom/skipTaskbar rule for dbrrg-menu"
+    fail=1
+fi
+
 # The labwc in the image must be our local rebuild, not the archive version.
 # Guards against the labwc-build stage silently dropping out of the image.
 DPKG_TMP=$(mktemp -d)

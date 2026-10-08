@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::window::{Window, WindowId};
 
 /// How much of the grid's brightness survives behind the save dialog.
@@ -238,8 +239,11 @@ impl ApplicationHandler<Wake> for App {
         if self.live.is_some() {
             return;
         }
+        // The app_id labwc's window rule in /etc/dbrrg/labwc/rc.xml matches
+        // to keep the menu at the bottom and off the taskbar.
         let attrs = Window::default_attributes()
             .with_title("dbrrg-menu")
+            .with_name("dbrrg-menu", "")
             .with_decorations(false)
             .with_maximized(true);
         let window = match event_loop.create_window(attrs) {
