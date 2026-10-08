@@ -3,3 +3,4 @@ Type=Application
 Name=Terminal
 Icon=foot
 Exec=foot
+X-DBRRG-Multiple=true

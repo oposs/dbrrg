@@ -74,6 +74,8 @@ pub struct Tile {
     pub argv: Vec<String>,
     pub terminal: bool,
     pub save_on_exit: bool,
+    /// Whether the tile may run again while a copy of it still runs.
+    pub multiple: bool,
     pub origin: Origin,
     /// Set when the tile cannot be used. The grid draws it disabled with
     /// this text on it.
@@ -93,6 +95,7 @@ impl Tile {
             argv: Vec::new(),
             terminal: false,
             save_on_exit: false,
+            multiple: false,
             origin,
             problem: Some(why),
             note: None,
@@ -238,6 +241,8 @@ fn tile_from(file: &str, entry: &Entry, origin: Origin) -> Tile {
         // Ignored unless the action is run: the other actions have no
         // program, and save-home would save twice.
         save_on_exit: action == Action::Run && flag(entry, "X-DBRRG-Save-On-Exit"),
+        // Only a program can run twice; the other actions are one at a time.
+        multiple: action == Action::Run && flag(entry, "X-DBRRG-Multiple"),
         origin,
         problem: None,
         note: None,
@@ -246,7 +251,13 @@ fn tile_from(file: &str, entry: &Entry, origin: Origin) -> Tile {
 
 /// Keys only a shipped file may set. A user file that rewords a shipped tile
 /// and sets one of them still rewords it; the key is named on the tile.
-const SHIPPED_ONLY_KEYS: [&str; 4] = ["Exec", "Terminal", "X-DBRRG-Action", "X-DBRRG-Save-On-Exit"];
+const SHIPPED_ONLY_KEYS: [&str; 5] = [
+    "Exec",
+    "Terminal",
+    "X-DBRRG-Action",
+    "X-DBRRG-Save-On-Exit",
+    "X-DBRRG-Multiple",
+];
 
 fn reword(mut tile: Tile, user: &SourceFile) -> Tile {
     match &user.entry {
@@ -457,7 +468,7 @@ mod tests {
             &[src(
                 "10-thinlinc.desktop",
                 "[Desktop Entry]\nName=Firmen-Desktop\nComment=Anmelden\nIcon=foot\n\
-                 Exec=/bin/false\nTerminal=true\nX-DBRRG-Action=logout\nX-DBRRG-Save-On-Exit=false\n",
+                 Exec=/bin/false\nTerminal=true\nX-DBRRG-Action=logout\nX-DBRRG-Save-On-Exit=false\nX-DBRRG-Multiple=false\n",
             )],
         );
         assert_eq!(tiles.len(), 1);
@@ -469,6 +480,7 @@ mod tests {
         assert!(!t.terminal);
         assert_eq!(t.action, Action::Run);
         assert!(t.save_on_exit);
+        assert!(!t.multiple);
         assert_eq!(
             t.origin,
             Origin::Reworded {
@@ -476,7 +488,8 @@ mod tests {
                     "Exec".into(),
                     "Terminal".into(),
                     "X-DBRRG-Action".into(),
-                    "X-DBRRG-Save-On-Exit".into()
+                    "X-DBRRG-Save-On-Exit".into(),
+                    "X-DBRRG-Multiple".into()
                 ]
             }
         );
@@ -543,6 +556,46 @@ mod tests {
         );
         assert!(tiles[1].problem.is_some());
         assert!(tiles[2].usable());
+    }
+
+    #[test]
+    fn multiple_only_on_run_tiles() {
+        let tiles = merge(
+            &[
+                src(
+                    "10-a.desktop",
+                    "[Desktop Entry]\nName=A\nExec=a\nX-DBRRG-Multiple=true\n",
+                ),
+                src("20-b.desktop", "[Desktop Entry]\nName=B\nExec=b\n"),
+                src(
+                    "40-save-home.desktop",
+                    "[Desktop Entry]\nName=S\nX-DBRRG-Action=save-home\nX-DBRRG-Multiple=true\n",
+                ),
+            ],
+            &[src(
+                "70-u.desktop",
+                "[Desktop Entry]\nName=U\nExec=u\nX-DBRRG-Multiple=true\n",
+            )],
+        );
+        assert!(tiles[0].multiple);
+        assert!(!tiles[1].multiple, "default is one at a time");
+        assert!(!tiles[2].multiple, "not on save-home");
+        assert!(tiles[3].multiple, "a user's own run tile may set it");
+    }
+
+    #[test]
+    fn the_shipped_program_tiles_allow_several_copies() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../overlay/etc/dbrrg/menu");
+        let read = |f: &str| {
+            let text = std::fs::read_to_string(dir.join(f)).unwrap();
+            merge(&[src(f, &text)], &[]).remove(0)
+        };
+        for f in ["10-thinlinc.desktop", "20-oxulnk.desktop", "30-terminal.desktop"] {
+            assert!(read(f).multiple, "{f}");
+        }
+        for f in ["40-save-home.desktop", "50-upgrade-image.desktop", "80-logout.desktop"] {
+            assert!(!read(f).multiple, "{f}");
+        }
     }
 
     #[test]

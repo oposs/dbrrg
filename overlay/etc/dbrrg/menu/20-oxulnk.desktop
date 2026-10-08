@@ -4,3 +4,4 @@ Name=oxulnk
 Icon=oxulnk-desktop
 Exec=oxulnk-desktop
 X-DBRRG-Save-On-Exit=true
+X-DBRRG-Multiple=true
