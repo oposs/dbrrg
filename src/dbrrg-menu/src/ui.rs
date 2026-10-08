@@ -15,7 +15,9 @@ use egui_shadcn::components::button::{Button, ButtonVariant};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-pub const COLUMNS: usize = 3;
+/// Four, so the seven shipped tiles take two rows and fit above the log on
+/// 1280x720; with three columns the third row went under it.
+pub const COLUMNS: usize = 4;
 pub const GAP: f32 = 16.0;
 /// Tiles are squares of this side, smaller only when the screen is.
 pub const TILE_MAX: f32 = 220.0;
@@ -636,10 +638,10 @@ mod tests {
     }
 
     #[test]
-    fn six_tiles_on_full_hd_are_square_centred_and_above_the_log() {
-        let l = layout(screen(1920.0, 1080.0), 6);
+    fn seven_tiles_on_full_hd_are_square_centred_and_above_the_log() {
+        let l = layout(screen(1920.0, 1080.0), 7);
         assert_eq!(l.side, TILE_MAX);
-        assert_eq!(l.grid.size(), vec2(3.0 * TILE_MAX + 2.0 * GAP, 2.0 * TILE_MAX + GAP));
+        assert_eq!(l.grid.size(), vec2(4.0 * TILE_MAX + 3.0 * GAP, 2.0 * TILE_MAX + GAP));
         assert!((l.grid.center().x - 960.0).abs() < 0.5, "{:?}", l.grid);
         assert!(
             (l.grid.center().y - l.area.center().y).abs() < 0.5,
@@ -650,6 +652,13 @@ mod tests {
         assert!(l.grid.bottom() <= l.log.top());
         assert!(l.log.height() >= 0.3 * 1080.0 - 2.0 * GAP, "{:?}", l.log);
         assert!(l.log.bottom() <= 1080.0 && l.log.left() >= 0.0 && l.log.right() <= 1920.0);
+    }
+
+    #[test]
+    fn the_shipped_seven_tiles_fit_above_the_log_on_1280_by_720() {
+        let l = layout(screen(1280.0, 720.0), 7);
+        assert!(l.grid.bottom() <= l.log.top(), "{:?}", l);
+        assert!(l.grid.right() <= 1280.0, "{:?}", l);
     }
 
     #[test]
