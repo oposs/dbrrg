@@ -444,6 +444,81 @@ def download_firmware(base_url: str, work_dir: str) -> str:
     return firmware_dir
 
 
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def zstd_content_size(header: bytes) -> Optional[int]:
+    """Uncompressed size from a zstd frame header, None when it has none.
+
+    The header is at most 18 bytes: magic, Frame_Header_Descriptor, an
+    optional window byte, a 0/1/2/4-byte dictionary id and a 0/1/2/4/8-byte
+    Frame_Content_Size (RFC 8878, 3.1.1.1).
+    """
+    if len(header) < 5 or header[:4] != ZSTD_MAGIC:
+        return None
+    fhd = header[4]
+    fcs_flag = fhd >> 6
+    single_segment = bool(fhd & 0x20)
+    if fcs_flag == 0 and not single_segment:
+        return None
+    pos = 5 + (0 if single_segment else 1) + (0, 1, 2, 4)[fhd & 0x03]
+    width = (1, 2, 4, 8)[fcs_flag]
+    field = header[pos:pos + width]
+    if len(field) != width:
+        return None
+    size = int.from_bytes(field, "little")
+    return size + 256 if width == 2 else size
+
+
+def image_size(image_url: str) -> Optional[int]:
+    """Uncompressed size of the published image, None when it cannot be learned.
+
+    Only the first 18 bytes are fetched. --max-filesize makes curl give up
+    instead of downloading the whole 700 MB image from a server that ignores
+    the range and answers 200 with a Content-Length.
+    """
+    try:
+        result = subprocess.run(
+            ["curl", "-fsSL", "-r", "0-17", "--max-filesize", "4096", image_url],
+            capture_output=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return zstd_content_size(result.stdout[:18])
+
+
+def drive_size_bytes(device: str) -> Optional[int]:
+    """Size of the whole drive in bytes, None when lsblk cannot tell."""
+    try:
+        return int(get_cmd_output(["lsblk", "-bdno", "SIZE", device]))
+    except ValueError:
+        return None
+
+
+def check_drive_fits(base_url: str, device: str) -> None:
+    """Die when the image is larger than the drive, before anything is written.
+
+    dd onto a stick smaller than dbrrg-usb.img (3148873728 bytes with the
+    3000 MB ESP) wrote until the end of the device and failed, leaving a
+    partition table that points past it and a stick that does not boot.
+    An old server or a stream compressed from a pipe may not tell the size;
+    the install then goes on as before, with a warning.
+    """
+    needed = image_size(f"{base_url}/dbrrg-usb.img.zst")
+    have = drive_size_bytes(device)
+    if needed is None or have is None:
+        log("WARNING: could not learn the size of "
+            + ("the image" if needed is None else f"{device}")
+            + "; the drive is not checked for space")
+        return
+    if have < needed:
+        die(f"{device} is too small: it holds {have} bytes "
+            f"({have / 1e9:.1f} GB), the image needs {needed} bytes "
+            f"({needed / 1e9:.1f} GB). Nothing was written.")
+
+
 def download_and_write_image(base_url: str, device: str) -> None:
     """Download compressed image and write directly to device"""
     image_url = f"{base_url}/dbrrg-usb.img.zst"
@@ -876,6 +951,8 @@ def do_fresh_install(drive: DriveInfo, base_url: str) -> Optional[bool]:
     Returns None when the home copy was not asked for or declined, otherwise
     whether it succeeded. The install itself counts as done either way.
     """
+
+    check_drive_fits(base_url, drive.device)
 
     print_header("WARNING - Data Loss")
     print(f"\n  This will ERASE ALL DATA on {drive.device}!")

@@ -303,6 +303,12 @@ The system implements home directory persistence across reboots:
   restore failed (`/run/dbrrg/state/home-restore` is `failed`), since the
   live home is then a default one. `test/unit/test_upgrade_image.py` guards
   this, run via `make test-unit`.
+- Before the fresh install asks to erase the drive, it compares the drive
+  (`lsblk -bdno SIZE`) with the image's uncompressed size, read from the
+  zstd frame header of `dbrrg-usb.img.zst` (`curl -r 0-17`), and stops when
+  the drive is smaller: `dd` onto such a stick failed partway and left it
+  unbootable. When the size cannot be learned (no range support, a stream
+  compressed from a pipe) it warns and goes on.
 
 This allows WiFi credentials, ThinLinc settings, and user customizations to persist.
 

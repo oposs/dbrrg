@@ -1091,5 +1091,117 @@ class TestAbUpgradeSpace(TestAbUpgradeBootDefault):
         self.assertNotIn("'previous'", out.getvalue())
 
 
+class TestZstdContentSize(unittest.TestCase):
+    """The image size is read from the zstd frame header of dbrrg-usb.img.zst.
+
+    Each header below is the first 18 bytes of a real `zstd -3` (or `-1`)
+    output, one per width of the Frame_Content_Size field.
+    """
+
+    def size(self, hexbytes):
+        return ui.zstd_content_size(bytes.fromhex(hexbytes))
+
+    def test_one_byte_field(self):
+        # 100 bytes, single segment: no window byte, 1-byte size.
+        self.assertEqual(self.size("28b52ffd24642103002e84960c69fdde4640"), 100)
+
+    def test_two_byte_field_is_offset_by_256(self):
+        self.assertEqual(self.size("28b52ffd64e802411f0087a09b5869ca3b72"), 1000)
+
+    def test_four_byte_field(self):
+        self.assertEqual(self.size("28b52ffda4a086010001350c67dc4d15f914"), 100000)
+
+    def test_four_byte_field_after_a_window_byte_the_shipped_image(self):
+        # Header of the 3000 MB ESP image; `zstd -l` says 3148873728 B.
+        self.assertEqual(self.size("28b52ffd84580000b0bb5c1300b42333c0fa"), 3148873728)
+
+    def test_eight_byte_field(self):
+        # 5 GiB of zeros through `zstd -1 -c`.
+        self.assertEqual(self.size("28b52ffdc448000000400100000054000010"), 5 * 1024**3)
+
+    def test_dictionary_id_is_skipped(self):
+        # FHD 0xa5: 4-byte size, single segment, 1-byte dictionary id.
+        self.assertEqual(self.size("28b52ffda507a0860100"), 100000)
+
+    def test_no_size_in_the_header_is_unknown(self):
+        # FHD 0x04: size flag 0 without single segment, as `zstd` writes
+        # when compressing a pipe.
+        self.assertIsNone(self.size("28b52ffd0458000000"))
+
+    def test_not_zstd_is_unknown(self):
+        self.assertIsNone(self.size("3c68746d6c3e3c2f68746d6c3e"))
+
+    def test_a_short_read_is_unknown(self):
+        self.assertIsNone(self.size("28b52ffd84580000"))
+
+
+class TestImageSize(unittest.TestCase):
+    def test_only_the_header_is_requested(self):
+        with mock.patch.object(ui.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, bytes.fromhex("28b52ffd84580000b0bb5c1300b42333c0fa"), b"")
+            self.assertEqual(ui.image_size("http://x/dbrrg-usb.img.zst"), 3148873728)
+        argv = run.call_args.args[0]
+        self.assertIn("-r", argv)
+        self.assertEqual(argv[argv.index("-r") + 1], "0-17")
+        self.assertIn("--max-filesize", argv)
+
+    def test_a_failed_request_is_unknown(self):
+        with mock.patch.object(ui.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 22, b"", b"404")
+            self.assertIsNone(ui.image_size("http://x/dbrrg-usb.img.zst"))
+
+    def test_a_curl_timeout_is_unknown(self):
+        with mock.patch.object(ui.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("curl", 30)):
+            self.assertIsNone(ui.image_size("http://x/dbrrg-usb.img.zst"))
+
+
+class TestFreshInstallDriveSize(unittest.TestCase):
+    """dd onto a stick smaller than the image failed partway and left it broken."""
+
+    IMAGE = 3148873728
+
+    def drive(self):
+        return ui.DriveInfo(
+            device="/dev/sdz", size="1.9G", model="Tiny", label="",
+            is_dbrrg=False, efi_partition=None, part_size_mb=0,
+            is_boot=False, has_tl_old=False, has_tl_new=False,
+        )
+
+    def run_install(self, image, drive_bytes):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ui, "image_size", return_value=image), \
+             mock.patch.object(ui, "drive_size_bytes", return_value=drive_bytes), \
+             mock.patch.object(ui, "confirm", return_value=False) as confirm, \
+             mock.patch.object(ui, "download_and_write_image") as write, \
+             mock.patch.object(ui.subprocess, "Popen") as popen, \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                ui.do_fresh_install(self.drive(), "http://x")
+                exited = False
+            except SystemExit:
+                exited = True
+        return exited, confirm, write, popen, out.getvalue() + err.getvalue()
+
+    def test_a_too_small_drive_dies_before_anything_is_written(self):
+        exited, confirm, write, popen, text = self.run_install(self.IMAGE, 2000000000)
+        self.assertTrue(exited)
+        write.assert_not_called()
+        popen.assert_not_called()
+        confirm.assert_not_called()
+        self.assertIn("2000000000", text)
+        self.assertIn("3148873728", text)
+
+    def test_a_large_enough_drive_reaches_the_confirmation(self):
+        exited, confirm, write, popen, text = self.run_install(self.IMAGE, 16 * 10**9)
+        confirm.assert_called()
+
+    def test_an_unknown_image_size_warns_and_proceeds(self):
+        exited, confirm, write, popen, text = self.run_install(None, 2000000000)
+        confirm.assert_called()
+        self.assertIn("WARNING", text)
+
+
 if __name__ == "__main__":
     unittest.main()
