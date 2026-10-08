@@ -125,18 +125,35 @@ dbrrg_hold() {
 #              machine chose "Log out anyway". Do not save again: a second
 #              save would only repeat the first one's result, or overwrite
 #              what the person just declined to keep waiting for.
+#   10, 11     restart, power off. The menu has saved, as for 0.
 #   any other  the menu failed: do NOT save, show why, hold
 #
 # Failure is the default branch on purpose. A Rust panic exits 101, a
 # segfault 139, a failed exec 126 or 127; reading those as logout would make
 # a crash silent, and saving on them would archive the home once per
-# respawn. 10 and 11 are reserved and have no meaning here.
+# respawn.
 "$DBRRG_MENU"
 menu_rc=$?
 echo "$menu_rc" >"$DBRRG_SESSION_STATUS" 2>/dev/null || true
 case "$menu_rc" in
     0)
         exit 0
+        ;;
+    10|11)
+        # sudo, because the image has no polkit: systemd refuses Reboot and
+        # PowerOff to a caller that is not root when no polkit authority
+        # answers.
+        if [ "$menu_rc" = 10 ]; then verb=reboot; else verb=poweroff; fi
+        if sudo systemctl "$verb"; then
+            exit 0
+        fi
+        echo "dbrrg: sudo systemctl $verb failed" >&2
+        foot --title "dbrrg: $verb failed" -- sh -c '
+            echo "The menu saved your home directory, but \"sudo systemctl $1\" failed."
+            echo ""
+            echo "Close this window to continue."
+            exec sh' dbrrg-hold "$verb"
+        exit "$menu_rc"
         ;;
     *)
         echo "dbrrg: dbrrg-menu exited with status $menu_rc - the home directory was not saved" >&2

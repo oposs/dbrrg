@@ -7,7 +7,8 @@
 //! Log out saves the home directory here, behind the dialog, before the
 //! menu exits (decided 2026-10-02). dbrrg-session no longer saves after a
 //! logout: by the time the menu exits 0 the save has been done, or it
-//! failed and the person at the machine chose to log out anyway.
+//! failed and the person at the machine chose to log out anyway. Restart
+//! and Power off take the same steps and exit 10 and 11.
 
 use crate::jobs::{JobId, JobResult, SaveOutcome, Signal};
 use crate::log::{Kind, Log};
@@ -68,8 +69,8 @@ impl Logout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
     Stay,
-    StopAndLogOut,
-    LogOutAnyway,
+    StopAndLeave,
+    LeaveAnyway,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +94,9 @@ pub struct Menu {
     pub jobs: Vec<Running>,
     pub save: SaveState,
     pub logout: Option<Logout>,
+    /// The action that started the logout steps: Log out, Restart or Power
+    /// off. Its exit code ends the menu.
+    pub ending: Action,
     /// What happened, for the log under the grid.
     pub log: Log,
     restore_failed: bool,
@@ -119,6 +123,7 @@ impl Menu {
             jobs: Vec::new(),
             save: SaveState::default(),
             logout: None,
+            ending: Action::Logout,
             log,
             restore_failed,
             next_id: 1,
@@ -149,7 +154,7 @@ impl Menu {
         match tile.action {
             Action::Run => tile.multiple || self.running(index) == 0,
             Action::SaveHome => !self.save.running,
-            Action::Logout => true,
+            Action::Logout | Action::Reboot | Action::Poweroff => true,
         }
     }
 
@@ -186,7 +191,8 @@ impl Menu {
                 }))
             }
             Action::SaveHome => self.request_save(),
-            Action::Logout => {
+            Action::Logout | Action::Reboot | Action::Poweroff => {
+                self.ending = tile.action;
                 if self.jobs.is_empty() {
                     self.logout_after_jobs(now)
                 } else {
@@ -314,7 +320,7 @@ impl Menu {
                 self.logout = None;
                 None
             }
-            (Some(Logout::Confirm), Choice::StopAndLogOut) => {
+            (Some(Logout::Confirm), Choice::StopAndLeave) => {
                 if self.jobs.is_empty() {
                     return self.logout_after_jobs(now);
                 }
@@ -327,7 +333,7 @@ impl Menu {
                 Some(Effect::Signal(self.pgids(), Signal::Term))
             }
             // The failure is in the log already, from when it happened.
-            (Some(Logout::Failed { .. }), Choice::LogOutAnyway) => Action::Logout.exit_code().map(Effect::Exit),
+            (Some(Logout::Failed { .. }), Choice::LeaveAnyway) => self.ending.exit_code().map(Effect::Exit),
             _ => None,
         }
     }
@@ -336,7 +342,7 @@ impl Menu {
     /// menu once "saved" has been shown for `LOGOUT_PAUSE`.
     pub fn tick(&mut self, now: Instant) -> Option<Effect> {
         match self.logout {
-            Some(Logout::Leaving { until }) if now >= until => Action::Logout.exit_code().map(Effect::Exit),
+            Some(Logout::Leaving { until }) if now >= until => self.ending.exit_code().map(Effect::Exit),
             Some(Logout::Stopping { kill_at, killed: false }) if now >= kill_at => {
                 self.logout = Some(Logout::Stopping { kill_at, killed: true });
                 self.log
@@ -408,6 +414,14 @@ mod tests {
                     f(
                         "80-logout.desktop",
                         "[Desktop Entry]\nName=Log out\nX-DBRRG-Action=logout\n",
+                    ),
+                    f(
+                        "80-reboot.desktop",
+                        "[Desktop Entry]\nName=Restart\nX-DBRRG-Action=reboot\n",
+                    ),
+                    f(
+                        "81-poweroff.desktop",
+                        "[Desktop Entry]\nName=Power off\nX-DBRRG-Action=poweroff\n",
                     ),
                 ],
                 &[],
@@ -576,7 +590,7 @@ mod tests {
         let b = started(&mut m, 1, now);
         m.activate(3, now);
         assert_eq!(
-            m.choose(Choice::StopAndLogOut, now),
+            m.choose(Choice::StopAndLeave, now),
             Some(Effect::Signal(vec![1000 + a as i32, 1000 + b as i32], Signal::Term))
         );
         assert_eq!(
@@ -612,7 +626,7 @@ mod tests {
         let now = Instant::now();
         let a = started(&mut m, 1, now);
         m.activate(3, now);
-        m.choose(Choice::StopAndLogOut, now);
+        m.choose(Choice::StopAndLeave, now);
         assert_eq!(m.tick(now + STOP_GRACE / 2), None);
         assert_eq!(
             m.tick(now + STOP_GRACE),
@@ -640,7 +654,7 @@ mod tests {
         };
         m.activate(3, now);
         assert_eq!(
-            m.choose(Choice::StopAndLogOut, now),
+            m.choose(Choice::StopAndLeave, now),
             Some(Effect::Signal(vec![], Signal::Term))
         );
         assert_eq!(
@@ -655,7 +669,7 @@ mod tests {
             panic!()
         };
         m.activate(3, now);
-        m.choose(Choice::StopAndLogOut, now);
+        m.choose(Choice::StopAndLeave, now);
         m.tick(now + STOP_GRACE);
         assert_eq!(
             m.finished(JobResult::Started { id: late, pgid: 78 }, now),
@@ -705,7 +719,7 @@ mod tests {
         let now = Instant::now();
         m.activate(3, now);
         m.finished(JobResult::Saved(SaveOutcome::Failed), now);
-        assert_eq!(m.choose(Choice::LogOutAnyway, now), Some(Effect::Exit(0)));
+        assert_eq!(m.choose(Choice::LeaveAnyway, now), Some(Effect::Exit(0)));
     }
 
     #[test]
@@ -715,15 +729,65 @@ mod tests {
         assert_eq!(m.activate(3, now), None, "no save job started");
         assert!(matches!(m.logout, Some(Logout::Failed { .. })));
         assert_eq!(log(&m), [warn(&SaveOutcome::RestoreFailed.message())]);
-        assert_eq!(m.choose(Choice::LogOutAnyway, now), Some(Effect::Exit(0)));
+        assert_eq!(m.choose(Choice::LeaveAnyway, now), Some(Effect::Exit(0)));
+    }
+
+    #[test]
+    fn restart_saves_then_exits_ten() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        assert_eq!(m.activate(4, now), Some(Effect::Start(Job::Save)));
+        m.finished(JobResult::Saved(SaveOutcome::Saved), now);
+        assert_eq!(m.tick(now + LOGOUT_PAUSE), Some(Effect::Exit(10)));
+    }
+
+    #[test]
+    fn power_off_with_programs_stops_them_saves_and_exits_eleven() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        let id = started(&mut m, 0, now);
+        assert_eq!(m.activate(5, now), None);
+        assert_eq!(m.logout, Some(Logout::Confirm));
+        assert_eq!(
+            m.choose(Choice::StopAndLeave, now),
+            Some(Effect::Signal(vec![1000 + id as i32], Signal::Term))
+        );
+        assert_eq!(ran(&mut m, id, 0, now), Some(Effect::Start(Job::Save)));
+        m.finished(JobResult::Saved(SaveOutcome::Saved), now);
+        assert_eq!(m.tick(now + LOGOUT_PAUSE), Some(Effect::Exit(11)));
+    }
+
+    #[test]
+    fn a_failed_save_can_restart_or_power_off_anyway() {
+        for (tile, code) in [(4, 10), (5, 11)] {
+            let mut m = Menu::new(grid(), false);
+            let now = Instant::now();
+            m.activate(tile, now);
+            m.finished(JobResult::Saved(SaveOutcome::Failed), now);
+            assert_eq!(m.choose(Choice::LeaveAnyway, now), Some(Effect::Exit(code)));
+        }
+    }
+
+    #[test]
+    fn stay_forgets_which_way_the_menu_was_leaving() {
+        let mut m = Menu::new(grid(), false);
+        let now = Instant::now();
+        let id = started(&mut m, 0, now);
+        m.activate(5, now);
+        m.choose(Choice::Stay, now);
+        ran(&mut m, id, 0, now);
+        m.finished(JobResult::Saved(SaveOutcome::Saved), now);
+        assert_eq!(m.activate(3, now), Some(Effect::Start(Job::Save)));
+        m.finished(JobResult::Saved(SaveOutcome::Saved), now);
+        assert_eq!(m.tick(now + LOGOUT_PAUSE), Some(Effect::Exit(0)));
     }
 
     #[test]
     fn choice_outside_the_question_is_ignored() {
         let mut m = Menu::new(grid(), false);
         let now = Instant::now();
-        assert_eq!(m.choose(Choice::LogOutAnyway, now), None);
-        assert_eq!(m.choose(Choice::StopAndLogOut, now), None);
+        assert_eq!(m.choose(Choice::LeaveAnyway, now), None);
+        assert_eq!(m.choose(Choice::StopAndLeave, now), None);
         assert_eq!(m.logout, None);
     }
 
@@ -792,7 +856,7 @@ mod tests {
         assert_eq!(m.activate(2, now), None, "not clickable while saving");
         m.save.again = true;
         m.activate(3, now);
-        m.choose(Choice::StopAndLogOut, now);
+        m.choose(Choice::StopAndLeave, now);
         assert_eq!(
             m.finished(JobResult::Saved(SaveOutcome::Saved), now),
             None,

@@ -32,7 +32,13 @@ cat >"$WORK/bin/dbrrg-save-home" <<STUB
 #!/bin/sh
 echo called >>"$WORK/saved"
 STUB
-chmod 755 "$WORK/bin/foot" "$WORK/bin/dbrrg-save-home"
+# sudo records what it was asked to run and fails when the test says so.
+cat >"$WORK/bin/sudo" <<STUB
+#!/bin/sh
+echo "\$@" >>"$WORK/sudo.args"
+[ ! -e "$WORK/sudo.fail" ]
+STUB
+chmod 755 "$WORK/bin/foot" "$WORK/bin/dbrrg-save-home" "$WORK/bin/sudo"
 # The session also starts these helpers when they exist; on a dev host they
 # might, so stub them rather than launch the real ones.
 for h in waybar swayidle wlopm; do
@@ -42,7 +48,7 @@ done
 
 # Run dbrrg-session with a menu stub that runs $1 as shell code.
 run_session() {
-    rm -f "$WORK/saved" "$WORK/foot.args" "$WORK/status" "$WORK/dbrrg-session.status"
+    rm -f "$WORK/saved" "$WORK/foot.args" "$WORK/status" "$WORK/dbrrg-session.status" "$WORK/sudo.args"
     printf '#!/bin/sh\n%s\n' "$1" >"$WORK/bin/menu"
     chmod 755 "$WORK/bin/menu"
     env -i PATH="$WORK/bin:/usr/bin:/bin" HOME="$WORK/home" \
@@ -58,6 +64,27 @@ rc=$?
 [[ ! -e "$WORK/saved" ]] && ok "logout: the session does not save again" || bad "logout: the session saved after the menu"
 [[ "$(cat "$WORK/dbrrg-session.status" 2>/dev/null)" == 0 ]] && ok "logout: status 0 recorded" || bad "logout: status file wrong"
 [[ ! -e "$WORK/foot.args" ]] && ok "logout: no failure window" || bad "logout: failure window shown"
+
+# 10 and 11: the menu has saved, as for 0; the session restarts or powers
+# off the machine. There is no polkit, so it needs sudo.
+for pair in 10:reboot 11:poweroff; do
+    code=${pair%%:*} verb=${pair#*:}
+    rm -f "$WORK/sudo.fail"
+    run_session "exit $code"
+    rc=$?
+    [[ $rc -eq 0 ]] && ok "menu exit $code: session exits 0" || bad "menu exit $code: session exited $rc"
+    [[ "$(cat "$WORK/sudo.args" 2>/dev/null)" == "systemctl $verb" ]] && ok "menu exit $code: sudo systemctl $verb" \
+        || bad "menu exit $code: sudo got '$(cat "$WORK/sudo.args" 2>/dev/null)'"
+    [[ ! -e "$WORK/saved" ]] && ok "menu exit $code: the session does not save" || bad "menu exit $code: the session saved"
+    [[ ! -e "$WORK/foot.args" ]] && ok "menu exit $code: no window" || bad "menu exit $code: window shown"
+    : >"$WORK/sudo.fail"
+    run_session "exit $code"
+    rc=$?
+    [[ $rc -eq $code ]] && grep -q "$verb failed" "$WORK/foot.args" 2>/dev/null \
+        && ok "menu exit $code: a failed systemctl $verb is shown" \
+        || bad "menu exit $code: failed systemctl: rc=$rc window '$(cat "$WORK/foot.args" 2>/dev/null)'"
+    rm -f "$WORK/sudo.fail"
+done
 
 for code in 1 101 127; do
     run_session "exit $code"
@@ -104,6 +131,11 @@ rm -f "$S" "$C"
 echo 0 >"$S"; echo 2 >"$C"
 "$VERDICT" "$S" "$C" >/dev/null; rc=$?
 [[ $rc -eq 0 && ! -e "$C" ]] && ok "verdict: clean logout resets the count" || bad "verdict: clean logout rc=$rc"
+for code in 10 11; do
+    echo "$code" >"$S"; echo 2 >"$C"
+    "$VERDICT" "$S" "$C" >/dev/null; rc=$?
+    [[ $rc -eq 0 && ! -e "$C" ]] && ok "verdict: $code is a clean end" || bad "verdict: $code rc=$rc"
+done
 echo 101 >"$S"; rm -f "$C"
 "$VERDICT" "$S" "$C" >/dev/null; r1=$?
 "$VERDICT" "$S" "$C" >/dev/null; r2=$?

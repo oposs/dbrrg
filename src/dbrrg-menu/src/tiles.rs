@@ -21,14 +21,14 @@ pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 /// would otherwise be laid out and rasterised on every frame.
 pub const MAX_TEXT_CHARS: usize = 120;
 
-/// What a tile does. Item 3 of the spec adds `Reboot` (exit 10) and
-/// `Poweroff` (exit 11) here and in `exit_code`; until then those names are
-/// unknown actions and the tile is drawn disabled.
+/// What a tile does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Run,
     SaveHome,
     Logout,
+    Reboot,
+    Poweroff,
 }
 
 impl Action {
@@ -37,19 +37,28 @@ impl Action {
             None | Some("run") => Ok(Action::Run),
             Some("save-home") => Ok(Action::SaveHome),
             Some("logout") => Ok(Action::Logout),
+            Some("reboot") => Ok(Action::Reboot),
+            Some("poweroff") => Ok(Action::Poweroff),
             Some(other) => Err(format!("unknown action '{other}'")),
         }
     }
 
     /// The status the menu exits with once this action is done, for the
     /// actions that end the menu. The menu saves the home itself before it
-    /// exits, so dbrrg-session saves on none of them. Any other status
-    /// dbrrg-menu exits with is a failure.
+    /// exits, so dbrrg-session saves on none of them; it reboots on 10 and
+    /// powers off on 11. Any other status dbrrg-menu exits with is a failure.
     pub fn exit_code(self) -> Option<i32> {
         match self {
             Action::Logout => Some(0),
+            Action::Reboot => Some(10),
+            Action::Poweroff => Some(11),
             Action::Run | Action::SaveHome => None,
         }
+    }
+
+    /// Whether this action ends the session.
+    pub fn ends(self) -> bool {
+        self.exit_code().is_some()
     }
 }
 
@@ -593,7 +602,12 @@ mod tests {
         for f in ["10-thinlinc.desktop", "20-oxulnk.desktop", "30-terminal.desktop"] {
             assert!(read(f).multiple, "{f}");
         }
-        for f in ["40-save-home.desktop", "50-upgrade-image.desktop", "80-logout.desktop"] {
+        for f in [
+            "40-save-home.desktop",
+            "50-upgrade-image.desktop",
+            "80-reboot.desktop",
+            "81-poweroff.desktop",
+        ] {
             assert!(!read(f).multiple, "{f}");
         }
     }
@@ -616,10 +630,12 @@ mod tests {
     }
 
     #[test]
-    fn reboot_and_poweroff_are_not_actions_yet() {
-        assert!(Action::parse(Some("reboot")).is_err());
-        assert!(Action::parse(Some("poweroff")).is_err());
+    fn the_ending_actions_and_their_exit_codes() {
+        assert_eq!(Action::parse(Some("reboot")), Ok(Action::Reboot));
+        assert_eq!(Action::parse(Some("poweroff")), Ok(Action::Poweroff));
         assert_eq!(Action::Logout.exit_code(), Some(0));
+        assert_eq!(Action::Reboot.exit_code(), Some(10));
+        assert_eq!(Action::Poweroff.exit_code(), Some(11));
         assert_eq!(Action::Run.exit_code(), None);
         assert_eq!(Action::SaveHome.exit_code(), None);
     }

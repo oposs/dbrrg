@@ -78,11 +78,14 @@ The boot process involves several interconnected components:
    the pivot (`restore_home()` in the dracut module). `dbrrg-menu` saves it
    (`dbrrg-save-home`). Saves after a tile with `X-DBRRG-Save-On-Exit=true`
    (ThinLinc, oxulnk) exits and from the Back up home tile run in the
-   background, one at a time, with at most one more queued. The Log out tile
-   asks Stay / Stop them and log out while programs run (SIGTERM to each
-   process group, SIGKILL after 5 s), waits for a running save, then saves
-   behind its dialog before the menu exits 0 (a failed save asks Stay / Log
-   out anyway). `dbrrg-session` never saves.
+   background, one at a time, with at most one more queued. The Restart and
+   Power off tiles ask Stay / Stop them and restart (power off) while
+   programs run (SIGTERM to each process group, SIGKILL after 5 s), wait for
+   a running save, then save behind their dialog before the menu exits 10
+   (11); a failed save asks Stay / Restart anyway (Power off anyway).
+   `dbrrg-session` never saves; on 10 and 11 it runs `sudo systemctl
+   reboot` or `poweroff`. The `logout` action (exit 0) takes the same steps;
+   no shipped tile uses it.
 
 ## Key Configuration Files
 
@@ -223,17 +226,18 @@ The system implements home directory persistence across reboots:
   Netboot identifies the machine by the MAC recorded at
   `/run/dbrrg/state/boot-mac` — the interface the initramfs actually used —
   rather than by re-deriving it, so restore and save cannot disagree.
-- On logout: `dbrrg-menu` runs `/usr/bin/dbrrg-save-home`, which saves the home
-  directory back to USB or uploads it to the boot server via HTTP POST. A
-  tile with `X-DBRRG-Save-On-Exit=true` (ThinLinc, oxulnk) after its program
-  exits and the Back up home tile save in the background, one at a time,
-  with at most one more queued; no dialog. The Log out tile asks Stay / Stop
-  them and log out while programs run (SIGTERM to each process group,
-  SIGKILL after 5 s), waits for a running save, then saves behind its dialog
-  before the menu exits 0; a failed save asks Stay / Log out anyway. A
-  program stopped this way gets no Save-On-Exit save, and neither does the
-  last program ending while the question is up: the logout then goes on
-  without asking. The menu greys the save tile out when
+- On restart or power off: `dbrrg-menu` runs `/usr/bin/dbrrg-save-home`,
+  which saves the home directory back to USB or uploads it to the boot
+  server via HTTP POST. A tile with `X-DBRRG-Save-On-Exit=true` (ThinLinc,
+  oxulnk) after its program exits and the Back up home tile save in the
+  background, one at a time, with at most one more queued; no dialog. The
+  Restart and Power off tiles ask Stay / Stop them and restart (power off)
+  while programs run (SIGTERM to each process group, SIGKILL after 5 s),
+  wait for a running save, then save behind their dialog before the menu
+  exits 10 (11); a failed save asks Stay / Restart anyway (Power off
+  anyway). A program stopped this way gets no Save-On-Exit save, and neither
+  does the last program ending while the question is up: the menu then goes
+  on without asking. The menu greys the save tile out when
   `/run/dbrrg/state/home-restore` says `failed`; after a Save-On-Exit tile
   exits on such a boot, the save is skipped with a line in the menu's log.
 - `dbrrg-save-home` resolves the directory to archive from `getent passwd
@@ -740,14 +744,18 @@ ICD (`/usr/share/vulkan/icd.d` does not exist), and GL would make the menu's
 start depend on EGL. `test/integration/test-session-packages.sh` fails when
 the binary links or names a GPU library.
 
-### dbrrg-session never saves; dbrrg-menu saves before it exits 0
+### dbrrg-session never saves; dbrrg-menu saves before it exits 0, 10 or 11
 
-Decided 2026-10-02, so a failed logout save is shown at the machine and
-answered there (Stay / Log out anyway). Failure is the default branch of the
-status handling in `dbrrg-session`: a panic (101), a segfault (139) or a
-failed exec (126/127) read as logout would be silent, and saving on them
-would archive the home on every respawn. `test/integration/test-session-lifecycle.sh`
-guards both.
+Decided 2026-10-02, so a failed save is shown at the machine and answered
+there (Stay / Log out anyway, Restart anyway, Power off anyway). 0 is log
+out, 10 restart and 11 power off (decided 2026-10-08, when Restart and Power
+off replaced the Log out tile); `dbrrg-session` runs `sudo systemctl reboot`
+or `poweroff` for them and shows a window if that fails, and
+`session-verdict` counts all three as a clean end. Failure is the default
+branch of the status handling in `dbrrg-session`: a panic (101), a segfault
+(139) or a failed exec (126/127) read as logout would be silent, and saving
+on them would archive the home on every respawn.
+`test/integration/test-session-lifecycle.sh` guards both.
 
 ### The first boot after an upgrade takes its kernel from tl.new
 
@@ -800,9 +808,9 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
 
 - The grid is on one monitor. The span patch covers Xwayland windows only.
 - Clicking a tile is not covered by the headless runtime test, which has no
-  input devices. The logout dialogs and their buttons (Stay / Stop them and
-  log out, Stay / Log out anyway) are proven by unit tests of the state
-  machine only.
+  input devices. The end-of-session dialogs and their buttons (Stay / Stop
+  them and restart, Stay / Restart anyway, and the same for Power off and
+  Log out) are proven by unit tests of the state machine only.
 - Program output keeps its SGR colours (16, 256, RGB, bold); other escape
   sequences are removed. At most 64 colour runs per line.
 - Full-colour theme icons with drop shadows draw the letter, because
@@ -818,7 +826,7 @@ not fixed; they are recorded so they aren't rediscovered from scratch.
   work. The square tiles and the log area have not been run on hardware.
 - Not seen on hardware: two programs at once, Stop them and log out, the
   colours of a real `oxulnk-desktop` log, the menu staying behind a clicked
-  program.
+  program, the Restart and Power off tiles.
 
 ### Screen blanking had to be rebuilt after the X11 removal
 
@@ -924,7 +932,8 @@ retries labwc once after another wait-kms, so a machine with no GPU waits about
 There is no polkit in this image, no `polkitd` and no `pkexec`, and systemd
 gates `Reboot` and `PowerOff` for non-root callers on a polkit authority. A
 bare `systemctl reboot` as `tluser` is refused. Use `sudo systemctl reboot`,
-the way `dbrrg-save-home` already escalates.
+the way `dbrrg-save-home` and `dbrrg-session` (for the Restart and Power off
+tiles) already escalate.
 
 ### Reaching a terminal
 

@@ -9,8 +9,8 @@
 # record of a failed menu. COUNTER_FILE counts consecutive failed sessions
 # and must survive the logout, so it does not live in XDG_RUNTIME_DIR.
 #
-# Exit 0: start a fresh session (a clean logout, or a failure below the
-#         limit).
+# Exit 0: start a fresh session (a clean logout, a restart or power off
+#         the menu asked for with 10 or 11, or a failure below the limit).
 # Exit 1: stop and show the failure screen. Prints the menu's status.
 #
 # A missing or empty STATUS_FILE is a clean session: dbrrg-session writes it
@@ -20,7 +20,7 @@ DBRRG_SESSION_FAILURE_LIMIT="${DBRRG_SESSION_FAILURE_LIMIT:-3}"
 
 status=$(cat "$1" 2>/dev/null || true)
 case "$status" in
-    ''|0)
+    ''|0|10|11)
         rm -f "$2"
         exit 0
         ;;

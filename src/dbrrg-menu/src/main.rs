@@ -1,6 +1,7 @@
 //! Entry point. The exit status is the contract with dbrrg-session:
-//! 0 means log out, and only after this program's own logout save or the
-//! person's choice of "Log out anyway" following a failed save.
+//! 0 means log out, 10 restart and 11 power off, each only after this
+//! program's own save or the person's choice of "Log out anyway" (or
+//! "Restart anyway", "Power off anyway") following a failed save.
 //! dbrrg-session saves on no status at all; any other status means the menu
 //! failed.
 

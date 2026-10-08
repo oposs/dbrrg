@@ -4,7 +4,7 @@
 use crate::icons::{self, IconJob, IconRoots};
 use crate::log::{Ansi, Kind, Line, Log, Run};
 use crate::menu::{Choice, Logout, Menu};
-use crate::tiles::{Origin, Tile};
+use crate::tiles::{Action, Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
     Align2, Color32, ColorImage, FontId, Rect, Sense, Stroke, StrokeKind, TextFormat, TextureHandle, Ui, UiBuilder,
@@ -142,8 +142,28 @@ pub fn layout(screen: Rect, tiles: usize) -> Layout {
     }
 }
 
+/// The words the dialog uses for the way the menu ends: the verb, and its
+/// "-ing" form.
+fn ending_words(action: Action) -> (&'static str, &'static str) {
+    match action {
+        Action::Reboot => ("restart", "restarting"),
+        Action::Poweroff => ("power off", "powering off"),
+        _ => ("log out", "logging out"),
+    }
+}
+
+/// The first letter in upper case, for a button or a sentence start.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// Draw one frame.
 pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Instant) -> Option<UiEvent> {
+    let (verb, verbing) = ending_words(menu.ending);
     // No background fill here: the canvas restores the page colour itself,
     // and while the dialog is up it holds the frozen grid, which a fill
     // would erase. Only the dialog is drawn then.
@@ -164,10 +184,10 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
                         chose = Some(Choice::Stay);
                     }
                     if ui
-                        .add(Button::new("Stop them and log out").variant(ButtonVariant::Destructive))
+                        .add(Button::new(format!("Stop them and {verb}")).variant(ButtonVariant::Destructive))
                         .clicked()
                     {
-                        chose = Some(Choice::StopAndLogOut);
+                        chose = Some(Choice::StopAndLeave);
                     }
                 });
             });
@@ -189,7 +209,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             return None;
         }
         Some(Logout::WaitSave) => {
-            dialog(ui, "Saving your home directory before logging out", |ui, t| {
+            dialog(ui, &format!("Saving your home directory before {verbing}"), |ui, t| {
                 ui.label(
                     egui::RichText::new("Waiting for the backup that is running.").color(t.palette.muted_foreground),
                 );
@@ -197,7 +217,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             return None;
         }
         Some(Logout::Saving { since }) => {
-            dialog(ui, "Saving your home directory before logging out", |ui, t| {
+            dialog(ui, &format!("Saving your home directory before {verbing}"), |ui, t| {
                 ui.label(
                     egui::RichText::new(elapsed(now.duration_since(*since)))
                         .size(28.0)
@@ -214,7 +234,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
         }
         Some(Logout::Leaving { until }) => {
             dialog(ui, "Home directory saved", |ui, t| {
-                ui.label(egui::RichText::new("Logging out.").color(t.palette.muted_foreground));
+                ui.label(egui::RichText::new(format!("{}.", capitalized(verbing))).color(t.palette.muted_foreground));
             });
             ui.ctx().request_repaint_after(until.saturating_duration_since(now));
             return None;
@@ -224,7 +244,7 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
             dialog(ui, "Your home directory was not saved", |ui, t| {
                 ui.label(egui::RichText::new(message).color(WARN));
                 ui.label(
-                    egui::RichText::new("If you log out now, the changes since the last save are lost.")
+                    egui::RichText::new(format!("If you {verb} now, the changes since the last save are lost."))
                         .color(t.palette.muted_foreground),
                 );
                 ui.add_space(8.0);
@@ -233,10 +253,10 @@ pub fn show(ui: &mut Ui, menu: &Menu, icons: &[Option<TextureHandle>], now: Inst
                         chose = Some(Choice::Stay);
                     }
                     if ui
-                        .add(Button::new("Log out anyway").variant(ButtonVariant::Destructive))
+                        .add(Button::new(format!("{} anyway", capitalized(verb))).variant(ButtonVariant::Destructive))
                         .clicked()
                     {
-                        chose = Some(Choice::LogOutAnyway);
+                        chose = Some(Choice::LeaveAnyway);
                     }
                 });
             });
@@ -960,5 +980,14 @@ mod tests {
             delay = o.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         }
         assert!(!delay.is_zero(), "repaint delay {delay:?}");
+    }
+
+    #[test]
+    fn the_dialog_names_the_way_the_menu_ends() {
+        let anyway = |a| format!("{} anyway", capitalized(ending_words(a).0));
+        assert_eq!(anyway(Action::Logout), "Log out anyway");
+        assert_eq!(anyway(Action::Reboot), "Restart anyway");
+        assert_eq!(anyway(Action::Poweroff), "Power off anyway");
+        assert_eq!(capitalized(ending_words(Action::Poweroff).1), "Powering off");
     }
 }
