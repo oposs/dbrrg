@@ -260,7 +260,7 @@ mod tests {
 
     /// The log as (kind, text), oldest first.
     fn log(m: &Menu) -> Vec<(Kind, String)> {
-        m.log.lines().map(|l| (l.kind, l.text.clone())).collect()
+        m.log.lines().map(|l| (l.kind, l.plain())).collect()
     }
 
     fn ev(t: &str) -> (Kind, String) {

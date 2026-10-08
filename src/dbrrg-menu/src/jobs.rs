@@ -4,7 +4,7 @@
 //! spend 60 seconds pinging before it starts, and a window that stops
 //! answering frame callbacks for that long looks dead.
 
-use crate::log::{Feed, Kind, Line, Splitter, local_time};
+use crate::log::{Feed, Kind, Line, Run, Splitter, local_time};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -96,11 +96,11 @@ pub struct Paths {
 /// Copy one output pipe into the feed, line by line, until it closes.
 fn pump(mut pipe: impl Read, source: String, feed: Arc<Feed>, done: Sender<()>) {
     let mut split = Splitter::default();
-    let mut emit = |text: String| {
+    let mut emit = |runs: Vec<Run>| {
         feed.push(Line {
             time: local_time(),
             source: Some(source.clone()),
-            text,
+            runs,
             kind: Kind::Output,
         })
     };
@@ -282,7 +282,12 @@ mod tests {
     fn run_streams_stdout_and_stderr_into_the_feed() {
         let feed = Arc::new(Feed::default());
         run("Tool", &sh("echo out; echo err >&2; exit 3"), false, &feed);
-        let mut got: Vec<_> = feed.drain().into_iter().map(|l| (l.source, l.text, l.kind)).collect();
+        let mut got: Vec<_> = feed
+            .drain()
+            .into_iter()
+            .map(|l| (l.plain(), l.source, l.kind))
+            .map(|(t, s, k)| (s, t, k))
+            .collect();
         got.sort();
         assert_eq!(
             got,
@@ -305,7 +310,7 @@ mod tests {
         );
         let got = feed.drain();
         assert_eq!(got.len(), 200);
-        assert_eq!(got[199].text, "line199");
+        assert_eq!(got[199].plain(), "line199");
     }
 
     #[test]
@@ -317,7 +322,7 @@ mod tests {
             false,
             &feed,
         );
-        let got: Vec<_> = feed.drain().into_iter().map(|l| l.text).collect();
+        let got: Vec<_> = feed.drain().into_iter().map(|l| l.plain()).collect();
         assert_eq!(got, [format!("{}…", "x".repeat(LINE_BYTES)), "after".to_string()]);
     }
 
@@ -331,7 +336,10 @@ mod tests {
         };
         assert_eq!(status, Ok(Some(0)));
         assert!(t0.elapsed() < Duration::from_millis(900), "waited {:?}", t0.elapsed());
-        assert_eq!(feed.drain().into_iter().map(|l| l.text).collect::<Vec<_>>(), ["early"]);
+        assert_eq!(
+            feed.drain().into_iter().map(|l| l.plain()).collect::<Vec<_>>(),
+            ["early"]
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut late = Vec::new();
         while late.is_empty() && Instant::now() < deadline {
@@ -339,7 +347,7 @@ mod tests {
             late = feed.drain();
         }
         assert_eq!(
-            late.into_iter().map(|l| l.text).collect::<Vec<_>>(),
+            late.into_iter().map(|l| l.plain()).collect::<Vec<_>>(),
             ["late"],
             "still logged"
         );

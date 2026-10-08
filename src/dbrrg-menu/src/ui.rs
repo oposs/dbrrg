@@ -2,7 +2,7 @@
 //! lives in menu.rs; this file only paints it and reports clicks.
 
 use crate::icons::{self, IconJob, IconRoots};
-use crate::log::{Kind, Line, Log};
+use crate::log::{Ansi, Kind, Line, Log, Run};
 use crate::menu::{Busy, Choice, Menu, SaveFor};
 use crate::tiles::{Origin, Tile};
 use egui::text::{LayoutJob, TextWrapping};
@@ -272,6 +272,60 @@ fn show_log(ui: &mut Ui, log: &Log, rect: Rect) {
         });
 }
 
+/// The 16 basic terminal colours, picked to read on the dark log
+/// background: black and blue are lightened, which a terminal's defaults
+/// would leave nearly invisible here.
+const ANSI16: [Color32; 16] = [
+    Color32::from_rgb(0x6e, 0x6e, 0x6e),
+    Color32::from_rgb(0xe0, 0x6c, 0x75),
+    Color32::from_rgb(0x98, 0xc3, 0x79),
+    Color32::from_rgb(0xe5, 0xc0, 0x7b),
+    Color32::from_rgb(0x61, 0xaf, 0xef),
+    Color32::from_rgb(0xc6, 0x78, 0xdd),
+    Color32::from_rgb(0x56, 0xb6, 0xc2),
+    Color32::from_rgb(0xd0, 0xd0, 0xd0),
+    Color32::from_rgb(0x8a, 0x8a, 0x8a),
+    Color32::from_rgb(0xff, 0x7b, 0x86),
+    Color32::from_rgb(0xb5, 0xe8, 0x90),
+    Color32::from_rgb(0xff, 0xd7, 0x87),
+    Color32::from_rgb(0x82, 0xc4, 0xff),
+    Color32::from_rgb(0xe0, 0x9c, 0xf5),
+    Color32::from_rgb(0x7f, 0xd8, 0xe3),
+    Color32::from_rgb(0xff, 0xff, 0xff),
+];
+
+pub fn ansi_color(a: Ansi) -> Color32 {
+    match a {
+        Ansi::Basic(n) => ANSI16[(n & 15) as usize],
+        Ansi::Indexed(n @ 0..=15) => ANSI16[n as usize],
+        Ansi::Indexed(n @ 16..=231) => {
+            let level = [0u8, 95, 135, 175, 215, 255];
+            let i = n - 16;
+            Color32::from_rgb(
+                level[(i / 36) as usize],
+                level[(i / 6 % 6) as usize],
+                level[(i % 6) as usize],
+            )
+        }
+        Ansi::Indexed(n) => {
+            let g = 8 + 10 * (n - 232);
+            Color32::from_rgb(g, g, g)
+        }
+        Ansi::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
+    }
+}
+
+/// A run's colour: its own, brightened when bold the way terminals do, or
+/// the line's colour by kind; bold without a colour is the strong text.
+fn run_color(run: &Run, line_color: Color32, t: &Theme) -> Color32 {
+    match (run.fg, run.bold) {
+        (Some(Ansi::Basic(n)), true) if n < 8 => ansi_color(Ansi::Basic(n + 8)),
+        (Some(a), _) => ansi_color(a),
+        (None, true) => t.palette.foreground,
+        (None, false) => line_color,
+    }
+}
+
 /// One log line: the time, then the program it came from, then the text.
 fn log_job(line: &Line, t: &Theme) -> LayoutJob {
     let font = FontId::monospace(LOG_FONT);
@@ -283,11 +337,18 @@ fn log_job(line: &Line, t: &Theme) -> LayoutJob {
     };
     let mut job = LayoutJob::default();
     job.append(&line.time, 0.0, muted.clone());
+    let mut lead = 16.0;
     if let Some(source) = &line.source {
         job.append(&format!("{source} | "), 16.0, muted);
-        job.append(&line.text, 0.0, TextFormat::simple(font, text_color));
-    } else {
-        job.append(&line.text, 16.0, TextFormat::simple(font, text_color));
+        lead = 0.0;
+    }
+    for run in &line.runs {
+        job.append(
+            &run.text,
+            lead,
+            TextFormat::simple(font.clone(), run_color(run, text_color, t)),
+        );
+        lead = 0.0;
     }
     job
 }
@@ -558,7 +619,7 @@ mod tests {
         menu.log.push(crate::log::Line {
             time: "12:34:56".into(),
             source: Some("Tool".into()),
-            text: "hello-log".into(),
+            runs: vec![crate::log::Run::plain("hello-log")],
             kind: crate::log::Kind::Output,
         });
         let ctx = egui::Context::default();
@@ -704,5 +765,55 @@ mod tests {
             (above - below).abs() <= 1.0,
             "content {above} from the top, {below} from the bottom"
         );
+    }
+
+    #[test]
+    fn a_coloured_log_line_is_drawn_in_its_colours() {
+        let mut menu = Menu::new(
+            Grid {
+                tiles: vec![plain_tile("T0")],
+                banner: vec![],
+            },
+            false,
+        );
+        menu.log.push(crate::log::Line {
+            time: "12:34:56".into(),
+            source: Some("oxulnk".into()),
+            runs: crate::log::parse(b"plain \x1b[33mYELLOWPART\x1b[0m end"),
+            kind: crate::log::Kind::Output,
+        });
+        let ctx = egui::Context::default();
+        Theme::dark().apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(screen(1280.0, 720.0)),
+            ..Default::default()
+        };
+        let mut out = None;
+        for _ in 0..2 {
+            let mut o = ctx.run_ui(input.clone(), |ui| {
+                show(ui, &menu, &[None], Instant::now());
+            });
+            o.textures_delta.clear();
+            out = Some(o);
+        }
+        let out = out.unwrap();
+        let galley = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().contains("YELLOWPART") => Some(t.galley.clone()),
+                _ => None,
+            })
+            .expect("log line drawn");
+        let text = galley.text();
+        let at = text.find("YELLOWPART").unwrap();
+        let section = galley
+            .job
+            .sections
+            .iter()
+            .find(|s| s.byte_range.contains(&egui::text::ByteIndex(at)))
+            .unwrap();
+        assert_eq!(section.format.color, ansi_color(Ansi::Basic(3)));
+        assert!(!text.contains("[33m"), "{text}");
     }
 }
